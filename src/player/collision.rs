@@ -1,5 +1,6 @@
 use glam::{IVec3, Vec3};
 
+use crate::physics::PhysicsRuntime;
 use crate::streaming::store::ChunkStore;
 use crate::voxel::VOXEL_SIZE;
 
@@ -106,6 +107,66 @@ pub fn check_ground_support(
     }
 }
 
+/// Evaluasi kontak tumpuan tanah dengan dukungan PhysicsRuntime DynamicBody (8C.2).
+pub fn check_ground_support_with_physics(
+    feet_pos: Vec3,
+    radius: f32,
+    epsilon: f32,
+    store: &ChunkStore,
+    physics: Option<&PhysicsRuntime>,
+) -> GroundContactResult {
+    let static_res = check_ground_support(feet_pos, radius, epsilon, store);
+    if static_res.grounded {
+        return static_res;
+    }
+
+    if let Some(runtime) = physics {
+        for body in runtime.bodies.values() {
+            let (b_min, b_max) = body.world_bounds();
+            if feet_pos.x < b_min.x - radius
+                || feet_pos.x > b_max.x + radius
+                || feet_pos.z < b_min.z - radius
+                || feet_pos.z > b_max.z + radius
+                || feet_pos.y < b_min.y - 0.1
+                || feet_pos.y > b_max.y + epsilon + 0.1
+            {
+                continue;
+            }
+
+            for v in &body.aggregate.voxels {
+                let box_min = body.position
+                    + Vec3::new(
+                        v.relative_coord.x as f32 * VOXEL_SIZE,
+                        v.relative_coord.y as f32 * VOXEL_SIZE,
+                        v.relative_coord.z as f32 * VOXEL_SIZE,
+                    );
+                let box_max = box_min + Vec3::splat(VOXEL_SIZE);
+                let surface_y = box_max.y;
+                let dist = feet_pos.y - surface_y;
+
+                if dist >= -0.01 && dist <= epsilon {
+                    let closest_x = feet_pos.x.clamp(box_min.x, box_max.x);
+                    let closest_z = feet_pos.z.clamp(box_min.z, box_max.z);
+                    let dx = feet_pos.x - closest_x;
+                    let dz = feet_pos.z - closest_z;
+
+                    if (dx * dx + dz * dz) <= (radius * radius) {
+                        return GroundContactResult {
+                            grounded: true,
+                            ground_normal: Vec3::Y,
+                            ground_distance: dist.max(0.0),
+                            support_voxel: None,
+                            ground_y_surface: Some(surface_y),
+                        };
+                    }
+                }
+            }
+        }
+    }
+
+    GroundContactResult::default()
+}
+
 /// Memeriksa apakah kapsul dengan ketinggian target (misalnya standing_height = 1.8m)
 /// memiliki ruang bebas penuh (clearance) tanpa beririsan dengan voxel solid statis (8B.5).
 ///
@@ -119,6 +180,17 @@ pub fn check_capsule_clearance(
     target_height: f32,
     radius: f32,
     store: &ChunkStore,
+) -> bool {
+    check_capsule_clearance_with_physics(feet_pos, target_height, radius, store, None)
+}
+
+/// Memeriksa clearance kapsul terhadap voxel statis dan voxel DynamicBody (8C.2).
+pub fn check_capsule_clearance_with_physics(
+    feet_pos: Vec3,
+    target_height: f32,
+    radius: f32,
+    store: &ChunkStore,
+    physics: Option<&PhysicsRuntime>,
 ) -> bool {
     let standing_capsule = super::collider::Capsule::new(feet_pos, radius, target_height);
     let (aabb_min, aabb_max) = standing_capsule.aabb();
@@ -153,6 +225,35 @@ pub fn check_capsule_clearance(
                             return false;
                         }
                     }
+                }
+            }
+        }
+    }
+
+    if let Some(runtime) = physics {
+        for body in runtime.bodies.values() {
+            let (b_min, b_max) = body.world_bounds();
+            if aabb_max.x < b_min.x
+                || aabb_min.x > b_max.x
+                || aabb_max.y < b_min.y
+                || aabb_min.y > b_max.y
+                || aabb_max.z < b_min.z
+                || aabb_min.z > b_max.z
+            {
+                continue;
+            }
+
+            for v in &body.aggregate.voxels {
+                let box_min = body.position
+                    + Vec3::new(
+                        v.relative_coord.x as f32 * VOXEL_SIZE,
+                        v.relative_coord.y as f32 * VOXEL_SIZE,
+                        v.relative_coord.z as f32 * VOXEL_SIZE,
+                    );
+                let box_max = box_min + Vec3::splat(VOXEL_SIZE);
+
+                if standing_capsule.intersects_aabb(box_min, box_max) {
+                    return false;
                 }
             }
         }
@@ -621,6 +722,462 @@ pub fn resolve_swept_step(
     if delta.y.abs() > 1e-6 {
         stats.queries_count += 1;
         let hit_y = swept_axis_y(capsule, delta.y, store);
+        if hit_y.hit {
+            stats.hits_count += 1;
+            if hit_y.is_unknown {
+                stats.unknown_hits_count += 1;
+            }
+            let mut move_y = delta.y * hit_y.t;
+            if delta.y > 0.0 {
+                move_y = (move_y - 0.001).max(0.0);
+            } else {
+                move_y = (move_y + 0.001).min(0.0);
+            }
+            capsule.base.y += move_y;
+            velocity.y = 0.0;
+        } else {
+            capsule.base.y += delta.y;
+        }
+    }
+
+    stats
+}
+
+/// Evaluasi swept collision kontinu sepanjang sumbu X dengan dukungan PhysicsRuntime DynamicBody (8C.2).
+pub fn swept_axis_x_with_physics(
+    capsule: &super::collider::Capsule,
+    dx: f32,
+    store: &ChunkStore,
+    physics: Option<&PhysicsRuntime>,
+) -> SweptHit {
+    let mut hit = swept_axis_x(capsule, dx, store);
+
+    if let Some(runtime) = physics {
+        if dx.abs() < 1e-6 {
+            return hit;
+        }
+
+        let radius = capsule.radius;
+        let height = capsule.height;
+        let base = capsule.base;
+
+        let swept_min_x = (base.x - radius).min(base.x + dx - radius);
+        let swept_max_x = (base.x + radius).max(base.x + dx + radius);
+        let c_min_y = base.y + 0.01;
+        let c_max_y = base.y + height - 0.01;
+        let c_min_z = base.z - radius;
+        let c_max_z = base.z + radius;
+
+        let mut earliest_t = if hit.hit { hit.t } else { 1.0f32 };
+        let mut hit_normal = hit.normal;
+
+        for body in runtime.bodies.values() {
+            let (b_min, b_max) = body.world_bounds();
+            if swept_max_x < b_min.x
+                || swept_min_x > b_max.x
+                || c_max_y < b_min.y
+                || c_min_y > b_max.y
+                || c_max_z < b_min.z
+                || c_min_z > b_max.z
+            {
+                continue;
+            }
+
+            for v in &body.aggregate.voxels {
+                let box_min = body.position
+                    + Vec3::new(
+                        v.relative_coord.x as f32 * VOXEL_SIZE,
+                        v.relative_coord.y as f32 * VOXEL_SIZE,
+                        v.relative_coord.z as f32 * VOXEL_SIZE,
+                    );
+                let box_max = box_min + Vec3::splat(VOXEL_SIZE);
+
+                let closest_z = base.z.clamp(box_min.z, box_max.z);
+                let dz = base.z - closest_z;
+
+                let y_lower = base.y + radius;
+                let y_upper = base.y + height - radius;
+                let dy_seg = if y_upper < box_min.y {
+                    box_min.y - y_upper
+                } else if y_lower > box_max.y {
+                    y_lower - box_max.y
+                } else {
+                    0.0
+                };
+
+                let cross_dist_sq = dz * dz + dy_seg * dy_seg;
+                if cross_dist_sq > (radius * radius) {
+                    continue;
+                }
+
+                let r_eff = (radius * radius - cross_dist_sq).max(0.0).sqrt();
+
+                if dx > 0.0 {
+                    let cur_front = base.x + r_eff;
+                    let target_wall = box_min.x;
+                    if cur_front <= target_wall {
+                        let t = (target_wall - cur_front) / dx;
+                        if t >= 0.0 && t < earliest_t {
+                            earliest_t = t;
+                            hit_normal = Vec3::NEG_X;
+                            hit.hit = true;
+                            hit.hit_voxel = None;
+                            hit.is_unknown = false;
+                        }
+                    } else if base.x < box_max.x && (base.x - r_eff) < box_max.x {
+                        let t = 0.0f32;
+                        if t < earliest_t {
+                            earliest_t = t;
+                            hit_normal = Vec3::NEG_X;
+                            hit.hit = true;
+                            hit.hit_voxel = None;
+                            hit.is_unknown = false;
+                        }
+                    }
+                } else {
+                    let cur_front = base.x - r_eff;
+                    let target_wall = box_max.x;
+                    if cur_front >= target_wall {
+                        let t = (target_wall - cur_front) / dx;
+                        if t >= 0.0 && t < earliest_t {
+                            earliest_t = t;
+                            hit_normal = Vec3::X;
+                            hit.hit = true;
+                            hit.hit_voxel = None;
+                            hit.is_unknown = false;
+                        }
+                    } else if base.x > box_min.x && (base.x + r_eff) > box_min.x {
+                        let t = 0.0f32;
+                        if t < earliest_t {
+                            earliest_t = t;
+                            hit_normal = Vec3::X;
+                            hit.hit = true;
+                            hit.hit_voxel = None;
+                            hit.is_unknown = false;
+                        }
+                    }
+                }
+            }
+        }
+
+        if hit.hit {
+            hit.t = earliest_t;
+            hit.normal = hit_normal;
+        }
+    }
+
+    hit
+}
+
+/// Evaluasi swept collision kontinu sepanjang sumbu Z dengan dukungan PhysicsRuntime DynamicBody (8C.2).
+pub fn swept_axis_z_with_physics(
+    capsule: &super::collider::Capsule,
+    dz: f32,
+    store: &ChunkStore,
+    physics: Option<&PhysicsRuntime>,
+) -> SweptHit {
+    let mut hit = swept_axis_z(capsule, dz, store);
+
+    if let Some(runtime) = physics {
+        if dz.abs() < 1e-6 {
+            return hit;
+        }
+
+        let radius = capsule.radius;
+        let height = capsule.height;
+        let base = capsule.base;
+
+        let swept_min_z = (base.z - radius).min(base.z + dz - radius);
+        let swept_max_z = (base.z + radius).max(base.z + dz + radius);
+        let c_min_y = base.y + 0.01;
+        let c_max_y = base.y + height - 0.01;
+        let c_min_x = base.x - radius;
+        let c_max_x = base.x + radius;
+
+        let mut earliest_t = if hit.hit { hit.t } else { 1.0f32 };
+        let mut hit_normal = hit.normal;
+
+        for body in runtime.bodies.values() {
+            let (b_min, b_max) = body.world_bounds();
+            if swept_max_z < b_min.z
+                || swept_min_z > b_max.z
+                || c_max_y < b_min.y
+                || c_min_y > b_max.y
+                || c_max_x < b_min.x
+                || c_min_x > b_max.x
+            {
+                continue;
+            }
+
+            for v in &body.aggregate.voxels {
+                let box_min = body.position
+                    + Vec3::new(
+                        v.relative_coord.x as f32 * VOXEL_SIZE,
+                        v.relative_coord.y as f32 * VOXEL_SIZE,
+                        v.relative_coord.z as f32 * VOXEL_SIZE,
+                    );
+                let box_max = box_min + Vec3::splat(VOXEL_SIZE);
+
+                let closest_x = base.x.clamp(box_min.x, box_max.x);
+                let dx = base.x - closest_x;
+
+                let y_lower = base.y + radius;
+                let y_upper = base.y + height - radius;
+                let dy_seg = if y_upper < box_min.y {
+                    box_min.y - y_upper
+                } else if y_lower > box_max.y {
+                    y_lower - box_max.y
+                } else {
+                    0.0
+                };
+
+                let cross_dist_sq = dx * dx + dy_seg * dy_seg;
+                if cross_dist_sq > (radius * radius) {
+                    continue;
+                }
+
+                let r_eff = (radius * radius - cross_dist_sq).max(0.0).sqrt();
+
+                if dz > 0.0 {
+                    let cur_front = base.z + r_eff;
+                    let target_wall = box_min.z;
+                    if cur_front <= target_wall {
+                        let t = (target_wall - cur_front) / dz;
+                        if t >= 0.0 && t < earliest_t {
+                            earliest_t = t;
+                            hit_normal = Vec3::NEG_Z;
+                            hit.hit = true;
+                            hit.hit_voxel = None;
+                            hit.is_unknown = false;
+                        }
+                    } else if base.z < box_max.z && (base.z - r_eff) < box_max.z {
+                        let t = 0.0f32;
+                        if t < earliest_t {
+                            earliest_t = t;
+                            hit_normal = Vec3::NEG_Z;
+                            hit.hit = true;
+                            hit.hit_voxel = None;
+                            hit.is_unknown = false;
+                        }
+                    }
+                } else {
+                    let cur_front = base.z - r_eff;
+                    let target_wall = box_max.z;
+                    if cur_front >= target_wall {
+                        let t = (target_wall - cur_front) / dz;
+                        if t >= 0.0 && t < earliest_t {
+                            earliest_t = t;
+                            hit_normal = Vec3::Z;
+                            hit.hit = true;
+                            hit.hit_voxel = None;
+                            hit.is_unknown = false;
+                        }
+                    } else if base.z > box_min.z && (base.z + r_eff) > box_min.z {
+                        let t = 0.0f32;
+                        if t < earliest_t {
+                            earliest_t = t;
+                            hit_normal = Vec3::Z;
+                            hit.hit = true;
+                            hit.hit_voxel = None;
+                            hit.is_unknown = false;
+                        }
+                    }
+                }
+            }
+        }
+
+        if hit.hit {
+            hit.t = earliest_t;
+            hit.normal = hit_normal;
+        }
+    }
+
+    hit
+}
+
+/// Evaluasi swept collision kontinu sepanjang sumbu Y dengan dukungan PhysicsRuntime DynamicBody (8C.2).
+pub fn swept_axis_y_with_physics(
+    capsule: &super::collider::Capsule,
+    dy: f32,
+    store: &ChunkStore,
+    physics: Option<&PhysicsRuntime>,
+) -> SweptHit {
+    let mut hit = swept_axis_y(capsule, dy, store);
+
+    if let Some(runtime) = physics {
+        if dy.abs() < 1e-6 {
+            return hit;
+        }
+
+        let radius = capsule.radius;
+        let height = capsule.height;
+        let base = capsule.base;
+
+        let swept_min_y = base.y.min(base.y + dy);
+        let swept_max_y = (base.y + height).max(base.y + dy + height);
+        let c_min_x = base.x - radius;
+        let c_max_x = base.x + radius;
+        let c_min_z = base.z - radius;
+        let c_max_z = base.z + radius;
+
+        let mut earliest_t = if hit.hit { hit.t } else { 1.0f32 };
+        let mut hit_normal = hit.normal;
+
+        for body in runtime.bodies.values() {
+            let (b_min, b_max) = body.world_bounds();
+            if swept_max_y < b_min.y
+                || swept_min_y > b_max.y
+                || c_max_x < b_min.x
+                || c_min_x > b_max.x
+                || c_max_z < b_min.z
+                || c_min_z > b_max.z
+            {
+                continue;
+            }
+
+            for v in &body.aggregate.voxels {
+                let box_min = body.position
+                    + Vec3::new(
+                        v.relative_coord.x as f32 * VOXEL_SIZE,
+                        v.relative_coord.y as f32 * VOXEL_SIZE,
+                        v.relative_coord.z as f32 * VOXEL_SIZE,
+                    );
+                let box_max = box_min + Vec3::splat(VOXEL_SIZE);
+
+                // Penampang horizontal XZ
+                let closest_x = base.x.clamp(box_min.x, box_max.x);
+                let closest_z = base.z.clamp(box_min.z, box_max.z);
+                let dx = base.x - closest_x;
+                let dz = base.z - closest_z;
+                let horiz_dist_sq = dx * dx + dz * dz;
+
+                if horiz_dist_sq > (radius * radius) {
+                    continue;
+                }
+
+                let y_offset = (radius * radius - horiz_dist_sq).max(0.0).sqrt();
+
+                if dy < 0.0 {
+                    // Hanya periksa jika voxel berada di bawah telapak kaki (kandidat lantai)
+                    if base.y + height > box_max.y {
+                        let cur_bottom = (base.y + radius) - y_offset;
+                        let target_floor = box_max.y;
+                        if cur_bottom >= target_floor {
+                            let t = (target_floor - cur_bottom) / dy;
+                            if t >= 0.0 && t < earliest_t {
+                                earliest_t = t;
+                                hit_normal = Vec3::Y;
+                                hit.hit = true;
+                                hit.hit_voxel = None;
+                                hit.is_unknown = false;
+                            }
+                        } else if base.y < target_floor {
+                            let t = 0.0f32;
+                            if t < earliest_t {
+                                earliest_t = t;
+                                hit_normal = Vec3::Y;
+                                hit.hit = true;
+                                hit.hit_voxel = None;
+                                hit.is_unknown = false;
+                            }
+                        }
+                    }
+                } else {
+                    // Hanya periksa jika voxel berada di atas kepala (kandidat langit-langit)
+                    if base.y < box_min.y {
+                        let cur_top = (base.y + height - radius) + y_offset;
+                        let target_ceiling = box_min.y;
+                        if cur_top <= target_ceiling {
+                            let t = (target_ceiling - cur_top) / dy;
+                            if t >= 0.0 && t < earliest_t {
+                                earliest_t = t;
+                                hit_normal = Vec3::NEG_Y;
+                                hit.hit = true;
+                                hit.hit_voxel = None;
+                                hit.is_unknown = false;
+                            }
+                        } else if base.y + height > target_ceiling {
+                            let t = 0.0f32;
+                            if t < earliest_t {
+                                earliest_t = t;
+                                hit_normal = Vec3::NEG_Y;
+                                hit.hit = true;
+                                hit.hit_voxel = None;
+                                hit.is_unknown = false;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if hit.hit {
+            hit.t = earliest_t;
+            hit.normal = hit_normal;
+        }
+    }
+
+    hit
+}
+
+/// Menyelesaikan pergerakan swept collision per sumbu berurutan: X -> Z -> Y dengan dukungan PhysicsRuntime (8C.2).
+pub fn resolve_swept_step_with_physics(
+    capsule: &mut super::collider::Capsule,
+    velocity: &mut Vec3,
+    delta: Vec3,
+    store: &ChunkStore,
+    physics: Option<&PhysicsRuntime>,
+) -> CollisionStepStats {
+    let mut stats = CollisionStepStats::default();
+
+    // 1. Sumbu X
+    if delta.x.abs() > 1e-6 {
+        stats.queries_count += 1;
+        let hit_x = swept_axis_x_with_physics(capsule, delta.x, store, physics);
+        if hit_x.hit {
+            stats.hits_count += 1;
+            if hit_x.is_unknown {
+                stats.unknown_hits_count += 1;
+            }
+            let mut move_x = delta.x * hit_x.t;
+            if delta.x > 0.0 {
+                move_x = (move_x - 0.001).max(0.0);
+            } else {
+                move_x = (move_x + 0.001).min(0.0);
+            }
+            capsule.base.x += move_x;
+            velocity.x = 0.0;
+        } else {
+            capsule.base.x += delta.x;
+        }
+    }
+
+    // 2. Sumbu Z
+    if delta.z.abs() > 1e-6 {
+        stats.queries_count += 1;
+        let hit_z = swept_axis_z_with_physics(capsule, delta.z, store, physics);
+        if hit_z.hit {
+            stats.hits_count += 1;
+            if hit_z.is_unknown {
+                stats.unknown_hits_count += 1;
+            }
+            let mut move_z = delta.z * hit_z.t;
+            if delta.z > 0.0 {
+                move_z = (move_z - 0.001).max(0.0);
+            } else {
+                move_z = (move_z + 0.001).min(0.0);
+            }
+            capsule.base.z += move_z;
+            velocity.z = 0.0;
+        } else {
+            capsule.base.z += delta.z;
+        }
+    }
+
+    // 3. Sumbu Y
+    if delta.y.abs() > 1e-6 {
+        stats.queries_count += 1;
+        let hit_y = swept_axis_y_with_physics(capsule, delta.y, store, physics);
         if hit_y.hit {
             stats.hits_count += 1;
             if hit_y.is_unknown {

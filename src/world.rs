@@ -165,9 +165,10 @@ impl World {
         self.store.get_voxel_world(world_voxel)
     }
 
-    /// Memperbarui simulasi Player Controller terintegrasi terhadap dunia statis (8C.1).
+    /// Memperbarui simulasi Player Controller terintegrasi terhadap dunia statis (8C.1)
+    /// dan badan dinamis (8C.2).
     pub fn update_player(&self, player: &mut PlayerController, dt: f32, camera_yaw_deg: f32) {
-        player.update_fixed_time(dt, &self.store, camera_yaw_deg);
+        player.update_fixed_time_with_physics(dt, &self.store, Some(&self.physics), camera_yaw_deg);
     }
 
     /// Menemukan titik spawn yang valid di atas permukaan tanah solid dunia statis (8C.1).

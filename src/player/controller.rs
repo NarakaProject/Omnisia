@@ -204,15 +204,25 @@ impl PlayerController {
     /// - Jika clearance bebas: pemain berdiri (crouching = false, forced_crouch = false).
     /// - Telapak kaki (feet_pos) tetap stabil (zero foot teleportation)!
     pub fn update_crouch_state(&mut self, store: &crate::streaming::store::ChunkStore) {
+        self.update_crouch_state_with_physics(store, None);
+    }
+
+    /// Evaluasi status jongkok dan clearance dengan dukungan PhysicsRuntime DynamicBody (8C.2).
+    pub fn update_crouch_state_with_physics(
+        &mut self,
+        store: &crate::streaming::store::ChunkStore,
+        physics: Option<&crate::physics::PhysicsRuntime>,
+    ) {
         if self.input.crouch {
             self.state.crouching = true;
             self.state.forced_crouch = false;
         } else if self.state.crouching {
-            let has_clearance = super::collision::check_capsule_clearance(
+            let has_clearance = super::collision::check_capsule_clearance_with_physics(
                 self.state.position,
                 self.config.standing_height,
                 self.config.capsule_radius,
                 store,
+                physics,
             );
 
             if has_clearance {
@@ -254,8 +264,19 @@ impl PlayerController {
         store: &crate::streaming::store::ChunkStore,
         camera_yaw_deg: f32,
     ) {
+        self.step_simulation_with_physics(fixed_dt, store, None, camera_yaw_deg);
+    }
+
+    /// Menjalankan satu langkah simulasi fisika kinematik berwaktu tetap dengan dukungan PhysicsRuntime DynamicBody (8C.2).
+    pub fn step_simulation_with_physics(
+        &mut self,
+        fixed_dt: f32,
+        store: &crate::streaming::store::ChunkStore,
+        physics: Option<&crate::physics::PhysicsRuntime>,
+        camera_yaw_deg: f32,
+    ) {
         // 1. Evaluasi transisi jongkok dan clearance
-        self.update_crouch_state(store);
+        self.update_crouch_state_with_physics(store, physics);
 
         // 2. Evaluasi status sprinting
         self.update_movement_states();
@@ -277,14 +298,15 @@ impl PlayerController {
             self.state.velocity.y += self.config.gravity * fixed_dt;
         }
 
-        // 6. Swept collision resolution kontinu per sumbu X -> Z -> Y (8B.8)
+        // 6. Swept collision resolution kontinu per sumbu X -> Z -> Y (8B.8 & 8C.2)
         let mut capsule = self.current_capsule();
         let desired_delta = self.state.velocity * fixed_dt;
-        let stats = super::collision::resolve_swept_step(
+        let stats = super::collision::resolve_swept_step_with_physics(
             &mut capsule,
             &mut self.state.velocity,
             desired_delta,
             store,
+            physics,
         );
 
         self.state.position = capsule.base;
@@ -293,11 +315,12 @@ impl PlayerController {
         self.unknown_blocked_total += stats.unknown_hits_count;
 
         // 7. Evaluasi tumpuan tanah (Ground Detection)
-        let ground = super::collision::check_ground_support(
+        let ground = super::collision::check_ground_support_with_physics(
             self.state.position,
             self.config.capsule_radius,
             self.config.ground_contact_epsilon,
             store,
+            physics,
         );
 
         if ground.grounded && self.state.velocity.y <= 0.0 {
@@ -335,6 +358,17 @@ impl PlayerController {
         store: &crate::streaming::store::ChunkStore,
         camera_yaw_deg: f32,
     ) {
+        self.update_fixed_time_with_physics(delta_seconds, store, None, camera_yaw_deg);
+    }
+
+    /// Memperbarui simulasi pemain dengan akumulator fixed-timestep 30 Hz dengan PhysicsRuntime (8C.2).
+    pub fn update_fixed_time_with_physics(
+        &mut self,
+        delta_seconds: f32,
+        store: &crate::streaming::store::ChunkStore,
+        physics: Option<&crate::physics::PhysicsRuntime>,
+        camera_yaw_deg: f32,
+    ) {
         let clamped_dt = delta_seconds.min(self.config.max_dt_clamp);
         self.time_accumulator += clamped_dt;
 
@@ -342,7 +376,7 @@ impl PlayerController {
         let mut substeps = 0;
 
         while self.time_accumulator >= fixed_dt && substeps < self.config.max_substeps_per_frame {
-            self.step_simulation(fixed_dt, store, camera_yaw_deg);
+            self.step_simulation_with_physics(fixed_dt, store, physics, camera_yaw_deg);
             self.time_accumulator -= fixed_dt;
             substeps += 1;
         }
