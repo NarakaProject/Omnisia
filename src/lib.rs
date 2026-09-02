@@ -5,6 +5,7 @@ pub mod lod;
 pub mod material;
 pub mod mesh;
 pub mod modding;
+pub mod physics;
 pub mod renderer;
 pub mod scale;
 pub mod storage;
