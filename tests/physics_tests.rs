@@ -330,13 +330,22 @@ fn test_fixed_timestep_frame_rate_invariance() {
     // 3. 120 FPS (120 frames, dt = 1/120s)
 
     let run_simulation = |frames: usize, render_dt: f32| -> (Vec3, Vec3) {
+        use omnisia::chunk::Chunk;
+        use omnisia::streaming::store::ChunkStore;
+
         let mut runtime = PhysicsRuntime::default();
+        let mut store = ChunkStore::new();
+        // Berikan kolom chunk kosong yang ter-load agar simulasi frame rate murni free fall tanpa tabrakan
+        for cy in -10..=10 {
+            store.insert(Chunk::new(IVec3::new(0, cy, 0)));
+        }
+
         let voxels = vec![(IVec3::ZERO, VoxelBlock::new(MaterialId::STONE))];
         let agg = DetachedAggregate::from_world_voxels(1, &voxels).unwrap();
         let body_id = runtime.spawn_from_detached_aggregate(agg);
 
         for _ in 0..frames {
-            runtime.update(render_dt);
+            runtime.update(render_dt, &store);
         }
 
         let body = runtime.get_body(body_id).unwrap();
@@ -373,14 +382,16 @@ fn test_fixed_timestep_frame_rate_invariance() {
 #[test]
 fn test_pathological_stall_bounded_catchup() {
     use omnisia::physics::PhysicsRuntime;
+    use omnisia::streaming::store::ChunkStore;
 
     let mut runtime = PhysicsRuntime::default();
+    let store = ChunkStore::new();
     let voxels = vec![(IVec3::ZERO, VoxelBlock::new(MaterialId::STONE))];
     let agg = DetachedAggregate::from_world_voxels(1, &voxels).unwrap();
     runtime.spawn_from_detached_aggregate(agg);
 
     // Simulasikan frame drop parah (lag 1.0 detik dalam satu frame render)
-    let ticks = runtime.update(1.0);
+    let ticks = runtime.update(1.0, &store);
 
     // Harus dibatasi maksimum 5 ticks per frame (Amendment 2 guardrail)
     assert_eq!(
@@ -389,4 +400,111 @@ fn test_pathological_stall_bounded_catchup() {
     );
     // Akumulator harus di-reset ke 0 untuk mencegah spiral of death
     assert_eq!(runtime.accumulator, 0.0);
+}
+
+// ============================================================================
+// 8A.6 SWEPT VERTICAL COLLISION & UNLOADED CHUNK GUARD
+// ============================================================================
+
+#[test]
+fn test_swept_vertical_collision_ground_contact_and_snapping() {
+    use omnisia::chunk::Chunk;
+    use omnisia::physics::{swept_vertical_step, VerticalCollisionResult};
+    use omnisia::streaming::store::ChunkStore;
+
+    let mut store = ChunkStore::new();
+    store.insert(Chunk::new(IVec3::ZERO));
+
+    // Lantai batu di y = 2
+    store.set_voxel_world(IVec3::new(10, 2, 10), VoxelBlock::new(MaterialId::STONE));
+
+    // Badan dinamis berada di y = 4 (posisi meter = 2.0m)
+    let voxels = vec![(IVec3::new(10, 4, 10), VoxelBlock::new(MaterialId::STONE))];
+    let agg = DetachedAggregate::from_world_voxels(1, &voxels).unwrap();
+    let body = DynamicBody::from_detached_aggregate(DynamicBodyId(1), agg);
+
+    assert_eq!(body.position.y, 2.0); // 4 * 0.5m = 2.0m
+
+    // Lakukan swept langkah vertikal ke bawah sejauh -1.5m (melewati lantai di y=2 yang posisinya 1.0m .. 1.5m)
+    let step_result = swept_vertical_step(&body, -1.5, &store);
+
+    match step_result {
+        VerticalCollisionResult::GroundContact {
+            clamped_pos,
+            contact_voxel_y,
+        } => {
+            assert_eq!(contact_voxel_y, 2);
+            // Lantai ada di voxel y=2. Bagian bawah badan harus bertumpu tepat di y=3 (posisi meter = 3 * 0.5 = 1.5m)
+            assert_eq!(clamped_pos.y, 1.5);
+        }
+        other => panic!("Diharapkan GroundContact, namun mendapatkan: {:?}", other),
+    }
+}
+
+#[test]
+fn test_unloaded_chunk_blocks_falling_unknown_not_air() {
+    use omnisia::chunk::Chunk;
+    use omnisia::physics::{swept_vertical_step, VerticalCollisionResult};
+    use omnisia::streaming::store::ChunkStore;
+
+    let mut store = ChunkStore::new();
+    // Hanya muat chunk (0, 0, 0) yang mencakup voxel Y dari 0..=31
+    // Chunk di bawahnya (0, -1, 0) TIDAK dimuat (Unloaded / Unknown)
+    store.insert(Chunk::new(IVec3::ZERO));
+
+    // Badan dinamis di y = 0 (batas paling bawah dari chunk 0)
+    let voxels = vec![(IVec3::new(5, 0, 5), VoxelBlock::new(MaterialId::STONE))];
+    let agg = DetachedAggregate::from_world_voxels(1, &voxels).unwrap();
+    let body = DynamicBody::from_detached_aggregate(DynamicBodyId(1), agg);
+
+    // Coba jatuh ke bawah sejauh -1.0m (menuju chunk -1 yang belum dimuat)
+    let step_result = swept_vertical_step(&body, -1.0, &store);
+
+    match step_result {
+        VerticalCollisionResult::BlockedByUnloaded { clamped_pos } => {
+            // Tertahan di batas chunk (y = 0 voxel => 0.0m)
+            assert_eq!(clamped_pos.y, 0.0);
+        }
+        other => panic!(
+            "Diharapkan BlockedByUnloaded karena chunk bawah belum dimuat, namun: {:?}",
+            other
+        ),
+    }
+}
+
+#[test]
+fn test_high_velocity_swept_tunneling_prevention() {
+    use omnisia::chunk::Chunk;
+    use omnisia::physics::{swept_vertical_step, VerticalCollisionResult};
+    use omnisia::streaming::store::ChunkStore;
+
+    let mut store = ChunkStore::new();
+    store.insert(Chunk::new(IVec3::ZERO));
+
+    // Lantai tipis 1-voxel di y = 15
+    store.set_voxel_world(IVec3::new(10, 15, 10), VoxelBlock::new(MaterialId::STONE));
+
+    // Badan dinamis jatuh dengan kecepatan ekstrem dari y = 25 (posisi meter = 12.5m)
+    let voxels = vec![(IVec3::new(10, 25, 10), VoxelBlock::new(MaterialId::STONE))];
+    let agg = DetachedAggregate::from_world_voxels(1, &voxels).unwrap();
+    let body = DynamicBody::from_detached_aggregate(DynamicBodyId(1), agg);
+
+    // Langkah sebesar -8.0 meter (16 voxel) dalam 1 tick!
+    // Posisi target naif jika tanpa swept adalah 12.5 - 8.0 = 4.5m (voxel y=9), menembus lantai di y=15!
+    let step_result = swept_vertical_step(&body, -8.0, &store);
+
+    match step_result {
+        VerticalCollisionResult::GroundContact {
+            clamped_pos,
+            contact_voxel_y,
+        } => {
+            assert_eq!(contact_voxel_y, 15);
+            // Harus tertahan di atas lantai tipis y=15 (voxel y=16 => 8.0m), TIDAK BOLEH TUNNELING!
+            assert_eq!(clamped_pos.y, 8.0);
+        }
+        other => panic!(
+            "Tunneling terdeteksi! Diharapkan GroundContact di y=15, namun: {:?}",
+            other
+        ),
+    }
 }

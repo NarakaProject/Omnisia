@@ -124,4 +124,25 @@ impl ChunkStore {
             VoxelBlock::AIR
         }
     }
+
+    /// Mengambil voxel pada koordinat global dunia dengan status residency eksplisit (Amendment 6).
+    /// Mengembalikan:
+    /// - `Some(block)` jika chunk resident (dapat berupa Air atau Solid).
+    /// - `None` jika chunk tidak resident (Unloaded / Unknown).
+    pub fn get_voxel_world_checked(&self, world_voxel: IVec3) -> Option<VoxelBlock> {
+        let (chunk_coord, local_coord) = world_voxel_to_chunk_and_local(world_voxel);
+        self.resident.get(&chunk_coord).map(|chunk| {
+            *chunk.get_voxel(
+                local_coord.x as usize,
+                local_coord.y as usize,
+                local_coord.z as usize,
+            )
+        })
+    }
+
+    /// Memeriksa apakah chunk pada koordinat tertentu saat ini resident di memori
+    #[inline(always)]
+    pub fn is_chunk_resident(&self, coord: &IVec3) -> bool {
+        self.resident.contains_key(coord)
+    }
 }

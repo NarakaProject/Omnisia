@@ -44,7 +44,7 @@ impl PhysicsRuntime {
     /// Memperbarui simulasi fisika berdasarkan frame render dt dengan loop fixed-timestep 30 Hz.
     /// Mengembalikan jumlah substep fisika yang dieksekusi pada frame ini.
     /// (Amendment 2: Frame-rate independence di bawah cadence normal, bounded catch-up pada lag).
-    pub fn update(&mut self, render_dt: f32) -> usize {
+    pub fn update(&mut self, render_dt: f32, store: &crate::streaming::store::ChunkStore) -> usize {
         let clamped_dt = render_dt.min(self.config.max_dt_clamp);
         self.accumulator += clamped_dt;
 
@@ -52,7 +52,7 @@ impl PhysicsRuntime {
         let mut ticks = 0;
 
         while self.accumulator >= fixed_dt && ticks < self.config.max_substeps_per_frame {
-            self.tick(fixed_dt);
+            self.tick(fixed_dt, store);
             self.accumulator -= fixed_dt;
             ticks += 1;
         }
@@ -65,8 +65,8 @@ impl PhysicsRuntime {
         ticks
     }
 
-    /// Menjalankan satu tick fisika diskrit berdurasi `dt` detik
-    pub fn tick(&mut self, dt: f32) {
+    /// Menjalankan satu tick fisika diskrit berdurasi `dt` detik dengan deteksi tabrakan vertikal sejati
+    pub fn tick(&mut self, dt: f32, store: &crate::streaming::store::ChunkStore) {
         self.physics_ticks_total += 1;
         let gravity = self.config.world_gravity;
 
@@ -75,8 +75,39 @@ impl PhysicsRuntime {
                 // 1. Terapkan akselerasi gravitasi
                 body.apply_gravity(gravity, dt);
 
-                // 2. Integrasikan perpindahan translasi linier
-                body.integrate_motion(dt);
+                // 2. Deteksi tabrakan swept vertikal (Amendment 4 & 6)
+                let cand_delta_y = body.velocity.y * dt;
+                self.collision_checks_total += 1;
+
+                match super::collision::swept_vertical_step(body, cand_delta_y, store) {
+                    super::collision::VerticalCollisionResult::Clear { target_pos } => {
+                        body.position = target_pos;
+                        body.is_grounded = false;
+                    }
+                    super::collision::VerticalCollisionResult::GroundContact {
+                        clamped_pos,
+                        ..
+                    } => {
+                        self.collision_contacts_total += 1;
+                        body.position = clamped_pos;
+                        body.velocity.y = 0.0;
+                        body.is_grounded = true;
+                    }
+                    super::collision::VerticalCollisionResult::CeilingContact {
+                        clamped_pos,
+                        ..
+                    } => {
+                        self.collision_contacts_total += 1;
+                        body.position = clamped_pos;
+                        body.velocity.y = 0.0;
+                    }
+                    super::collision::VerticalCollisionResult::BlockedByUnloaded {
+                        clamped_pos,
+                    } => {
+                        body.position = clamped_pos;
+                        body.velocity.y = 0.0;
+                    }
+                }
             }
         }
     }

@@ -185,8 +185,8 @@ impl World {
             self.physics.spawn_from_detached_aggregate(agg);
         }
 
-        // 3. Perbarui simulasi fisika DynamicBody (fixed-timestep 30 Hz)
-        self.physics.update(dt);
+        // 3. Perbarui simulasi fisika DynamicBody (fixed-timestep 30 Hz dengan deteksi tabrakan)
+        self.physics.update(dt, &self.store);
 
         // 3. Masukkan mesh baru yang siap dari scheduler ke upload_queue
         for (coord, mesh) in self.scheduler.ready_meshes.drain(..) {
