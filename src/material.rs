@@ -1,8 +1,8 @@
 use bytemuck::{Pod, Zeroable};
 use serde::{Deserialize, Serialize};
 
-use crate::modding::registry::ResourceRegistry;
-use crate::modding::resource_id::ResourceId;
+use crate::modding::registry::{RegistryEntry, RegistryError, ResourceRegistry, ResourceSource};
+use crate::modding::resource_id::{ModId, ResourceId};
 
 /// Pengenal tipe material unik (2 byte).
 /// Voxel hanya menyimpan ID ini, bukan keseluruhan definisi material.
@@ -50,7 +50,7 @@ pub struct MaterialDef {
     pub is_transparent: bool,
 }
 
-/// Registri material sentral bersifat data-driven dengan integrasi ResourceId persisten.
+/// Registri material sentral bersifat data-driven dengan integrasi ResourceId persisten dan provenance.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MaterialRegistry {
     registry: ResourceRegistry<MaterialDef>,
@@ -58,192 +58,55 @@ pub struct MaterialRegistry {
 
 impl Default for MaterialRegistry {
     fn default() -> Self {
-        Self::with_builtin_materials()
+        Self::new()
     }
 }
 
 impl MaterialRegistry {
-    /// Membuat registri baru kosong
+    /// Membuat registri baru dengan menginisialisasi semantik engine bawaan `core:air` di indeks 0
     pub fn new() -> Self {
-        Self {
-            registry: ResourceRegistry::new(),
-        }
-    }
+        let mut registry = ResourceRegistry::new();
 
-    /// Registri standar dengan built-in materials namespace "core"
-    pub fn with_builtin_materials() -> Self {
-        let mut registry = Self::new();
-
-        // 0: core:air
-        registry.register_named(
-            "core:air",
-            MaterialDef {
-                name: "Air".to_string(),
-                density_kg_m3: 0.0,
-                shear_strength_mpa: 0.0,
-                base_color: [0.0, 0.0, 0.0],
-                is_solid: false,
-                is_transparent: true,
-            },
-        );
-
-        // 1: core:stone (Pastel Slate Grey)
-        registry.register_named(
-            "core:stone",
-            MaterialDef {
-                name: "Stone".to_string(),
-                density_kg_m3: 2700.0,
-                shear_strength_mpa: 5.0,
-                base_color: [0.62, 0.65, 0.68],
-                is_solid: true,
-                is_transparent: false,
-            },
-        );
-
-        // 2: core:dirt (Warm Muted Brown)
-        registry.register_named(
-            "core:dirt",
-            MaterialDef {
-                name: "Dirt".to_string(),
-                density_kg_m3: 1600.0,
-                shear_strength_mpa: 1.5,
-                base_color: [0.55, 0.42, 0.33],
-                is_solid: true,
-                is_transparent: false,
-            },
-        );
-
-        // 3: core:grass (Soft Pastel Sage Green)
-        registry.register_named(
-            "core:grass",
-            MaterialDef {
-                name: "Grass".to_string(),
-                density_kg_m3: 1400.0,
-                shear_strength_mpa: 1.2,
-                base_color: [0.46, 0.68, 0.42],
-                is_solid: true,
-                is_transparent: false,
-            },
-        );
-
-        // 4: core:sand (Pastel Warm Sand)
-        registry.register_named(
-            "core:sand",
-            MaterialDef {
-                name: "Sand".to_string(),
-                density_kg_m3: 1800.0,
-                shear_strength_mpa: 0.8,
-                base_color: [0.85, 0.78, 0.60],
-                is_solid: true,
-                is_transparent: false,
-            },
-        );
-
-        // 5: core:metal_frame (Matte Steel Blue)
-        registry.register_named(
-            "core:metal_frame",
-            MaterialDef {
-                name: "Metal Frame".to_string(),
-                density_kg_m3: 7850.0,
-                shear_strength_mpa: 250.0,
-                base_color: [0.35, 0.45, 0.55],
-                is_solid: true,
-                is_transparent: false,
-            },
-        );
-
-        // 6: core:ag_core_casing (Cybernetic Mint/Cyan)
-        registry.register_named(
-            "core:ag_core_casing",
-            MaterialDef {
-                name: "AntiGravity Core Casing".to_string(),
-                density_kg_m3: 4500.0,
-                shear_strength_mpa: 350.0,
-                base_color: [0.25, 0.88, 0.82],
-                is_solid: true,
-                is_transparent: false,
-            },
-        );
-
-        // 7: core:gold_accent (Warm Pastel Gold)
-        registry.register_named(
-            "core:gold_accent",
-            MaterialDef {
-                name: "Gold Accent".to_string(),
-                density_kg_m3: 19300.0,
-                shear_strength_mpa: 100.0,
-                base_color: [0.92, 0.75, 0.32],
-                is_solid: true,
-                is_transparent: false,
-            },
-        );
-
-        // 8: core:oak_wood (Soft Warm Cedar)
-        registry.register_named(
-            "core:oak_wood",
-            MaterialDef {
-                name: "Oak Wood".to_string(),
-                density_kg_m3: 700.0,
-                shear_strength_mpa: 15.0,
-                base_color: [0.60, 0.45, 0.32],
-                is_solid: true,
-                is_transparent: false,
-            },
-        );
-
-        // 9: core:leaf (Pastel Forest Leaf)
-        registry.register_named(
-            "core:leaf",
-            MaterialDef {
-                name: "Leaf".to_string(),
-                density_kg_m3: 200.0,
-                shear_strength_mpa: 0.2,
-                base_color: [0.35, 0.58, 0.38],
-                is_solid: true,
-                is_transparent: false,
-            },
-        );
-
-        // 10: core:glass (Frosted Tint)
-        registry.register_named(
-            "core:glass",
-            MaterialDef {
-                name: "Glass".to_string(),
-                density_kg_m3: 2500.0,
-                shear_strength_mpa: 30.0,
-                base_color: [0.85, 0.92, 0.95],
-                is_solid: true,
-                is_transparent: true,
-            },
-        );
-
+        // 0: core:air (Semantik Internal Khusus Engine)
+        let air_id = ResourceId::core("air").unwrap();
         registry
+            .register(
+                air_id,
+                MaterialDef {
+                    name: "Air".to_string(),
+                    density_kg_m3: 0.0,
+                    shear_strength_mpa: 0.0,
+                    base_color: [0.0, 0.0, 0.0],
+                    is_solid: false,
+                    is_transparent: true,
+                },
+                ResourceSource::Core,
+            )
+            .expect("Gagal mendaftarkan core:air");
+
+        Self { registry }
     }
 
-    /// Helper pendaftaran material dengan string resource ID (misal: "core:stone")
-    pub fn register_named(&mut self, res_id_str: &str, def: MaterialDef) -> MaterialId {
-        let res_id = ResourceId::parse(res_id_str)
-            .unwrap_or_else(|e| panic!("Invalid resource ID string '{}': {}", res_id_str, e));
-        self.register_resource(res_id, def)
+    /// Mendaftarkan material baru dengan ResourceId eksplisit dan kepemilikan source
+    pub fn register_resource(
+        &mut self,
+        res_id: ResourceId,
+        def: MaterialDef,
+        source: ResourceSource,
+    ) -> Result<MaterialId, RegistryError> {
+        let idx = self.registry.register(res_id, def, source)?;
+        Ok(MaterialId(idx))
     }
 
-    /// Mendaftarkan material baru dengan ResourceId eksplisit
-    pub fn register_resource(&mut self, res_id: ResourceId, def: MaterialDef) -> MaterialId {
-        let idx = self
-            .registry
-            .register(res_id, def)
-            .unwrap_or_else(|e| panic!("Gagal mendaftarkan material: {}", e));
-        MaterialId(idx)
-    }
-
-    /// Mendaftarkan material baru secara anonim di bawah namespace core
-    pub fn register(&mut self, def: MaterialDef) -> MaterialId {
-        let name_slug = def.name.to_lowercase().replace(' ', "_");
-        let res_id = ResourceId::core(&name_slug).unwrap_or_else(|_| {
-            let fallback = format!("material_{}", self.registry.len());
-            ResourceId::core(fallback).unwrap()
-        });
-        self.register_resource(res_id, def)
+    /// Menerapkan explicit override terhadap material yang sudah terdaftar
+    pub fn apply_explicit_override(
+        &mut self,
+        target: &ResourceId,
+        replacement: &ResourceId,
+        source_mod: ModId,
+    ) -> Result<(), RegistryError> {
+        self.registry
+            .apply_explicit_override(target, replacement, source_mod)
     }
 
     /// Mengambil referensi definisi material berdasarkan MaterialId O(1)
@@ -252,10 +115,25 @@ impl MaterialRegistry {
         self.registry.get_by_index(id.0)
     }
 
+    /// Mengambil entri lengkap (termasuk provenance) berdasarkan MaterialId
+    #[inline(always)]
+    pub fn get_entry(&self, id: MaterialId) -> Option<&RegistryEntry<MaterialDef>> {
+        self.registry.get_entry_by_index(id.0)
+    }
+
     /// Mengambil referensi definisi material berdasarkan ResourceId
     #[inline(always)]
     pub fn get_by_resource_id(&self, res_id: &ResourceId) -> Option<&MaterialDef> {
         self.registry.get(res_id)
+    }
+
+    /// Mengambil entri lengkap berdasarkan ResourceId
+    #[inline(always)]
+    pub fn get_entry_by_resource_id(
+        &self,
+        res_id: &ResourceId,
+    ) -> Option<&RegistryEntry<MaterialDef>> {
+        self.registry.get_entry(res_id)
     }
 
     /// Mengonversi ResourceId persisten ke runtime MaterialId
@@ -300,5 +178,9 @@ impl MaterialRegistry {
 
     pub fn iter(&self) -> impl Iterator<Item = (&ResourceId, &MaterialDef)> {
         self.registry.iter()
+    }
+
+    pub fn iter_entries(&self) -> impl Iterator<Item = &RegistryEntry<MaterialDef>> {
+        self.registry.iter_entries()
     }
 }

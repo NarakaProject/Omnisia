@@ -1,0 +1,9 @@
+{
+  "id": "core:metal_frame",
+  "name": "Metal Frame",
+  "density": 7850.0,
+  "shear_strength": 250.0,
+  "color": [0.35, 0.45, 0.55],
+  "solid": true,
+  "transparent": false
+}

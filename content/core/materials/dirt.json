@@ -1,0 +1,9 @@
+{
+  "id": "core:dirt",
+  "name": "Dirt",
+  "density": 1600.0,
+  "shear_strength": 1.5,
+  "color": [0.55, 0.42, 0.33],
+  "solid": true,
+  "transparent": false
+}

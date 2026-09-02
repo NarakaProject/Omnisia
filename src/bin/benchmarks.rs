@@ -4,24 +4,27 @@ use std::time::Instant;
 use glam::IVec3;
 use omnisia::chunk::Chunk;
 use omnisia::coord::{canonical_linear_index, CHUNK_VOLUME};
-use omnisia::material::{MaterialId, MaterialRegistry};
+use omnisia::material::MaterialId;
 use omnisia::mesh::ao::calculate_face_ao;
 use omnisia::mesh::culled::generate_culled_mesh;
 use omnisia::mesh::greedy::generate_greedy_mesh;
 use omnisia::mesh::types::{FaceDirection, MeshData};
 use omnisia::modding::discovery::ModDiscovery;
 use omnisia::modding::resource_id::ResourceId;
+use omnisia::modding::runtime::ContentRuntime;
 use omnisia::storage::{decompress_and_deserialize_chunk, serialize_and_compress_chunk};
 use omnisia::voxel::VoxelBlock;
 
 fn main() {
     println!("============================================================");
     println!("     OMNISIA ENGINE ARCHITECTURE BENCHMARK SUITE           ");
-    println!("     Phase 2: Core Foundation + Modding Layer              ");
+    println!("     Phase 2.5: Core Boundary + Safe Override Layer        ");
     println!("     Target Baseline: MacBook Pro 2018 (Intel x86_64)      ");
     println!("============================================================");
 
-    let registry = MaterialRegistry::with_builtin_materials();
+    let resolved = ContentRuntime::build_runtime("content/core", "mods")
+        .expect("Gagal memuat Core Content & Mods untuk benchmark");
+    let registry = resolved.materials;
 
     // 1. Benchmark Chunk Indexing
     {

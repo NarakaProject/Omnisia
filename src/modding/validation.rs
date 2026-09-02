@@ -1,19 +1,20 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use crate::material::MaterialRegistry;
-use crate::modding::dependency::DependencyResolver;
-use crate::modding::discovery::ModDiscovery;
-use crate::modding::loader::{ModContentSummary, ModLoader};
-use crate::modding::registry::BlockRegistry;
+use crate::modding::loader::ModContentSummary;
 use crate::modding::resource_id::ModId;
+use crate::modding::runtime::ContentRuntime;
 
-/// Laporan hasil validasi seluruh mod
+/// Laporan hasil validasi seluruh konten Core dan Mod
 #[derive(Debug, Clone, Default)]
 pub struct ValidationReport {
     pub total_discovered: usize,
+    pub core_materials_loaded: usize,
+    pub core_blocks_loaded: usize,
+    pub core_error: Option<String>,
     pub loaded_mods: BTreeMap<ModId, ModContentSummary>,
     pub failed_mods: BTreeMap<ModId, String>,
+    pub applied_overrides: Vec<String>,
     pub warnings: Vec<String>,
     pub total_materials: usize,
     pub total_blocks: usize,
@@ -23,23 +24,40 @@ impl ValidationReport {
     /// Mencetak laporan ke stdout dalam format bersih
     pub fn print_summary(&self) {
         println!("============================================================");
-        println!("           OMNISIA MODDING VALIDATION REPORT                ");
+        println!("           OMNISIA CONTENT & MOD VALIDATION REPORT          ");
         println!("============================================================");
-        println!("Mod Ditemukan: {}", self.total_discovered);
-        println!();
 
-        // 1. Built-in Core Status
-        println!("[OK] core (Built-in Core Content)");
+        // 1. Status Core Content
+        if let Some(ref err) = self.core_error {
+            println!("[ERROR] core (Core Content Failed): {}", err);
+        } else {
+            println!(
+                "[OK] core (Built-in Core: {} materials, {} blocks)",
+                self.core_materials_loaded, self.core_blocks_loaded
+            );
+        }
+
+        println!();
+        println!("Mod Eksternal Ditemukan: {}", self.total_discovered);
 
         // 2. Mod yang Berhasil Dimuat
         for (mod_id, summary) in &self.loaded_mods {
             println!(
-                "[OK] {} (Materials: {}, Blocks: {})",
-                mod_id, summary.materials_loaded, summary.blocks_loaded
+                "[OK] {} (Materials: {}, Blocks: {}, Overrides: {})",
+                mod_id, summary.materials_loaded, summary.blocks_loaded, summary.overrides_applied
             );
         }
 
-        // 3. Mod yang Gagal
+        // 3. Explicit Overrides yang Berhasil Diterapkan
+        if !self.applied_overrides.is_empty() {
+            println!();
+            println!("Explicit Overrides Diterapkan:");
+            for ov in &self.applied_overrides {
+                println!("  [OVERRIDE] {}", ov);
+            }
+        }
+
+        // 4. Mod / Konten yang Gagal
         if !self.failed_mods.is_empty() {
             println!();
             println!("Errors:");
@@ -48,7 +66,7 @@ impl ValidationReport {
             }
         }
 
-        // 4. Warnings
+        // 5. Warnings
         if !self.warnings.is_empty() {
             println!();
             println!("Warnings:");
@@ -65,56 +83,20 @@ impl ValidationReport {
     }
 
     pub fn is_all_ok(&self) -> bool {
-        self.failed_mods.is_empty()
+        self.core_error.is_none() && self.failed_mods.is_empty()
     }
 }
 
-/// Menjalankan validasi penuh terhadap folder mods
-pub fn validate_mods_directory<P: AsRef<Path>>(mods_dir: P) -> ValidationReport {
-    let mut report = ValidationReport::default();
-    let mut material_reg = MaterialRegistry::with_builtin_materials();
-    let mut block_reg = BlockRegistry::new();
-
-    // 1. Discovery
-    let (discovered, discovery_errors) = ModDiscovery::discover_from_dir(mods_dir);
-    report.total_discovered = discovered.len();
-
-    for (path, err) in discovery_errors {
-        let fake_id = ModId::new("unreadable_mod").unwrap_or_else(|_| ModId::core());
-        report
-            .failed_mods
-            .insert(fake_id, format!("File {:?}: {}", path, err));
+/// Menjalankan validasi penuh terhadap Core Content dan direktori mods
+pub fn validate_mods_directory<P1: AsRef<Path>, P2: AsRef<Path>>(
+    core_dir: P1,
+    mods_dir: P2,
+) -> ValidationReport {
+    match ContentRuntime::build_runtime(core_dir, mods_dir) {
+        Ok(resolved) => resolved.report,
+        Err(_) => ValidationReport {
+            core_error: Some("Gagal memuat Core Content atau Mod".to_string()),
+            ..Default::default()
+        },
     }
-
-    // 2. Dependency Resolution
-    let manifests: Vec<_> = discovered.iter().map(|d| d.manifest.clone()).collect();
-    let res = DependencyResolver::resolve(&manifests);
-
-    for (failed_id, err) in res.failed_mods {
-        report.failed_mods.insert(failed_id, err.to_string());
-    }
-
-    // 3. Content Loading berdasarkan Deterministic Load Order
-    let discovered_map: BTreeMap<ModId, &crate::modding::discovery::DiscoveredMod> = discovered
-        .iter()
-        .map(|d| (d.manifest.id.clone(), d))
-        .collect();
-
-    for mod_id in res.load_order {
-        if let Some(&disc) = discovered_map.get(&mod_id) {
-            match ModLoader::load_mod(disc, &mut material_reg, &mut block_reg) {
-                Ok(summary) => {
-                    report.loaded_mods.insert(mod_id, summary);
-                }
-                Err(e) => {
-                    report.failed_mods.insert(mod_id, e.to_string());
-                }
-            }
-        }
-    }
-
-    report.total_materials = material_reg.len();
-    report.total_blocks = block_reg.len();
-
-    report
 }

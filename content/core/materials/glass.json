@@ -1,0 +1,9 @@
+{
+  "id": "core:glass",
+  "name": "Glass",
+  "density": 2500.0,
+  "shear_strength": 30.0,
+  "color": [0.85, 0.92, 0.95],
+  "solid": true,
+  "transparent": true
+}

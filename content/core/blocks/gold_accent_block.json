@@ -1,0 +1,10 @@
+{
+  "id": "core:gold_accent_block",
+  "material": "core:gold_accent",
+  "hardness": 8.0,
+  "components": {},
+  "tags": [
+    "metal",
+    "precious"
+  ]
+}

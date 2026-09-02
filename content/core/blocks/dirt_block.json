@@ -1,0 +1,10 @@
+{
+  "id": "core:dirt_block",
+  "material": "core:dirt",
+  "hardness": 1.0,
+  "components": {},
+  "tags": [
+    "natural",
+    "dirt"
+  ]
+}

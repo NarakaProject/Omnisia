@@ -1,0 +1,9 @@
+{
+  "id": "example_mod:reinforced_stone",
+  "name": "Reinforced Stone (Custom Override)",
+  "density": 3200.0,
+  "shear_strength": 35.0,
+  "color": [0.45, 0.48, 0.52],
+  "solid": true,
+  "transparent": false
+}

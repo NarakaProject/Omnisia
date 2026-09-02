@@ -38,9 +38,6 @@ impl Default for App {
 
         let mut world = World::new();
 
-        // Muat seluruh mod data-driven dari direktori "mods/"
-        world.load_mods_from_dir("mods");
-
         // Bangun demo world
         world.generate_demo_world();
 
@@ -65,7 +62,7 @@ impl ApplicationHandler for App {
         }
 
         let window_attrs = WindowAttributes::default()
-            .with_title("Omnisia - Micro-Voxel Engine [Phase 2: Modding Layer Active]")
+            .with_title("Omnisia - Micro-Voxel Engine [Phase 2.5: Core Content Boundary Active]")
             .with_inner_size(PhysicalSize::new(1280, 720));
 
         let window = Arc::new(
@@ -203,8 +200,8 @@ fn main() {
         .iter()
         .any(|arg| arg == "--validate-mods" || arg == "-v")
     {
-        log::info!("Menjalankan validasi mod Omnisia...");
-        let report = validate_mods_directory("mods");
+        log::info!("Menjalankan validasi Core Content dan mod Omnisia...");
+        let report = validate_mods_directory("content/core", "mods");
         report.print_summary();
         if !report.is_all_ok() {
             std::process::exit(1);
@@ -212,7 +209,7 @@ fn main() {
         return;
     }
 
-    log::info!("Memulai Omnisia Micro-Voxel Engine [Phase 2: Modding Layer Active]...");
+    log::info!("Memulai Omnisia Micro-Voxel Engine [Phase 2.5: Core Boundary Active]...");
 
     let event_loop = EventLoop::new().expect("Gagal membuat winit EventLoop");
     event_loop.set_control_flow(ControlFlow::Poll);

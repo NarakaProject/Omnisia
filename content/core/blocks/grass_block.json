@@ -1,0 +1,10 @@
+{
+  "id": "core:grass_block",
+  "material": "core:grass",
+  "hardness": 1.2,
+  "components": {},
+  "tags": [
+    "natural",
+    "surface"
+  ]
+}

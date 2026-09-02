@@ -1,21 +1,14 @@
 use glam::IVec3;
-use std::collections::{BTreeMap, HashMap};
-use std::path::Path;
+use std::collections::HashMap;
 
 use crate::chunk::Chunk;
 use crate::coord::world_voxel_to_chunk_and_local;
 use crate::material::{MaterialId, MaterialRegistry};
-use crate::modding::definitions::{
-    BlockComponents, BlockDefinition, LiftCapacityComponent, StructuralAnchorComponent,
-};
-use crate::modding::dependency::DependencyResolver;
-use crate::modding::discovery::ModDiscovery;
-use crate::modding::loader::ModLoader;
 use crate::modding::registry::BlockRegistry;
-use crate::modding::resource_id::{ModId, ResourceId};
+use crate::modding::runtime::ContentRuntime;
 use crate::voxel::VoxelBlock;
 
-/// Representasi dunia runtime sparse dengan integrasi data-driven modding registry
+/// Representasi dunia runtime sparse dengan integrasi registry konten yang telah di-resolve
 pub struct World {
     pub chunks: HashMap<IVec3, Chunk>,
     pub materials: MaterialRegistry,
@@ -29,129 +22,26 @@ impl Default for World {
 }
 
 impl World {
+    /// Membuat instance World baru dengan memuat konten melalui ContentRuntime
     pub fn new() -> Self {
-        let materials = MaterialRegistry::with_builtin_materials();
-        let mut blocks = BlockRegistry::new();
+        match ContentRuntime::build_runtime("content/core", "mods") {
+            Ok(resolved) => Self::with_content(resolved.materials, resolved.blocks),
+            Err(e) => {
+                log::error!(
+                    "Gagal memuat Core Content saat inisialisasi World: {}. Menggunakan fallback minimal.",
+                    e
+                );
+                Self::with_content(MaterialRegistry::new(), BlockRegistry::new())
+            }
+        }
+    }
 
-        // Registrasi Block Bawaan Core melalui data-driven pipeline (Dogfooding)
-        Self::register_builtin_blocks(&mut blocks);
-
+    /// Membuat instance World dengan MaterialRegistry dan BlockRegistry yang sudah di-resolve
+    pub fn with_content(materials: MaterialRegistry, blocks: BlockRegistry) -> Self {
         Self {
             chunks: HashMap::new(),
             materials,
             blocks,
-        }
-    }
-
-    /// Mendaftarkan blok bawaan "core:" menggunakan BlockDefinition yang sama dengan Mod
-    fn register_builtin_blocks(blocks: &mut BlockRegistry) {
-        // core:stone_block
-        let _ = blocks.register(BlockDefinition {
-            id: ResourceId::core("stone_block").unwrap(),
-            material: ResourceId::core("stone").unwrap(),
-            hardness: Some(5.0),
-            components: BlockComponents {
-                structural_anchor: Some(StructuralAnchorComponent { is_anchor: true }),
-                lift_capacity: None,
-                extra: HashMap::new(),
-            },
-            tags: vec![
-                "natural".to_string(),
-                "solid".to_string(),
-                "stone".to_string(),
-            ],
-        });
-
-        // core:dirt_block
-        let _ = blocks.register(BlockDefinition {
-            id: ResourceId::core("dirt_block").unwrap(),
-            material: ResourceId::core("dirt").unwrap(),
-            hardness: Some(1.0),
-            components: BlockComponents::default(),
-            tags: vec!["natural".to_string(), "dirt".to_string()],
-        });
-
-        // core:grass_block
-        let _ = blocks.register(BlockDefinition {
-            id: ResourceId::core("grass_block").unwrap(),
-            material: ResourceId::core("grass").unwrap(),
-            hardness: Some(1.2),
-            components: BlockComponents::default(),
-            tags: vec!["natural".to_string(), "surface".to_string()],
-        });
-
-        // core:metal_frame_block
-        let _ = blocks.register(BlockDefinition {
-            id: ResourceId::core("metal_frame_block").unwrap(),
-            material: ResourceId::core("metal_frame").unwrap(),
-            hardness: Some(25.0),
-            components: BlockComponents::default(),
-            tags: vec!["metal".to_string(), "structural".to_string()],
-        });
-
-        // core:ag_core_casing_block (dengan komponen kapabilitas generik lift_capacity)
-        let _ = blocks.register(BlockDefinition {
-            id: ResourceId::core("ag_core_casing_block").unwrap(),
-            material: ResourceId::core("ag_core_casing").unwrap(),
-            hardness: Some(50.0),
-            components: BlockComponents {
-                structural_anchor: None,
-                lift_capacity: Some(LiftCapacityComponent {
-                    capacity_kg: 1_000_000.0,
-                    radius_m: 32.0,
-                    power_consumption_w: 25_000.0,
-                }),
-                extra: HashMap::new(),
-            },
-            tags: vec!["machine".to_string(), "anti_gravity".to_string()],
-        });
-
-        // core:gold_accent_block
-        let _ = blocks.register(BlockDefinition {
-            id: ResourceId::core("gold_accent_block").unwrap(),
-            material: ResourceId::core("gold_accent").unwrap(),
-            hardness: Some(8.0),
-            components: BlockComponents::default(),
-            tags: vec!["metal".to_string(), "precious".to_string()],
-        });
-    }
-
-    /// Memuat mod eksternal dari folder secara deterministik dengan resolusi dependensi
-    pub fn load_mods_from_dir<P: AsRef<Path>>(&mut self, mods_dir: P) {
-        let (discovered, discovery_errors) = ModDiscovery::discover_from_dir(mods_dir);
-
-        for (path, err) in discovery_errors {
-            log::warn!("Gagal membaca manifest mod di {:?}: {}", path, err);
-        }
-
-        let manifests: Vec<_> = discovered.iter().map(|d| d.manifest.clone()).collect();
-        let resolution = DependencyResolver::resolve(&manifests);
-
-        for (failed_id, err) in &resolution.failed_mods {
-            log::error!("Mod '{}' ditolak: {}", failed_id, err);
-        }
-
-        let discovered_map: BTreeMap<ModId, &crate::modding::discovery::DiscoveredMod> = discovered
-            .iter()
-            .map(|d| (d.manifest.id.clone(), d))
-            .collect();
-
-        for mod_id in &resolution.load_order {
-            if let Some(&disc) = discovered_map.get(mod_id) {
-                match ModLoader::load_mod(disc, &mut self.materials, &mut self.blocks) {
-                    Ok(summary) => {
-                        log::info!(
-                            "Mod '{}' berhasil dimuat ({} material, {} blok)",
-                            mod_id,
-                            summary.materials_loaded,
-                            summary.blocks_loaded
-                        );
-                    }
-                    Err(e) => {
-                        log::error!("Gagal memuat konten mod '{}': {}", mod_id, e);
-                    }
-                }
-            }
         }
     }
 

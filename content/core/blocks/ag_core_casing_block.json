@@ -1,0 +1,16 @@
+{
+  "id": "core:ag_core_casing_block",
+  "material": "core:ag_core_casing",
+  "hardness": 50.0,
+  "components": {
+    "lift_capacity": {
+      "capacity_kg": 1000000.0,
+      "radius_m": 32.0,
+      "power_consumption_w": 25000.0
+    }
+  },
+  "tags": [
+    "machine",
+    "anti_gravity"
+  ]
+}

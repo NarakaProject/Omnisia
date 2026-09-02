@@ -9,8 +9,16 @@ use omnisia::mesh::ao::{ao_to_float, vertex_ao};
 use omnisia::mesh::culled::generate_culled_mesh;
 use omnisia::mesh::greedy::generate_greedy_mesh;
 use omnisia::mesh::types::MeshData;
+use omnisia::modding::resource_id::ResourceId;
+use omnisia::modding::runtime::ContentRuntime;
 use omnisia::storage::{decompress_and_deserialize_chunk, serialize_and_compress_chunk};
 use omnisia::voxel::VoxelBlock;
+
+fn get_test_material_registry() -> MaterialRegistry {
+    ContentRuntime::build_runtime("content/core", "mods")
+        .expect("Core Content harus berhasil dimuat untuk test suite")
+        .materials
+}
 
 #[test]
 fn test_invariant_voxel_block_size() {
@@ -140,15 +148,22 @@ fn test_chunk_mutation_and_non_air_count() {
 
 #[test]
 fn test_material_registry() {
-    let registry = MaterialRegistry::with_builtin_materials();
+    let registry = get_test_material_registry();
     assert!(registry.len() >= 10);
 
-    let stone = registry.get(MaterialId::STONE).unwrap();
-    assert_eq!(stone.name, "Stone");
+    let stone_id = registry
+        .resolve_material_id(&ResourceId::core("stone").unwrap())
+        .expect("core:stone harus terdaftar");
+    let stone = registry.get(stone_id).unwrap();
+    assert_eq!(stone.name, "Reinforced Stone (Custom Override)"); // Verifikasi bahwa core:stone di-override oleh example_mod
     assert!(stone.is_solid);
     assert!(!stone.is_transparent);
 
-    let air = registry.get(MaterialId::AIR).unwrap();
+    let air_id = registry
+        .resolve_material_id(&ResourceId::core("air").unwrap())
+        .expect("core:air harus terdaftar");
+    let air = registry.get(air_id).unwrap();
+    assert_eq!(air.name, "Air");
     assert!(!air.is_solid);
     assert!(air.is_transparent);
 }
@@ -168,7 +183,7 @@ fn test_ao_calculation() {
 #[test]
 fn test_culled_mesher_single_voxel() {
     let mut chunk = Chunk::new(IVec3::ZERO);
-    let registry = MaterialRegistry::with_builtin_materials();
+    let registry = get_test_material_registry();
     let mut mesh = MeshData::new();
 
     // 1 Voxel di tengah chunk harus menghasilkan tepat 6 sisi (24 vertex, 36 index)
@@ -183,7 +198,7 @@ fn test_culled_mesher_single_voxel() {
 #[test]
 fn test_greedy_mesher_optimization() {
     let mut chunk = Chunk::new(IVec3::ZERO);
-    let registry = MaterialRegistry::with_builtin_materials();
+    let registry = get_test_material_registry();
     let mut culled_mesh = MeshData::new();
     let mut greedy_mesh = MeshData::new();
 

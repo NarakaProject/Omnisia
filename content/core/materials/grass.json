@@ -1,0 +1,9 @@
+{
+  "id": "core:grass",
+  "name": "Grass",
+  "density": 1400.0,
+  "shear_strength": 1.2,
+  "color": [0.46, 0.68, 0.42],
+  "solid": true,
+  "transparent": false
+}

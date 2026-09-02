@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt;
 
-use crate::modding::resource_id::{ModId, ResourceIdError};
+use crate::modding::resource_id::{ModId, ResourceId, ResourceIdError};
 use crate::modding::version::{
     is_engine_api_compatible, DependencyRequirement, VersionError, ENGINE_API_VERSION,
 };
@@ -19,6 +19,7 @@ pub enum ManifestError {
     InvalidVersion(VersionError),
     IncompatibleApi { required: String, current: String },
     InvalidDependency { dep: String, err: String },
+    InvalidOverride { reason: String },
 }
 
 impl fmt::Display for ManifestError {
@@ -39,6 +40,9 @@ impl fmt::Display for ManifestError {
             Self::InvalidDependency { dep, err } => {
                 write!(f, "Deklarasi dependensi '{}' tidak valid: {}", dep, err)
             }
+            Self::InvalidOverride { reason } => {
+                write!(f, "Deklarasi override tidak valid: {}", reason)
+            }
         }
     }
 }
@@ -52,6 +56,13 @@ pub struct AuthorInfo {
     pub contact: Option<String>,
 }
 
+/// Deklarasi eksplisit untuk penimpaan (*override*) konten target
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OverrideDeclaration {
+    pub target: ResourceId,
+    pub replacement: ResourceId,
+}
+
 /// Struktur data resmi untuk file `mod.toml`
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModManifest {
@@ -63,6 +74,8 @@ pub struct ModManifest {
     pub author: Option<AuthorInfo>,
     #[serde(default)]
     pub dependencies: HashMap<String, String>,
+    #[serde(default)]
+    pub overrides: Vec<OverrideDeclaration>,
 }
 
 impl ModManifest {
@@ -115,6 +128,28 @@ impl ModManifest {
                     err: e.to_string(),
                 }
             })?;
+        }
+
+        // 4. Validasi Deklarasi Overrides
+        for ov in &self.overrides {
+            if ov.target == ov.replacement {
+                return Err(ManifestError::InvalidOverride {
+                    reason: format!(
+                        "Target override '{}' tidak boleh sama dengan replacement",
+                        ov.target
+                    ),
+                });
+            }
+
+            // Aturan Kepemilikan: Mod hanya boleh memakai replacement yang dimilikinya sendiri!
+            if ov.replacement.namespace != self.id {
+                return Err(ManifestError::InvalidOverride {
+                    reason: format!(
+                        "Mod '{}' mencoba menggunakan replacement '{}' dari namespace lain",
+                        self.id, ov.replacement
+                    ),
+                });
+            }
         }
 
         Ok(())

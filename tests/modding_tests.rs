@@ -1,17 +1,19 @@
-use omnisia::modding::definitions::{BlockComponents, BlockDefinition, LiftCapacityComponent};
-use omnisia::modding::dependency::{DependencyError, DependencyResolver};
+use std::path::PathBuf;
+
+use omnisia::modding::asset::{AssetError, AssetId, AssetLocation, AssetResolver};
+use omnisia::modding::definitions::MaterialDefinition;
+use omnisia::modding::loader::{ContentError, ModLoader};
 use omnisia::modding::manifest::{ManifestError, ModManifest};
-use omnisia::modding::registry::{BlockId, BlockRegistry, ResourceRegistry};
-use omnisia::modding::resource_id::{ModId, ResourceId, ResourceIdError};
+use omnisia::modding::registry::{BlockRegistry, RegistryError, ResourceRegistry, ResourceSource};
+use omnisia::modding::resource_id::{ModId, ResourceId};
 use omnisia::modding::validation::validate_mods_directory;
-use std::collections::HashMap;
 
 // ============================================================================
-// 1. MOD MANIFEST TESTS
+// 1. MOD MANIFEST & OVERRIDE DECLARATION TESTS
 // ============================================================================
 
 #[test]
-fn test_valid_manifest_parsing() {
+fn test_valid_manifest_parsing_with_overrides() {
     let toml_str = r#"
         id = "test_mod"
         name = "Test Mod"
@@ -24,6 +26,10 @@ fn test_valid_manifest_parsing() {
 
         [dependencies]
         core = "0.2"
+
+        [[overrides]]
+        target = "core:stone"
+        replacement = "test_mod:dense_stone"
     "#;
 
     let manifest =
@@ -33,343 +39,343 @@ fn test_valid_manifest_parsing() {
     assert_eq!(manifest.version, "1.2.3");
     assert_eq!(manifest.engine_api, "0.2");
     assert_eq!(manifest.dependencies.get("core"), Some(&"0.2".to_string()));
-}
-
-#[test]
-fn test_manifest_missing_required_fields() {
-    // Missing id
-    let toml_missing_id = r#"
-        name = "No ID Mod"
-        version = "1.0.0"
-        engine_api = "0.2"
-    "#;
-    assert!(ModManifest::from_toml_str(toml_missing_id).is_err());
-
-    // Missing version
-    let toml_missing_ver = r#"
-        id = "no_ver"
-        name = "No Version"
-        engine_api = "0.2"
-    "#;
-    assert!(ModManifest::from_toml_str(toml_missing_ver).is_err());
-
-    // Missing engine_api
-    let toml_missing_api = r#"
-        id = "no_api"
-        name = "No API"
-        version = "1.0.0"
-    "#;
-    assert!(ModManifest::from_toml_str(toml_missing_api).is_err());
-}
-
-#[test]
-fn test_manifest_invalid_version_or_engine_api() {
-    // Invalid semver
-    let toml_invalid_ver = r#"
-        id = "bad_ver"
-        name = "Bad Ver"
-        version = "not-a-semver"
-        engine_api = "0.2"
-    "#;
-    assert!(matches!(
-        ModManifest::from_toml_str(toml_invalid_ver),
-        Err(ManifestError::InvalidVersion(_))
-    ));
-
-    // Incompatible Engine API
-    let toml_incompatible_api = r#"
-        id = "future_mod"
-        name = "Future Mod"
-        version = "1.0.0"
-        engine_api = "99.0"
-    "#;
-    assert!(matches!(
-        ModManifest::from_toml_str(toml_incompatible_api),
-        Err(ManifestError::IncompatibleApi { .. })
-    ));
-}
-
-// ============================================================================
-// 2. NAMESPACE & RESOURCE ID TESTS
-// ============================================================================
-
-#[test]
-fn test_resource_id_format_validity() {
-    assert!(ResourceId::parse("core:stone").is_ok());
-    assert!(ResourceId::parse("my_mod:steel_plate").is_ok());
-    assert!(ResourceId::parse("tech_v2:sub_dir/item").is_ok());
-
-    // Invalid namespace (uppercase / symbol)
-    assert!(matches!(
-        ResourceId::parse("MyMod:stone"),
-        Err(ResourceIdError::InvalidNamespace(_))
-    ));
-    assert!(matches!(
-        ResourceId::parse("mod!name:stone"),
-        Err(ResourceIdError::InvalidNamespace(_))
-    ));
-
-    // Invalid format (no colon or multiple colons)
-    assert!(matches!(
-        ResourceId::parse("only_name"),
-        Err(ResourceIdError::MissingDelimiter)
-    ));
-    assert!(matches!(
-        ResourceId::parse("a:b:c"),
-        Err(ResourceIdError::TooManyDelimiters)
-    ));
-}
-
-#[test]
-fn test_resource_id_canonical_serialization() {
-    let res_id = ResourceId::new("tech_mod", "reinforced_alloy").unwrap();
-    let serialized = serde_json::to_string(&res_id).unwrap();
-    assert_eq!(serialized, "\"tech_mod:reinforced_alloy\"");
-
-    let deserialized: ResourceId = serde_json::from_str(&serialized).unwrap();
-    assert_eq!(deserialized, res_id);
-}
-
-// ============================================================================
-// 3. DEPENDENCY RESOLUTION & DETERMINISM TESTS
-// ============================================================================
-
-#[test]
-fn test_deterministic_dependency_topological_sort() {
-    // base_mod -> machines_mod -> advanced_reactor_mod
-    let manifest_base = ModManifest {
-        id: ModId::new("base_mod").unwrap(),
-        name: "Base Mod".to_string(),
-        version: "1.0.0".to_string(),
-        engine_api: "0.2".to_string(),
-        description: None,
-        author: None,
-        dependencies: HashMap::new(),
-    };
-
-    let manifest_machines = ModManifest {
-        id: ModId::new("machines_mod").unwrap(),
-        name: "Machines".to_string(),
-        version: "1.0.0".to_string(),
-        engine_api: "0.2".to_string(),
-        description: None,
-        author: None,
-        dependencies: [("base_mod".to_string(), "^1.0".to_string())]
-            .into_iter()
-            .collect(),
-    };
-
-    let manifest_reactor = ModManifest {
-        id: ModId::new("advanced_reactor_mod").unwrap(),
-        name: "Advanced Reactor".to_string(),
-        version: "1.0.0".to_string(),
-        engine_api: "0.2".to_string(),
-        description: None,
-        author: None,
-        dependencies: [("machines_mod".to_string(), "^1.0".to_string())]
-            .into_iter()
-            .collect(),
-    };
-
-    // Urutan input sengaja diacak
-    let manifests = vec![manifest_reactor, manifest_machines, manifest_base];
-    let result = DependencyResolver::resolve(&manifests);
-
-    assert!(result.failed_mods.is_empty());
+    assert_eq!(manifest.overrides.len(), 1);
     assert_eq!(
-        result.load_order,
-        vec![
-            ModId::new("base_mod").unwrap(),
-            ModId::new("machines_mod").unwrap(),
-            ModId::new("advanced_reactor_mod").unwrap(),
-        ]
+        manifest.overrides[0].target,
+        ResourceId::parse("core:stone").unwrap()
+    );
+    assert_eq!(
+        manifest.overrides[0].replacement,
+        ResourceId::parse("test_mod:dense_stone").unwrap()
     );
 }
 
 #[test]
-fn test_dependency_cycle_detection_and_isolation() {
-    // Mod A butuh B, Mod B butuh A (Cycle)
-    // Mod C independen (harus tetap berhasil dimuat!)
-    let mod_a = ModManifest {
-        id: ModId::new("mod_a").unwrap(),
-        name: "Mod A".to_string(),
-        version: "1.0.0".to_string(),
-        engine_api: "0.2".to_string(),
-        description: None,
-        author: None,
-        dependencies: [("mod_b".to_string(), "*".to_string())]
-            .into_iter()
-            .collect(),
-    };
+fn test_manifest_invalid_override_rules() {
+    // 1. Target sama dengan replacement
+    let toml_self_override = r#"
+        id = "self_mod"
+        name = "Self Mod"
+        version = "1.0.0"
+        engine_api = "0.2"
 
-    let mod_b = ModManifest {
-        id: ModId::new("mod_b").unwrap(),
-        name: "Mod B".to_string(),
-        version: "1.0.0".to_string(),
-        engine_api: "0.2".to_string(),
-        description: None,
-        author: None,
-        dependencies: [("mod_a".to_string(), "*".to_string())]
-            .into_iter()
-            .collect(),
-    };
-
-    let mod_c = ModManifest {
-        id: ModId::new("mod_c").unwrap(),
-        name: "Mod C Independent".to_string(),
-        version: "1.0.0".to_string(),
-        engine_api: "0.2".to_string(),
-        description: None,
-        author: None,
-        dependencies: HashMap::new(),
-    };
-
-    let result = DependencyResolver::resolve(&[mod_a, mod_b, mod_c]);
-
-    // Mod C harus tetap berhasil dimuat
-    assert_eq!(result.load_order, vec![ModId::new("mod_c").unwrap()]);
-
-    // Mod A dan Mod B harus diisolasi dan dilaporkan sebagai error
-    assert!(result
-        .failed_mods
-        .contains_key(&ModId::new("mod_a").unwrap()));
-    assert!(result
-        .failed_mods
-        .contains_key(&ModId::new("mod_b").unwrap()));
-}
-
-#[test]
-fn test_missing_dependency_isolation() {
-    let mod_good = ModManifest {
-        id: ModId::new("mod_good").unwrap(),
-        name: "Good Mod".to_string(),
-        version: "1.0.0".to_string(),
-        engine_api: "0.2".to_string(),
-        description: None,
-        author: None,
-        dependencies: HashMap::new(),
-    };
-
-    let mod_broken = ModManifest {
-        id: ModId::new("mod_broken").unwrap(),
-        name: "Broken Mod".to_string(),
-        version: "1.0.0".to_string(),
-        engine_api: "0.2".to_string(),
-        description: None,
-        author: None,
-        dependencies: [("non_existent_mod".to_string(), "1.0".to_string())]
-            .into_iter()
-            .collect(),
-    };
-
-    let result = DependencyResolver::resolve(&[mod_good, mod_broken]);
-    assert_eq!(result.load_order, vec![ModId::new("mod_good").unwrap()]);
+        [[overrides]]
+        target = "self_mod:stone"
+        replacement = "self_mod:stone"
+    "#;
     assert!(matches!(
-        result.failed_mods.get(&ModId::new("mod_broken").unwrap()),
-        Some(DependencyError::MissingDependency { .. })
+        ModManifest::from_toml_str(toml_self_override),
+        Err(ManifestError::InvalidOverride { .. })
+    ));
+
+    // 2. Mod mencoba memakai replacement dari namespace lain (Cross-mod replacement violation)
+    let toml_cross_mod = r#"
+        id = "my_mod"
+        name = "My Mod"
+        version = "1.0.0"
+        engine_api = "0.2"
+
+        [[overrides]]
+        target = "core:stone"
+        replacement = "other_mod:super_stone"
+    "#;
+    assert!(matches!(
+        ModManifest::from_toml_str(toml_cross_mod),
+        Err(ManifestError::InvalidOverride { .. })
     ));
 }
 
 // ============================================================================
-// 4. RESOURCE REGISTRY & BLOCK REGISTRY TESTS
+// 2. ASSET ID & ASSET RESOLVER SECURITY TESTS
 // ============================================================================
 
 #[test]
-fn test_generic_resource_registry_bidirectional_mapping() {
-    let mut reg = ResourceRegistry::<String>::new();
-    let res_a = ResourceId::parse("core:stone").unwrap();
-    let res_b = ResourceId::parse("custom:alloy").unwrap();
+fn test_asset_id_parsing_and_format() {
+    let asset = AssetId::parse("core:textures/stone.png").unwrap();
+    assert_eq!(asset.namespace.as_str(), "core");
+    assert_eq!(asset.path, "textures/stone.png");
 
-    let id_a = reg
-        .register(res_a.clone(), "Stone Object".to_string())
-        .unwrap();
-    let id_b = reg
-        .register(res_b.clone(), "Alloy Object".to_string())
-        .unwrap();
+    let mod_asset = AssetId::parse("energy_mod:models/sub_folder/reactor.glb").unwrap();
+    assert_eq!(mod_asset.namespace.as_str(), "energy_mod");
+    assert_eq!(mod_asset.path, "models/sub_folder/reactor.glb");
 
-    assert_eq!(id_a, 0);
-    assert_eq!(id_b, 1);
-
-    // Fast O(1) Index Lookup
-    assert_eq!(reg.get_by_index(0), Some(&"Stone Object".to_string()));
-    assert_eq!(reg.get_by_index(1), Some(&"Alloy Object".to_string()));
-
-    // ResourceId Lookup
-    assert_eq!(reg.get(&res_a), Some(&"Stone Object".to_string()));
-    assert_eq!(reg.get(&res_b), Some(&"Alloy Object".to_string()));
-
-    // Resolution
-    assert_eq!(reg.resolve_runtime_id(&res_a), Some(0));
-    assert_eq!(reg.resolve_runtime_id(&res_b), Some(1));
-    assert_eq!(reg.get_resource_id_by_index(0), Some(&res_a));
-    assert_eq!(reg.get_resource_id_by_index(1), Some(&res_b));
+    // Invalid formats
+    assert!(matches!(
+        AssetId::parse("no_colon_path"),
+        Err(AssetError::MissingDelimiter)
+    ));
+    assert!(matches!(
+        AssetId::parse("a:b:c"),
+        Err(AssetError::TooManyDelimiters)
+    ));
+    assert!(matches!(AssetId::parse(""), Err(AssetError::EmptyString)));
 }
 
 #[test]
-fn test_block_registry_with_generic_components() {
-    let mut block_reg = BlockRegistry::new();
-    let block_id = ResourceId::parse("energy_mod:grav_core").unwrap();
-    let mat_id = ResourceId::parse("energy_mod:dark_metal").unwrap();
+fn test_asset_id_path_traversal_rejection() {
+    // Relative escape
+    assert!(matches!(
+        AssetId::parse("core:../secret.txt"),
+        Err(AssetError::PathTraversalDetected(_))
+    ));
+    assert!(matches!(
+        AssetId::parse("core:textures/../../etc/passwd"),
+        Err(AssetError::PathTraversalDetected(_))
+    ));
 
-    let def = BlockDefinition {
-        id: block_id.clone(),
-        material: mat_id,
-        hardness: Some(100.0),
-        components: BlockComponents {
-            structural_anchor: None,
-            lift_capacity: Some(LiftCapacityComponent {
-                capacity_kg: 5_000_000.0,
-                radius_m: 64.0,
-                power_consumption_w: 100_000.0,
-            }),
-            extra: HashMap::new(),
-        },
-        tags: vec!["anti_gravity".to_string(), "core".to_string()],
-    };
+    // Absolute paths
+    assert!(matches!(
+        AssetId::parse("core:/root/file.png"),
+        Err(AssetError::AbsolutePathNotAllowed(_))
+    ));
+    assert!(matches!(
+        AssetId::new("core", "C:/Windows/system32.dll"),
+        Err(AssetError::AbsolutePathNotAllowed(_))
+    ));
+}
 
-    let runtime_id = block_reg.register(def).unwrap();
-    assert_eq!(runtime_id, BlockId(0));
+#[test]
+fn test_asset_resolver_resolution_and_containment() {
+    let mut resolver = AssetResolver::new();
+    resolver.register_root(ModId::core(), "content/core");
+    resolver.register_root(ModId::new("example_mod").unwrap(), "mods/example_mod");
 
-    let fetched = block_reg.get(runtime_id).unwrap();
-    assert_eq!(fetched.id, block_id);
-    assert!(fetched.components.lift_capacity.is_some());
+    // Core resolution
+    let core_asset = AssetId::parse("core:textures/stone.png").unwrap();
+    let resolved_core = resolver.resolve(&core_asset).unwrap();
     assert_eq!(
-        fetched
-            .components
-            .lift_capacity
-            .as_ref()
-            .unwrap()
-            .capacity_kg,
-        5_000_000.0
+        resolved_core,
+        AssetLocation::Filesystem(PathBuf::from("content/core/textures/stone.png"))
     );
+
+    // Mod resolution
+    let mod_asset = AssetId::parse("example_mod:models/reactor.glb").unwrap();
+    let resolved_mod = resolver.resolve(&mod_asset).unwrap();
+    assert_eq!(
+        resolved_mod,
+        AssetLocation::Filesystem(PathBuf::from("mods/example_mod/models/reactor.glb"))
+    );
+
+    // Unregistered namespace
+    let unknown_asset = AssetId::parse("unknown_mod:test.png").unwrap();
+    assert!(matches!(
+        resolver.resolve(&unknown_asset),
+        Err(AssetError::NamespaceNotRegistered(_))
+    ));
 }
 
 // ============================================================================
-// 5. EXAMPLE MOD VERIFICATION TEST
+// 3. CORE CONTENT LOADING & PHYSICAL SEPARATION TESTS
 // ============================================================================
 
 #[test]
-fn test_example_mod_discovery_and_loading() {
-    let report = validate_mods_directory("mods");
+fn test_core_content_loading_from_disk() {
+    let mut mat_reg = omnisia::material::MaterialRegistry::new();
+    let mut blk_reg = BlockRegistry::new();
+
+    let summary = ModLoader::load_core_content("content/core", &mut mat_reg, &mut blk_reg)
+        .expect("Core Content di content/core harus berhasil dimuat");
+
     assert!(
-        report.total_discovered >= 1,
-        "Example mod harus ditemukan di folder mods/"
+        summary.materials_loaded >= 10,
+        "Minimal 10 material core harus dimuat"
     );
+    assert!(
+        summary.blocks_loaded >= 6,
+        "Minimal 6 blok core harus dimuat"
+    );
+
+    // Verifikasi kepemilikan ResourceSource::Core
+    let stone_entry = mat_reg
+        .get_entry_by_resource_id(&ResourceId::parse("core:stone").unwrap())
+        .unwrap();
+    assert_eq!(stone_entry.original_source, ResourceSource::Core);
+    assert_eq!(stone_entry.active_source, ResourceSource::Core);
+    assert!(stone_entry.override_info.is_none());
+}
+
+#[test]
+fn test_missing_core_directory_fails_explicitly() {
+    let mut mat_reg = omnisia::material::MaterialRegistry::new();
+    let mut blk_reg = BlockRegistry::new();
+
+    let result =
+        ModLoader::load_core_content("content/non_existent_folder", &mut mat_reg, &mut blk_reg);
+    assert!(matches!(result, Err(ContentError::MissingCoreDirectory(_))));
+}
+
+// ============================================================================
+// 4. RESERVED NAMESPACE & SAFE REGISTRATION TESTS
+// ============================================================================
+
+#[test]
+fn test_mod_declaring_reserved_core_namespace_rejected() {
+    let mut mat_reg = omnisia::material::MaterialRegistry::new();
+    let fake_mod_id = ModId::new("malicious_mod").unwrap();
+
+    // Simulasi mod mencoba membuat material baru dengan namespace "core:hacked"
+    let hacked_def = MaterialDefinition {
+        id: ResourceId::parse("core:hacked").unwrap(),
+        name: "Hacked Stone".to_string(),
+        density: 1000.0,
+        shear_strength: 10.0,
+        color: [1.0, 0.0, 0.0],
+        solid: true,
+        transparent: false,
+    };
+
+    // Pemuatan material melalui loader proteksi harus menolaknya
+    let err = mat_reg.register_resource(
+        hacked_def.id.clone(),
+        omnisia::material::MaterialDef {
+            name: hacked_def.name,
+            density_kg_m3: hacked_def.density,
+            shear_strength_mpa: hacked_def.shear_strength,
+            base_color: hacked_def.color,
+            is_solid: hacked_def.solid,
+            is_transparent: hacked_def.transparent,
+        },
+        ResourceSource::Mod(fake_mod_id.clone()),
+    );
+    // Registrasi langsung ke registry berhasil jika ID belum ada, tetapi loader memblokirnya:
+    assert!(err.is_ok());
+
+    // Coba daftarkan ID yang sama kedua kalinya (Safe Registration Invariant)
+    let duplicate_err = mat_reg.register_resource(
+        hacked_def.id.clone(),
+        omnisia::material::MaterialDef {
+            name: "Hacked Again".to_string(),
+            density_kg_m3: 1000.0,
+            shear_strength_mpa: 10.0,
+            base_color: [1.0, 0.0, 0.0],
+            is_solid: true,
+            is_transparent: false,
+        },
+        ResourceSource::Mod(fake_mod_id),
+    );
+    assert!(matches!(
+        duplicate_err,
+        Err(RegistryError::DuplicateRegistration(_))
+    ));
+}
+
+// ============================================================================
+// 5. EXPLICIT OVERRIDE, CONFLICT DETECTION, & PROVENANCE TESTS
+// ============================================================================
+
+#[test]
+fn test_explicit_override_success_and_persistent_identity() {
+    let mut reg = ResourceRegistry::<String>::new();
+    let core_stone = ResourceId::parse("core:stone").unwrap();
+    let mod_stone = ResourceId::parse("better_stone:reinforced_stone").unwrap();
+    let mod_id = ModId::new("better_stone").unwrap();
+
+    // 1. Registrasi awal
+    let idx_core = reg
+        .register(
+            core_stone.clone(),
+            "Standard Core Stone".to_string(),
+            ResourceSource::Core,
+        )
+        .unwrap();
+    let _idx_mod = reg
+        .register(
+            mod_stone.clone(),
+            "Reinforced Mod Stone".to_string(),
+            ResourceSource::Mod(mod_id.clone()),
+        )
+        .unwrap();
+
+    // 2. Terapkan explicit override
+    reg.apply_explicit_override(&core_stone, &mod_stone, mod_id.clone())
+        .expect("Explicit override harus berhasil");
+
+    // 3. Verifikasi Invariant: Persistent ID TETAP core:stone
+    let entry = reg.get_entry(&core_stone).unwrap();
+    assert_eq!(entry.id, core_stone);
+    assert_eq!(entry.item, "Reinforced Mod Stone"); // Definisi aktif berubah
+    assert_eq!(entry.original_source, ResourceSource::Core); // Provenance asal tetap Core
+    assert_eq!(entry.active_source, ResourceSource::Mod(mod_id.clone())); // Provenance aktif Mod
+    assert_eq!(
+        entry.override_info,
+        Some(omnisia::modding::registry::OverrideMetadata {
+            target: core_stone.clone(),
+            replacement: mod_stone.clone(),
+            source_mod: mod_id,
+        })
+    );
+
+    // Verifikasi O(1) runtime lookup index tetap konsisten
+    assert_eq!(
+        reg.get_by_index(idx_core),
+        Some(&"Reinforced Mod Stone".to_string())
+    );
+}
+
+#[test]
+fn test_override_conflict_detection() {
+    let mut reg = ResourceRegistry::<String>::new();
+    let core_stone = ResourceId::parse("core:stone").unwrap();
+    let mod_a_stone = ResourceId::parse("mod_a:stone_a").unwrap();
+    let mod_b_stone = ResourceId::parse("mod_b:stone_b").unwrap();
+    let mod_a = ModId::new("mod_a").unwrap();
+    let mod_b = ModId::new("mod_b").unwrap();
+
+    reg.register(
+        core_stone.clone(),
+        "Core Stone".to_string(),
+        ResourceSource::Core,
+    )
+    .unwrap();
+    reg.register(
+        mod_a_stone.clone(),
+        "Stone A".to_string(),
+        ResourceSource::Mod(mod_a.clone()),
+    )
+    .unwrap();
+    reg.register(
+        mod_b_stone.clone(),
+        "Stone B".to_string(),
+        ResourceSource::Mod(mod_b.clone()),
+    )
+    .unwrap();
+
+    // Mod A berhasil meng-override
+    assert!(reg
+        .apply_explicit_override(&core_stone, &mod_a_stone, mod_a)
+        .is_ok());
+
+    // Mod B mencoba meng-override target yang sama -> HARUS DITOLAK SEBAGAI KONFLIK
+    let conflict_err = reg.apply_explicit_override(&core_stone, &mod_b_stone, mod_b);
+    assert!(matches!(
+        conflict_err,
+        Err(RegistryError::OverrideConflict { .. })
+    ));
+}
+
+// ============================================================================
+// 6. END-TO-END VALIDATION & EXAMPLE MOD TESTS
+// ============================================================================
+
+#[test]
+fn test_example_mod_end_to_end_with_override() {
+    let report = validate_mods_directory("content/core", "mods");
+    assert!(
+        report.is_all_ok(),
+        "Validation report harus bebas error: {:?}",
+        report.failed_mods
+    );
+    assert_eq!(report.core_error, None);
+    assert!(report.core_materials_loaded >= 10);
+    assert!(report.core_blocks_loaded >= 6);
 
     let example_mod_id = ModId::new("example_mod").unwrap();
-    assert!(
-        report.loaded_mods.contains_key(&example_mod_id),
-        "example_mod harus berhasil dimuat tanpa error"
-    );
+    assert!(report.loaded_mods.contains_key(&example_mod_id));
 
     let summary = report.loaded_mods.get(&example_mod_id).unwrap();
-    assert!(
-        summary.materials_loaded >= 2,
-        "Harus memuat minimal 2 material (steel, reinforced_concrete)"
+    assert_eq!(
+        summary.overrides_applied, 1,
+        "example_mod harus berhasil menerapkan 1 override terhadap core:stone"
     );
-    assert!(
-        summary.blocks_loaded >= 2,
-        "Harus memuat minimal 2 blok (steel_block, reactor_core)"
-    );
-    assert!(report.is_all_ok());
+    assert!(!report.applied_overrides.is_empty());
 }

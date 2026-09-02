@@ -1,0 +1,10 @@
+{
+  "id": "core:metal_frame_block",
+  "material": "core:metal_frame",
+  "hardness": 25.0,
+  "components": {},
+  "tags": [
+    "metal",
+    "structural"
+  ]
+}

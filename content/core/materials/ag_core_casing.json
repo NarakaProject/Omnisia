@@ -1,0 +1,9 @@
+{
+  "id": "core:ag_core_casing",
+  "name": "AntiGravity Core Casing",
+  "density": 4500.0,
+  "shear_strength": 350.0,
+  "color": [0.25, 0.88, 0.82],
+  "solid": true,
+  "transparent": false
+}

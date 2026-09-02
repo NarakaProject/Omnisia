@@ -1,0 +1,15 @@
+{
+  "id": "core:stone_block",
+  "material": "core:stone",
+  "hardness": 5.0,
+  "components": {
+    "structural_anchor": {
+      "is_anchor": true
+    }
+  },
+  "tags": [
+    "natural",
+    "solid",
+    "stone"
+  ]
+}

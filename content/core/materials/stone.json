@@ -1,0 +1,9 @@
+{
+  "id": "core:stone",
+  "name": "Stone",
+  "density": 2700.0,
+  "shear_strength": 5.0,
+  "color": [0.62, 0.65, 0.68],
+  "solid": true,
+  "transparent": false
+}

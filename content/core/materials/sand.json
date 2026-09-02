@@ -1,0 +1,9 @@
+{
+  "id": "core:sand",
+  "name": "Sand",
+  "density": 1800.0,
+  "shear_strength": 0.8,
+  "color": [0.85, 0.78, 0.60],
+  "solid": true,
+  "transparent": false
+}
