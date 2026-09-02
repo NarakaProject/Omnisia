@@ -13,17 +13,17 @@ use omnisia::modding::discovery::ModDiscovery;
 use omnisia::modding::resource_id::ResourceId;
 use omnisia::modding::runtime::ContentRuntime;
 use omnisia::storage::{decompress_and_deserialize_chunk, serialize_and_compress_chunk};
-use omnisia::streaming::generator::{ChunkGenerator, DemoChunkGenerator};
-use omnisia::streaming::jobs::{JobPriority, JobType};
-use omnisia::streaming::memory::MemoryBudget;
-use omnisia::streaming::scheduler::ChunkScheduler;
-use omnisia::streaming::store::ChunkStore;
+use omnisia::streaming::generator::ChunkGenerator;
 use omnisia::voxel::VoxelBlock;
+use omnisia::worldgen::config::WorldGenConfig;
+use omnisia::worldgen::noise::sample_fbm_2d;
+use omnisia::worldgen::pipeline::ProceduralWorldGenerator;
+use omnisia::worldgen::seed::WorldSeed;
 
 fn main() {
     println!("============================================================");
     println!("     OMNISIA ENGINE ARCHITECTURE BENCHMARK SUITE           ");
-    println!("     Phase 3: Hierarchical World Streaming & Residency     ");
+    println!("     Phase 4: Procedural World Generation Foundation       ");
     println!("     Target Baseline: MacBook Pro 2018 (Intel x86_64)      ");
     println!("============================================================");
 
@@ -67,23 +67,9 @@ fn main() {
         );
     }
 
-    // Siapkan 1 Chunk Terrain Sintetis (Bukit dengan rumput, tanah, batu)
-    let mut terrain_chunk = Chunk::new(IVec3::ZERO);
-    for z in 0..32 {
-        for x in 0..32 {
-            let height = 12 + (((x as f32 * 0.2).sin() + (z as f32 * 0.2).cos()) * 4.0) as usize;
-            for y in 0..=height.min(31) {
-                let mat = if y < height.saturating_sub(4) {
-                    MaterialId::STONE
-                } else if y < height {
-                    MaterialId::DIRT
-                } else {
-                    MaterialId::GRASS
-                };
-                terrain_chunk.set_voxel(x, y, z, VoxelBlock::new(mat));
-            }
-        }
-    }
+    // Siapkan 1 Chunk Terrain Prosedural Nyata
+    let worldgen = ProceduralWorldGenerator::new(WorldGenConfig::new(WorldSeed::from_u64(1337)));
+    let terrain_chunk = worldgen.generate_chunk(IVec3::new(0, 0, 0), &registry);
 
     // 3. Benchmark Culled Face Meshing 32³
     let mut culled_mesh = MeshData::new();
@@ -150,18 +136,7 @@ fn main() {
     // 6. Benchmark 100 Chunks Meshing (Rayon Parallel)
     {
         let chunks: Vec<Chunk> = (0..100)
-            .map(|i| {
-                let mut c = Chunk::new(IVec3::new(i % 10, 0, i / 10));
-                for z in 0..32 {
-                    for x in 0..32 {
-                        let h = 8 + ((x + z + i as usize) % 10);
-                        for y in 0..h {
-                            c.set_voxel(x, y, z, VoxelBlock::new(MaterialId::STONE));
-                        }
-                    }
-                }
-                c
-            })
+            .map(|i| worldgen.generate_chunk(IVec3::new(i % 10, 0, i / 10), &registry))
             .collect();
 
         let start = Instant::now();
@@ -178,7 +153,7 @@ fn main() {
         let elapsed = start.elapsed();
         let total_verts: usize = results.iter().map(|m| m.vertex_count()).sum();
         println!(
-            "[BENCHMARK 6] 100 Chunk Parallel Meshing (Rayon): {:?} ({:.2} ms/100 chunks, Total Vertices: {})",
+            "[BENCHMARK 6] 100 Procedural Chunk Parallel Meshing (Rayon): {:?} ({:.2} ms/100 chunks, Total Vertices: {})",
             elapsed,
             elapsed.as_secs_f64() * 1000.0,
             total_verts
@@ -216,7 +191,7 @@ fn main() {
         let elapsed = start.elapsed();
         let total_quads: usize = results.iter().map(|m| m.quad_count()).sum();
         println!(
-            "[BENCHMARK 7] 1,000 Chunk Synthetic Meshing (Rayon): {:?} ({:.2} ms/1,000 chunks, Total Quads: {})",
+            "[BENCHMARK 7] 1,000 Chunk Synthetic Meshing (Rayon): {:?} ({:.2} ms/1000 chunks, Total Quads: {})",
             elapsed,
             elapsed.as_secs_f64() * 1000.0,
             total_quads
@@ -331,53 +306,77 @@ fn main() {
         );
     }
 
-    // 14. Benchmark Chunk Scheduler Priority Queue Throughput (10k requests)
+    // 14. Benchmark Noise 2D fBm Sampling Throughput (1,000,000 samples)
     {
-        let mut scheduler = ChunkScheduler::new(4);
         let start = Instant::now();
-        let count = 10_000;
-        for i in 0..count {
-            let coord = IVec3::new(i % 100, 0, i / 100);
-            scheduler.request_job(
-                coord,
-                JobType::LoadChunk,
-                JobPriority::Normal,
-                0,
-                (i as f32) * 2.0,
-            );
+        let iterations = 1_000_000;
+        let mut sum = 0.0f32;
+        for i in 0..iterations {
+            let x = (i % 1000) as f32;
+            let z = (i / 1000) as f32;
+            sum += sample_fbm_2d(x, z, 1337, 4, 0.5, 2.0, 0.005);
         }
         let elapsed = start.elapsed();
-        let ns_per_request = elapsed.as_nanos() as f64 / count as f64;
+        let ns_per_noise = elapsed.as_nanos() as f64 / iterations as f64;
         println!(
-            "[BENCHMARK 14] Scheduler Queue Insertion (10,000 requests): {:.2} ns/req (Total: {:?})",
-            ns_per_request, elapsed
+            "[BENCHMARK 14] Noise 2D fBm Sampling (1M samples): {:.2} ns/sample (Total: {:?}, sum: {:.1})",
+            ns_per_noise, elapsed, sum
         );
     }
 
-    // 15. Benchmark Streaming Simulation (1,000 Chunks with Camera Movement & Memory Budget)
+    // 15. Benchmark Terrain Profile Evaluation (100,000 continuous points)
     {
-        let mut store = ChunkStore::new();
-        let budget = MemoryBudget::with_chunk_limit(500);
-        let generator = DemoChunkGenerator::new(42);
-
+        let profiler = worldgen.profiler();
         let start = Instant::now();
-        for i in 0..1000 {
-            let coord = IVec3::new(i % 50, 0, i / 50);
-            let chunk = generator.generate_chunk(coord, &registry);
-            store.insert(chunk);
-
-            let mem = store.memory_usage(0);
-            if budget.is_over_budget(&mem) {
-                // Evict 1 clean chunk
-                let old_coord = IVec3::new((i - 500) % 50, 0, (i - 500) / 50);
-                store.remove(&old_coord);
-            }
+        let iterations = 100_000;
+        let mut sum_height = 0.0f32;
+        for i in 0..iterations {
+            let x = (i % 300) as f32 * 2.0;
+            let z = (i / 300) as f32 * 2.0;
+            let pt = profiler.evaluate(x, z);
+            sum_height += pt.surface_height_y;
         }
         let elapsed = start.elapsed();
+        let ns_per_point = elapsed.as_nanos() as f64 / iterations as f64;
         println!(
-            "[BENCHMARK 15] Streaming Simulation (1,000 chunks inserted & memory managed): {:?} (Final Resident: {})",
+            "[BENCHMARK 15] Terrain Profile Evaluation (100k points): {:.2} ns/point (Total: {:?}, avg height: {:.1})",
+            ns_per_point, elapsed, sum_height / iterations as f32
+        );
+    }
+
+    // 16. Benchmark Single Procedural Chunk Generation (32³ voxelization)
+    {
+        let start = Instant::now();
+        let iterations = 500;
+        for i in 0..iterations {
+            let coord = IVec3::new(i % 10, 0, i / 10);
+            let _ = worldgen.generate_chunk(coord, &registry);
+        }
+        let elapsed = start.elapsed();
+        let ms_per_chunk = elapsed.as_secs_f64() * 1000.0 / iterations as f64;
+        println!(
+            "[BENCHMARK 16] Procedural Chunk Generation & Voxelization: {:.3} ms/chunk ({:.1} chunks/sec)",
+            ms_per_chunk,
+            1000.0 / ms_per_chunk
+        );
+    }
+
+    // 17. Benchmark 100 Procedural Chunks Parallel Generation (Rayon)
+    {
+        use rayon::prelude::*;
+        let start = Instant::now();
+        let coords: Vec<IVec3> = (0..100).map(|i| IVec3::new(i % 10, 0, i / 10)).collect();
+        let chunks: Vec<Chunk> = coords
+            .par_iter()
+            .map(|&c| worldgen.generate_chunk(c, &registry))
+            .collect();
+        let elapsed = start.elapsed();
+        let total_voxels: usize = chunks.iter().map(|c| c.non_air_count as usize).sum();
+        println!(
+            "[BENCHMARK 17] 100 Procedural Chunks Parallel Generation (Rayon): {:?} ({:.2} ms total, Total Solid Voxels: {})",
             elapsed,
-            store.resident_count()
+            elapsed.as_secs_f64() * 1000.0,
+            total_voxels
         );
     }
 

@@ -1,0 +1,9 @@
+{
+  "id": "core:water",
+  "name": "Water",
+  "density": 1000.0,
+  "shear_strength": 0.0,
+  "color": [0.25, 0.55, 0.85],
+  "solid": false,
+  "transparent": true
+}

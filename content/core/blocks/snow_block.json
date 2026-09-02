@@ -1,0 +1,12 @@
+{
+  "id": "core:snow_block",
+  "material": "core:snow",
+  "hardness": 0.5,
+  "components": {},
+  "tags": [
+    "natural",
+    "solid",
+    "cold",
+    "snow"
+  ]
+}

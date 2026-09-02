@@ -1,6 +1,6 @@
 use crossbeam_channel::{Receiver, Sender};
 use glam::{IVec3, Vec3};
-use std::collections::{BinaryHeap, HashSet};
+use std::collections::{BinaryHeap, HashMap};
 use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
@@ -19,9 +19,9 @@ use crate::streaming::store::ChunkStore;
 pub struct ChunkScheduler {
     job_counter: AtomicU64,
     queue: BinaryHeap<ChunkJobRequest>,
-    queued_keys: HashSet<(IVec3, JobType)>,
+    queued_jobs: HashMap<(IVec3, JobType), (JobPriority, f32)>,
 
-    // Channels komunikasi thread
+    // Channels komunikasi thread berbatas (bounded) untuk mencegah unbounded queue growth
     request_tx: Sender<WorkerTask>,
     result_rx: Receiver<ChunkJobResult>,
     result_tx: Sender<ChunkJobResult>,
@@ -51,8 +51,9 @@ impl Drop for ChunkScheduler {
 
 impl ChunkScheduler {
     pub fn new(num_workers: usize) -> Self {
-        let (request_tx, request_rx) = crossbeam_channel::unbounded::<WorkerTask>();
-        let (result_tx, result_rx) = crossbeam_channel::unbounded::<ChunkJobResult>();
+        // Bounded channels berkapasitas 1,024 untuk memberikan backpressure terukur
+        let (request_tx, request_rx) = crossbeam_channel::bounded::<WorkerTask>(1024);
+        let (result_tx, result_rx) = crossbeam_channel::bounded::<ChunkJobResult>(1024);
 
         let mut workers = Vec::with_capacity(num_workers);
         for worker_id in 0..num_workers {
@@ -74,7 +75,7 @@ impl ChunkScheduler {
         Self {
             job_counter: AtomicU64::new(1),
             queue: BinaryHeap::new(),
-            queued_keys: HashSet::new(),
+            queued_jobs: HashMap::new(),
             request_tx,
             result_rx,
             result_tx,
@@ -83,18 +84,40 @@ impl ChunkScheduler {
         }
     }
 
-    /// Meminta penjadwalan job untuk chunk tertentu dengan koalesi request duplikat
+    /// Meminta penjadwalan job untuk chunk tertentu dengan koalesi request duplikat dan Priority Escalation
     pub fn request_job(
         &mut self,
         coord: IVec3,
         job_type: JobType,
         priority: JobPriority,
+        lifecycle_generation: u64,
         request_revision: u64,
         distance_sq: f32,
     ) {
         let key = (coord, job_type);
-        if self.queued_keys.contains(&key) {
-            // Request sudah ada di antrean, koalesi secara otomatis
+        if let Some(&(existing_priority, existing_dist)) = self.queued_jobs.get(&key) {
+            // Priority Escalation: jika request baru memiliki prioritas lebih tinggi (nilai enum lebih kecil)
+            // atau jarak lebih dekat, kita eskalasi job dalam antrean!
+            if priority < existing_priority || distance_sq < existing_dist {
+                let effective_priority = priority.min(existing_priority);
+                let effective_distance = distance_sq.min(existing_dist);
+                self.queued_jobs
+                    .insert(key, (effective_priority, effective_distance));
+
+                let job_id = self
+                    .job_counter
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let req = ChunkJobRequest::new(
+                    job_id,
+                    coord,
+                    job_type,
+                    effective_priority,
+                    lifecycle_generation,
+                    request_revision,
+                    effective_distance,
+                );
+                self.queue.push(req);
+            }
             return;
         }
 
@@ -106,11 +129,12 @@ impl ChunkScheduler {
             coord,
             job_type,
             priority,
+            lifecycle_generation,
             request_revision,
             distance_sq,
         );
 
-        self.queued_keys.insert(key);
+        self.queued_jobs.insert(key, (priority, distance_sq));
         self.queue.push(req);
     }
 
@@ -129,7 +153,7 @@ impl ChunkScheduler {
         }
     }
 
-    /// Mengecek apakah tetangga 6 sisi chunk sudah resident (data readiness sebelum meshing)
+    /// Mengecek apakah tetangga 6 sisi chunk sudah siap untuk meshing secara asynchronous dan non-blocking
     pub fn is_neighborhood_ready(&self, coord: IVec3, store: &ChunkStore) -> bool {
         for offset in [
             IVec3::new(1, 0, 0),
@@ -140,10 +164,13 @@ impl ChunkScheduler {
             IVec3::new(0, 0, -1),
         ] {
             let neighbor_pos = coord + offset;
-            // Jika tetangga berada dalam batas vertikal normal dan belum resident, belum siap
-            if !store.contains(&neighbor_pos) && !store.is_in_flight(&neighbor_pos) {
-                // Tetangga belum ada dan tidak sedang dimuat
-                return true; // Tetap izinkan single meshing
+            // Jika tetangga horizontal berada dalam batas normal dan sedang in-flight loading/generating,
+            // tandai bahwa neighborhood belum ready agar meshing ditunda tanpa memblokir thread
+            if (store.in_flight_loading.contains(&neighbor_pos)
+                || store.in_flight_generating.contains(&neighbor_pos))
+                && !store.contains(&neighbor_pos)
+            {
+                return false;
             }
         }
         true
@@ -166,7 +193,7 @@ impl ChunkScheduler {
                 None => break,
             };
 
-            self.queued_keys.remove(&(req.coord, req.job_type));
+            self.queued_jobs.remove(&(req.coord, req.job_type));
 
             // Jika job telah dibatalkan secara kooperatif, lewati
             if req.is_cancelled() {
@@ -174,6 +201,7 @@ impl ChunkScheduler {
             }
 
             let coord = req.coord;
+            let lifecycle = req.lifecycle_generation;
             let req_rev = req.request_revision;
             let res_tx = self.result_tx.clone();
             let reg_clone = registry.clone();
@@ -191,6 +219,7 @@ impl ChunkScheduler {
                         Ok(Some(chunk)) => {
                             let _ = res_tx.send(ChunkJobResult::Loaded {
                                 chunk,
+                                lifecycle_generation: lifecycle,
                                 request_revision: req_rev,
                             });
                         }
@@ -199,12 +228,14 @@ impl ChunkScheduler {
                             let chunk = gen_ref.generate_chunk(coord, &reg_clone);
                             let _ = res_tx.send(ChunkJobResult::Generated {
                                 chunk,
+                                lifecycle_generation: lifecycle,
                                 request_revision: req_rev,
                             });
                         }
                         Err(e) => {
                             let _ = res_tx.send(ChunkJobResult::Failed {
                                 coord,
+                                lifecycle_generation: lifecycle,
                                 job_type: JobType::LoadChunk,
                                 error: e.to_string(),
                             });
@@ -224,6 +255,7 @@ impl ChunkScheduler {
                         let chunk = gen_ref.generate_chunk(coord, &reg_clone);
                         let _ = res_tx.send(ChunkJobResult::Generated {
                             chunk,
+                            lifecycle_generation: lifecycle,
                             request_revision: req_rev,
                         });
                     };
@@ -235,18 +267,20 @@ impl ChunkScheduler {
                     if let Some(chunk) = store.get(&coord) {
                         let chunk_clone = chunk.clone();
                         let rev = chunk.revision;
-                        store.in_flight_saving.insert(coord, rev);
+                        store.in_flight_saving.insert(coord, (lifecycle, rev));
 
                         let task = move || match store_ref.save_chunk(&chunk_clone, &reg_clone) {
                             Ok(()) => {
                                 let _ = res_tx.send(ChunkJobResult::Saved {
                                     coord,
+                                    lifecycle_generation: lifecycle,
                                     saved_revision: rev,
                                 });
                             }
                             Err(e) => {
                                 let _ = res_tx.send(ChunkJobResult::Failed {
                                     coord,
+                                    lifecycle_generation: lifecycle,
                                     job_type: JobType::SaveChunk,
                                     error: e.to_string(),
                                 });
@@ -261,13 +295,14 @@ impl ChunkScheduler {
                     if let Some(chunk) = store.get(&coord) {
                         let chunk_clone = chunk.clone();
                         let rev = chunk.revision;
-                        store.in_flight_meshing.insert(coord, rev);
+                        store.in_flight_meshing.insert(coord, (lifecycle, rev));
 
                         let task = move || {
                             let mut mesh = MeshData::new();
                             generate_culled_mesh(&chunk_clone, &reg_clone, &mut mesh);
                             let _ = res_tx.send(ChunkJobResult::Meshed {
                                 coord,
+                                lifecycle_generation: lifecycle,
                                 mesh,
                                 mesh_revision: rev,
                             });
@@ -284,7 +319,7 @@ impl ChunkScheduler {
         }
     }
 
-    /// Update frame main thread: menguras hasil worker, memvalidasi stale jobs, dan memperbarui ChunkStore
+    /// Update frame main thread: menguras hasil worker, memvalidasi stale jobs berbasis lifecycle & revision, dan memperbarui ChunkStore
     pub fn update(&mut self, store: &mut ChunkStore, _registry: &MaterialRegistry) {
         self.ready_meshes.clear();
 
@@ -292,10 +327,16 @@ impl ChunkScheduler {
             match result {
                 ChunkJobResult::Loaded {
                     chunk,
+                    lifecycle_generation,
                     request_revision: _,
                 } => {
                     let pos = chunk.position;
                     store.in_flight_loading.remove(&pos);
+
+                    // Lifecycle Validation: tolak hasil jika residency cycle sudah berubah
+                    if store.current_lifecycle(&pos) != lifecycle_generation {
+                        continue;
+                    }
 
                     // Proteksi stale overwrite: jika chunk sudah ada dan memiliki revisi lebih tinggi, jangan timpa!
                     if let Some(existing) = store.get(&pos) {
@@ -306,27 +347,54 @@ impl ChunkScheduler {
 
                     // Daftarkan chunk dan jadwalkan meshing
                     store.insert(chunk);
-                    self.request_job(pos, JobType::MeshChunk, JobPriority::High, 0, 0.0);
+                    self.request_job(
+                        pos,
+                        JobType::MeshChunk,
+                        JobPriority::High,
+                        lifecycle_generation,
+                        0,
+                        0.0,
+                    );
                 }
                 ChunkJobResult::Generated {
                     chunk,
+                    lifecycle_generation,
                     request_revision: _,
                 } => {
                     let pos = chunk.position;
                     store.in_flight_generating.remove(&pos);
+
+                    // Lifecycle Validation: tolak hasil jika residency cycle sudah berubah
+                    if store.current_lifecycle(&pos) != lifecycle_generation {
+                        continue;
+                    }
 
                     if store.contains(&pos) {
                         continue;
                     }
 
                     store.insert(chunk);
-                    self.request_job(pos, JobType::MeshChunk, JobPriority::High, 0, 0.0);
+                    self.request_job(
+                        pos,
+                        JobType::MeshChunk,
+                        JobPriority::High,
+                        lifecycle_generation,
+                        0,
+                        0.0,
+                    );
                 }
                 ChunkJobResult::Saved {
                     coord,
+                    lifecycle_generation,
                     saved_revision,
                 } => {
                     store.in_flight_saving.remove(&coord);
+
+                    // Lifecycle Validation: tolak hasil save jika chunk telah dievict dan di-resurrect
+                    if store.current_lifecycle(&coord) != lifecycle_generation {
+                        continue;
+                    }
+
                     if let Some(chunk) = store.get_mut(&coord) {
                         // Bersihkan SAVE_DIRTY hanya jika revisi chunk masih sama dengan saat save dimulai
                         chunk.clear_dirty_if_revision_matched(
@@ -337,10 +405,17 @@ impl ChunkScheduler {
                 }
                 ChunkJobResult::Meshed {
                     coord,
+                    lifecycle_generation,
                     mesh,
                     mesh_revision,
                 } => {
                     store.in_flight_meshing.remove(&coord);
+
+                    // Lifecycle Validation: tolak mesh jika residency cycle sudah berubah
+                    if store.current_lifecycle(&coord) != lifecycle_generation {
+                        continue;
+                    }
+
                     if let Some(chunk) = store.get_mut(&coord) {
                         // Stale Mesh Protection: Hanya terima jika revisi chunk sama dengan saat meshing dimulai
                         if chunk.revision == mesh_revision {
@@ -351,6 +426,7 @@ impl ChunkScheduler {
                 }
                 ChunkJobResult::Failed {
                     coord,
+                    lifecycle_generation: _,
                     job_type,
                     error,
                 } => {

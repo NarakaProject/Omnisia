@@ -1,0 +1,9 @@
+{
+  "id": "core:snow",
+  "name": "Snow",
+  "density": 300.0,
+  "shear_strength": 2.0,
+  "color": [0.94, 0.96, 0.98],
+  "solid": true,
+  "transparent": false
+}

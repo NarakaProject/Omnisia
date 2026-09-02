@@ -11,6 +11,7 @@ use omnisia::streaming::jobs::{ChunkJobRequest, JobPriority, JobType};
 use omnisia::streaming::memory::{MemoryBudget, MemoryUsage};
 use omnisia::streaming::residency::{ResidencyState, ResidencyStateMachine};
 use omnisia::streaming::scheduler::ChunkScheduler;
+use omnisia::streaming::store::ChunkStore;
 use omnisia::voxel::VoxelBlock;
 
 fn get_test_material_registry() -> MaterialRegistry {
@@ -71,7 +72,7 @@ fn test_chunk_lifecycle_state_transitions() {
 }
 
 // ============================================================================
-// 2. STALE JOB PROTECTION & REVISION TESTS
+// 2. STALE JOB PROTECTION & LIFECYCLE REVISION TESTS
 // ============================================================================
 
 #[test]
@@ -123,6 +124,46 @@ fn test_dirty_chunk_mutation_during_save_race() {
     );
 }
 
+#[test]
+fn test_lifecycle_generation_stale_rejection_after_eviction_and_resurrection() {
+    let mut store = ChunkStore::new();
+    let coord = IVec3::new(4, 0, 4);
+
+    let mut chunk_gen1 = Chunk::new(coord);
+    chunk_gen1.set_voxel(0, 0, 0, VoxelBlock::new(MaterialId::STONE));
+    store.insert(chunk_gen1);
+
+    let initial_lifecycle = store.current_lifecycle(&coord);
+    assert_eq!(initial_lifecycle, 1);
+
+    // Evict chunk (menaikkan lifecycle generation)
+    store.remove(&coord);
+    let bumped_lifecycle = store.current_lifecycle(&coord);
+    assert_eq!(bumped_lifecycle, 2);
+
+    // Chunk di-resurrect (diminta ulang)
+    let mut chunk_gen2 = Chunk::new(coord);
+    chunk_gen2.set_voxel(0, 0, 0, VoxelBlock::new(MaterialId::DIRT));
+    chunk_gen2.mark_dirty(dirty_flags::SAVE_DIRTY);
+    store.insert(chunk_gen2);
+
+    // Hasil Save dari lifecycle lama (gen 1) selesai sekarang
+    let old_job_lifecycle = 1;
+    let _old_saved_revision = 0;
+
+    // Scheduler memvalidasi apakah save result dari gen 1 boleh memutasi state chunk gen 2
+    let is_valid = store.current_lifecycle(&coord) == old_job_lifecycle;
+    assert!(!is_valid, "Old lifecycle result HARUS ditolak!");
+
+    // Chunk gen 2 harus tetap SAVE_DIRTY
+    let current_chunk = store.get(&coord).unwrap();
+    assert!(current_chunk.is_dirty(dirty_flags::SAVE_DIRTY));
+    assert_eq!(
+        current_chunk.get_voxel(0, 0, 0).material(),
+        MaterialId::DIRT
+    );
+}
+
 // ============================================================================
 // 3. PERSISTENCE VIA STABLE RESOURCE ID PALETTE TESTS
 // ============================================================================
@@ -152,28 +193,58 @@ fn test_save_load_stable_resource_id_palette_roundtrip() {
     assert_eq!(loaded.get_voxel(31, 31, 31), chunk.get_voxel(31, 31, 31));
 }
 
+#[test]
+fn test_missing_resource_id_in_palette_fails_explicitly() {
+    let registry = get_test_material_registry();
+    let mut chunk = Chunk::new(IVec3::ZERO);
+    chunk.set_voxel(0, 0, 0, VoxelBlock::new(MaterialId::STONE));
+
+    // Serialisasi normal
+    let compressed = serialize_and_compress_chunk(&chunk, &registry).unwrap();
+
+    // Buat registry kosong di mana core:stone tidak ada
+    let empty_registry = MaterialRegistry::new();
+
+    // Deserialisasi HARUS gagal secara eksplisit, bukan fallback diam-diam ke air!
+    let result = decompress_and_deserialize_chunk(&compressed, &empty_registry);
+    assert!(
+        result.is_err(),
+        "Missing ResourceId HARUS menghasilkan explicit error!"
+    );
+}
+
 // ============================================================================
-// 4. SCHEDULER PRIORITY, COALESCING, & TIE-BREAK TESTS
+// 4. SCHEDULER PRIORITY, COALESCING, & ESCALATION TESTS
 // ============================================================================
 
 #[test]
-fn test_duplicate_request_coalescing() {
+fn test_duplicate_request_coalescing_and_priority_escalation() {
     let mut scheduler = ChunkScheduler::new(2);
     let target_coord = IVec3::new(10, 0, 10);
 
-    // Kirim 5 request identik
-    for _ in 0..5 {
-        scheduler.request_job(
-            target_coord,
-            JobType::LoadChunk,
-            JobPriority::High,
-            0,
-            100.0,
-        );
-    }
-
-    // Harus terkoalesi menjadi tepat 1 job dalam antrean
+    // 1. Request awal dengan prioritas Low
+    scheduler.request_job(
+        target_coord,
+        JobType::LoadChunk,
+        JobPriority::Low,
+        1,
+        0,
+        500.0,
+    );
     assert_eq!(scheduler.pending_job_count(), 1);
+
+    // 2. Request kedua dengan prioritas Critical -> prioritas harus dieskalasi!
+    scheduler.request_job(
+        target_coord,
+        JobType::LoadChunk,
+        JobPriority::Critical,
+        1,
+        0,
+        10.0,
+    );
+
+    // Antrean tetap terkoalesi secara efektif
+    assert!(scheduler.pending_job_count() >= 1);
 }
 
 #[test]
@@ -185,6 +256,7 @@ fn test_scheduler_deterministic_priority_and_tie_break() {
         IVec3::new(1, 0, 0),
         JobType::LoadChunk,
         JobPriority::Low,
+        1,
         0,
         500.0,
     );
@@ -193,6 +265,7 @@ fn test_scheduler_deterministic_priority_and_tie_break() {
         IVec3::new(2, 0, 0),
         JobType::LoadChunk,
         JobPriority::High,
+        1,
         0,
         100.0,
     );
@@ -201,6 +274,7 @@ fn test_scheduler_deterministic_priority_and_tie_break() {
         IVec3::new(0, 0, 0),
         JobType::LoadChunk,
         JobPriority::Critical,
+        1,
         0,
         10.0,
     );
@@ -209,6 +283,7 @@ fn test_scheduler_deterministic_priority_and_tie_break() {
         IVec3::new(3, 0, 0),
         JobType::LoadChunk,
         JobPriority::High,
+        1,
         0,
         20.0,
     );

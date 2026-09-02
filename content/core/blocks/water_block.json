@@ -1,0 +1,11 @@
+{
+  "id": "core:water_block",
+  "material": "core:water",
+  "hardness": 0.0,
+  "components": {},
+  "tags": [
+    "natural",
+    "fluid",
+    "water"
+  ]
+}

@@ -1,0 +1,11 @@
+{
+  "id": "core:sand_block",
+  "material": "core:sand",
+  "hardness": 0.6,
+  "components": {},
+  "tags": [
+    "natural",
+    "solid",
+    "sand"
+  ]
+}

@@ -7,62 +7,63 @@
 
 **Omnisia** adalah voxel sandbox engine berkinerja tinggi yang dibangun dari nol menggunakan **Rust murni** dan abstraksi grafis **`wgpu`** (Metal backend untuk macOS). 
 
-Dirancang dengan prinsip **Engine-First, Data-Driven, Deterministic, & Scalable Hierarchical Streaming**, memisahkan secara tegas antara **Authoritative Near World (Full-Resolution Voxels)** dan **Derived Far World (Hierarchical LOD / Distant Horizons Boundary)**.
+Dirancang dengan prinsip **Engine-First, Data-Driven, Deterministic, Continuous Procedural Generation, & Scalable Hierarchical Streaming**, memisahkan secara tegas antara **Authoritative Near World (Full-Resolution Voxels)** dan **Derived Far World (Hierarchical LOD / Distant Horizons Boundary)**.
 
 ---
 
-## 🏛️ Filosofi & Streaming Architecture (Phase 3)
+## 🏛️ Arsitektur Pembangkitan Dunia Prosedural (Phase 4)
 
-Engine ini menerapkan arsitektur streaming hirarkis:
+Engine ini menerapkan arsitektur generasi dunia prosedural berbasis medan multi-skala:
 
 ```text
-                         WORLD
-                           │
-                           ▼
-                    Chunk Scheduler
-                           │
-             ┌─────────────┼─────────────┐
-             │             │             │
-             ▼             ▼             ▼
-          Load/IO      Generation      Save
-             │             │             │
-             └─────────────┼─────────────┘
-                           ▼
-                      Chunk Store
-                           │
-                     Resident Chunks
-                           │
-             ┌─────────────┴─────────────┐
-             ▼                           ▼
-        Meshing Jobs                Future Systems
-             │
-             ▼
-        GPU Chunk Mesh
-
-
-              Authoritative World
-                     │
-                     ▼
-              Full Resolution
-                32³ Chunks
-                     │
-                     ▼
-              Future LOD Builder
-                     │
-                     ▼
-           Distant Representation
+                        WORLD SEED
+                            │
+                            ▼
+                       Seed Context
+                            │
+        ┌───────────────────┼───────────────────┐
+        ▼                   ▼                   ▼
+ Continentalness       Temperature           Moisture
+        │                   │                   │
+        └───────────────────┼───────────────────┘
+                            ▼
+                       Biome Field
+                            │
+                 ┌──────────┴──────────┐
+                 ▼                     ▼
+              Erosion                Peaks
+                 │                     │
+                 └──────────┬──────────┘
+                            ▼
+                       Height Field
+                            │
+                            ▼
+                     Hydrology Layer
+                     (Rivers & Lakes)
+                            │
+                            ▼
+                     Terrain Profile
+                            │
+                 ┌──────────┴──────────┐
+                 ▼                     ▼
+              Surface              Subsurface
+             Materials             Materials
+                 │                     │
+                 └──────────┬──────────┘
+                            ▼
+                     Chunk Voxelizer
+                            │
+                            ▼
+                 32³ Authoritative Chunk
 ```
 
-> **"Near world = full-resolution voxel truth."**
-> **"Far world = hierarchical derived representation."**
-
-* **Chunk ≠ LOD Invariant:** `Chunk` tetap berukuran murni $32 \times 32 \times 32$ micro-voxel ($16 \times 16 \times 16$ meter, 128 KiB memory contiguous). Data LOD jauh tidak pernah mencemari struct `Chunk`.
-* **Zero Main-Thread Blocking:** Seluruh operasi I/O disk, kompresi/dekompresi Zstd, generasi prosedural, dan meshing CPU berjalan pada background worker pool (`crossbeam_channel`). Main thread hanya menangani input, camera uniform, integrasi scheduler, dan upload GPU.
-* **Deterministic Priority Scheduling:** Priority queue dengan penanganan berurutan: `Critical` $\to$ `High` $\to$ `Normal` $\to$ `Low` $\to$ `VeryLow`, dengan tie-breaking deterministik berdasarkan jarak, usia request, dan koordinat chunk.
-* **Request Coalescing & Cancellation:** Mencegah redundansi permintaan job untuk koordinat yang sama dan membatalkan job yang keluar dari radius pandang secara kooperatif saat kamera bergerak cepat.
-* **Stale Job Protection:** Pelacakan mutasi berbasis `revision` memastikan hasil async worker yang terlambat tidak dapat menimpa mutasi voxel terbaru (*no stale overwrites*).
-* **Safe Eviction with Dirty Protection:** Chunk dengan status `SAVE_DIRTY` wajib disimpan ke disk terlebih dahulu sebelum dievict dari memori. Jika proses simpan gagal, chunk tetap resident.
-* **Stable ResourceId Persistence via Palette Compression:** Persistensi ke disk menggunakan **Local Palette Table** berbasis stable `ResourceId` (`Vec<ResourceId>` + voxel palette indices) dikompresi Zstd level 3 (mencapai rasio kompresi hingga **120.9x**). Runtime `MaterialId` tidak pernah disimpan ke disk.
+### Invariant & Prinsip Utama:
+1. **Deterministic & Seed-Based:** Formula murni `(WorldSeed, GeneratorVersion, WorldGenConfig, WorldCoord) -> Exact Chunk`. Bebas dari ketergantungan urutan thread atau urutan loading chunk.
+2. **Seamless Across Chunk Boundaries:** Kontinuitas matematis penuh pada perbatasan antar-chunk tanpa diskontinuitas buatan (*zero seams*) pada sumbu X, Z, maupun koordinat negatif.
+3. **Hardened Stale Async Identity:** Menggunakan tuple identitas `ChunkCoord + LifecycleGeneration + Revision` untuk mencegah race condition dan stale job execution setelah eviksi/resurrection chunk.
+4. **Coherent Hydrology & Continuous Rivers:** Jaringan sungai 2D kontinu yang mengukir lembah secara mulus menuju batas permukaan air laut (*sea level*) melintasi batas chunk.
+5. **Persistence Precedence:** Chunk yang telah tersimpan di disk (`RegionStore`) atau dimutasi oleh pemain **selalu menang** atas generator prosedural.
+6. **Explicit Missing-Content Handling:** Menolak silent fallback ke `core:air` jika `ResourceId` tidak ditemukan di registry untuk mencegah *silent data loss*.
 
 ---
 
@@ -72,26 +73,26 @@ Dijalankan pada arsitektur Intel Core i7 x86_64 dengan backend Metal:
 
 | No | Pengujian Benchmark | Metrik Pengukuran | Keterangan & Analisis |
 |:---|:---|:---|:---|
-| 1 | **Chunk Indexing** | **0.23 ns / op** | $10^7$ iterasi dalam 2.34 ms ($O(1)$ inlined) |
-| 2 | **Chunk Fill (32k voxels)** | **3.37 µs / chunk** | 128 KiB memory throughput ultra-cepat |
-| 3 | **Culled Meshing 32³** | **0.319 ms / chunk** | 17,768 Vertices, 4,442 Quads per chunk |
-| 4 | **Greedy Meshing 32³** | **0.820 ms / chunk** | 2,564 Vertices, 641 Quads (**6.93x Quad Reduction**) |
-| 5 | **AO Calculation** | **19.84 ns / face** | 500,000 sampling sudut dalam 9.92 ms |
-| 6 | **100 Chunks Parallel Meshing** | **89.33 ms** | Mengolah 100 chunk serentak (2.88 juta vertex) via Rayon |
-| 7 | **1,000 Chunks Synthetic Meshing** | **1.02 s** | Mengolah 1,000 chunk (6.48 juta quad) via Rayon |
-| 8 | **Chunk Palette Zstd Compress** | **2.09 ms** | 131,072 bytes $\to$ 1,084 bytes (**120.9x rasio kompresi**) |
-| 9 | **Chunk Palette Zstd Decompress** | **885.49 µs** | Rekonstruksi chunk 32k voxel sempurna (< 1 ms) |
-| 10 | **Connectivity BFS Traversal** | **10.77 ms** | Penelusuran 14,759 voxel klaster struktural |
-| 11 | **Mod Discovery & Parsing** | **114.25 µs / run** | Discovery deterministik + validasi TOML manifest |
-| 12 | **Voxel Hot Path Lookup (MaterialId)** | **1.36 ns / op** | **0 Overhead** runtime index array vs 34.77 ns String Hash |
-| 13 | **Scheduler Queue Throughput** | **263.23 ns / req** | 10,000 request prioritization & insertion dalam 2.63 ms |
-| 14 | **Streaming Simulation (1,000 Chunks)**| **106.43 ms** | 1,000 chunk streaming + memory budget management |
+| 1 | **Chunk Indexing** | **0.37 ns / op** | $10^7$ iterasi dalam 3.69 ms ($O(1)$ inlined) |
+| 2 | **Chunk Fill (32k voxels)** | **3.92 µs / chunk** | 128 KiB memory throughput ultra-cepat |
+| 3 | **Culled Meshing 32³** | **0.469 ms / chunk** | 16,896 Vertices, 4,224 Quads per chunk |
+| 4 | **Greedy Meshing 32³** | **0.885 ms / chunk** | 288 Vertices, 72 Quads (**58.67x Quad Reduction**) |
+| 5 | **AO Calculation** | **21.66 ns / face** | 500,000 sampling sudut dalam 10.83 ms |
+| 6 | **100 Chunks Procedural Meshing** | **44.66 ms** | Mengolah 100 chunk prosedural serentak (1.72M vertex) via Rayon |
+| 7 | **Chunk Palette Zstd Compress** | **1.96 ms** | 131,072 bytes $\to$ 624 bytes (**210.1x rasio kompresi**) |
+| 8 | **Chunk Palette Zstd Decompress** | **850.93 µs** | Rekonstruksi chunk 32k voxel sempurna (< 1 ms) |
+| 9 | **Noise 2D fBm Sampling** | **123.90 ns / sample** | $10^6$ sampling kontinu deterministik bebas alokasi |
+| 10 | **Terrain Profile Evaluation** | **706.52 ns / point** | 100,000 titik evaluasi profil medan, iklim, dan sungai |
+| 11 | **Procedural Chunk Generation** | **0.889 ms / chunk** | **1,124.6 chunks/detik** (Single-core voxelization) |
+| 12 | **100 Chunks Parallel Generation** | **18.18 ms** | **5,500 chunks/detik** (Rayon parallel throughput) |
+| 13 | **Voxel Hot Path Lookup (MaterialId)** | **1.47 ns / op** | **0 Overhead** runtime index array vs string hash |
+| 14 | **Mod Discovery & Parsing** | **120.30 µs / run** | Discovery deterministik + validasi TOML manifest |
 
 ---
 
 ## 🚀 Menjalankan Engine & Tooling
 
-### 1. Menjalankan Demo World Streaming Interaktif
+### 1. Menjalankan Pembangkitan Dunia Prosedural Interaktif
 ```bash
 cargo run --release
 ```
@@ -107,7 +108,7 @@ cargo run --release
 cargo run --release -- --validate-mods
 ```
 
-### 3. Menjalankan Test Suite (30 Unit Tests)
+### 3. Menjalankan Test Suite (45 Unit Tests)
 ```bash
 cargo test
 ```
@@ -124,8 +125,8 @@ cargo run --release --bin benchmarks
 ```text
 content/
 └── core/                       # Authoritative Built-in Core Content
-    ├── materials/              # JSON definitions: stone, dirt, grass, metal_frame, dll.
-    ├── blocks/                 # JSON definitions: stone_block, ag_core_casing_block, dll.
+    ├── materials/              # stone, dirt, grass, sand, water, snow, metal_frame, dll.
+    ├── blocks/                 # stone_block, dirt_block, grass_block, water_block, snow_block, dll.
     ├── textures/
     ├── models/
     ├── sounds/
@@ -154,16 +155,27 @@ src/
 ├── storage.rs                  # RegionStore abstraction, palette serialization, Zstd
 ├── world.rs                    # World façade (drives streaming, eviction, & meshing)
 ├── bin/
-│   └── benchmarks.rs           # 15 Benchmark suite
+│   └── benchmarks.rs           # 17 Benchmark suite
+├── worldgen/                   # Procedural World Generation Subsystem (Phase 4)
+│   ├── mod.rs
+│   ├── seed.rs                 # WorldSeed (u64 & SplitMix64 string hash), GeneratorVersion, SeedContext
+│   ├── config.rs               # WorldGenConfig & WorldIdentity
+│   ├── noise.rs                # Deterministic Gradient noise, fBm, & Ridged noise
+│   ├── climate.rs              # Continentalness, Temperature, Moisture, Erosion, Peaks/Valleys
+│   ├── biome.rs                # BiomeType & BiomeClassifier
+│   ├── hydrology.rs            # 2D continuous river curve & lake basins
+│   ├── terrain.rs              # Continuous height profiling H(x, z)
+│   ├── voxelizer.rs            # ChunkVoxelizer (32³ voxelization & material assignment)
+│   └── pipeline.rs             # ProceduralWorldGenerator (implements ChunkGenerator)
 ├── streaming/                  # World Streaming Subsystem
 │   ├── mod.rs
 │   ├── residency.rs            # Lifecycle StateMachine (Residency, Persistence, Mesh)
 │   ├── memory.rs               # MemoryBudget & MemoryUsage accounting
 │   ├── eviction.rs             # Safe eviction policy (dirty protection)
 │   ├── jobs.rs                 # JobPriority, ChunkJobRequest, ChunkJobResult
-│   ├── generator.rs            # Deterministic ChunkGenerator & DemoChunkGenerator
-│   ├── store.rs                # ChunkStore (resident chunks & in-flight sets)
-│   └── scheduler.rs            # ChunkScheduler (priority queue, workers, coalescing, stale protect)
+│   ├── generator.rs            # ChunkGenerator trait
+│   ├── store.rs                # ChunkStore (resident chunks & lifecycle generation tracking)
+│   └── scheduler.rs            # ChunkScheduler (bounded channels, priority escalation, stale protect)
 ├── lod/                        # Distant Horizons / Voxy Architectural Boundary
 │   └── mod.rs                  # DistantRepresentation trait & HierarchicalLodStore (derived)
 ├── modding/

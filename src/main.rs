@@ -25,15 +25,15 @@ struct App {
 
 impl Default for App {
     fn default() -> Self {
-        // Posisi kamera awal menghadap bukit dan struktur melayang
+        // Posisi kamera awal di atas daratan pemandangan bentang alam prosedural
         let camera = Camera::new(
-            Vec3::new(16.0, 18.0, 38.0),
+            Vec3::new(0.0, 34.0, 60.0),
             -90.0, // Yaw menghadap sumbu -Z
-            -15.0, // Pitch melihat sedikit ke bawah
+            -18.0, // Pitch melihat ke panorama bentang alam
         );
 
         let mut world = World::new();
-        world.generate_demo_world();
+        world.generate_initial_area();
 
         Self {
             window: None,
@@ -55,7 +55,7 @@ impl ApplicationHandler for App {
 
         let window_attrs = WindowAttributes::default()
             .with_title(
-                "Omnisia - Micro-Voxel Engine [Phase 3: Hierarchical World Streaming Active]",
+                "Omnisia - Micro-Voxel Engine [Phase 4: Procedural World Generation Active]",
             )
             .with_inner_size(PhysicalSize::new(1280, 720));
 
@@ -133,7 +133,7 @@ impl ApplicationHandler for App {
                         let frame_ms = 1000.0 / fps.max(1.0);
                         let mem = self.world.store.memory_usage(0);
                         let title = format!(
-                            "Omnisia Streaming Engine | FPS: {:.1} ({:.2} ms) | Chunks: {} | Pending: {} | Mem: {:.1} MB",
+                            "Omnisia World Gen Engine | FPS: {:.1} ({:.2} ms) | Chunks: {} | Pending: {} | Mem: {:.1} MB",
                             fps,
                             frame_ms,
                             self.world.store.resident_count(),
@@ -185,7 +185,7 @@ fn main() {
         return;
     }
 
-    log::info!("Memulai Omnisia Micro-Voxel Engine [Phase 3: Hierarchical World Streaming]...");
+    log::info!("Memulai Omnisia Micro-Voxel Engine [Phase 4: Procedural World Generation]...");
 
     let event_loop = EventLoop::new().expect("Gagal membuat winit EventLoop");
     event_loop.set_control_flow(ControlFlow::Poll);

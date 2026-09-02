@@ -12,10 +12,7 @@ use crate::material::{MaterialId, MaterialRegistry};
 use crate::modding::resource_id::ResourceId;
 use crate::voxel::VoxelBlock;
 
-/// Format biner serialisasi chunk menggunakan Local Palette Table berbasis stable ResourceId.
-///
-/// INVARIANT: Runtime MaterialId TIDAK BOLEH menjadi persistent identity.
-/// Save file menyimpan ResourceId stabil sehingga kompatibel terhadap perubahan mod load order.
+/// Format data chunk terkompresi yang disimpan ke disk menggunakan Local Palette Table
 #[derive(Serialize, Deserialize)]
 pub struct ChunkSerializedPayload {
     pub position: [i32; 3],
@@ -25,7 +22,7 @@ pub struct ChunkSerializedPayload {
     pub palette_indices: Vec<u16>,
 }
 
-/// Serialisasi chunk ke byte stream terkompresi Zstandard menggunakan local ResourceId palette
+/// Serialisasi `Chunk` ke format byte stream terkompresi Zstandard menggunakan Local Palette Table berbasis `ResourceId`
 pub fn serialize_and_compress_chunk(
     chunk: &Chunk,
     registry: &MaterialRegistry,
@@ -48,7 +45,15 @@ pub fn serialize_and_compress_chunk(
             let res_id = registry
                 .resolve_resource_id(mat_id)
                 .cloned()
-                .unwrap_or_else(|| ResourceId::core("air").unwrap());
+                .ok_or_else(|| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!(
+                            "Gagal menyelesaikan ResourceId untuk MaterialId {:?}",
+                            mat_id
+                        ),
+                    )
+                })?;
             let new_idx = palette.len() as u16;
             palette.push(res_id);
             palette_map.insert(mat_id, new_idx);
@@ -77,7 +82,9 @@ pub fn serialize_and_compress_chunk(
     Ok(compressed_bytes)
 }
 
-/// Dekompresi Zstandard dan deserialisasi kembali ke `Chunk` dengan resolusi ResourceId $\to$ runtime MaterialId
+/// Dekompresi Zstandard dan deserialisasi kembali ke `Chunk` dengan resolusi ResourceId $\to$ runtime MaterialId.
+///
+/// INVARIANT: Menolak silent fallback ke Air jika ada ResourceId yang tidak terdaftar di MaterialRegistry.
 pub fn decompress_and_deserialize_chunk(
     compressed_data: &[u8],
     registry: &MaterialRegistry,
@@ -100,22 +107,31 @@ pub fn decompress_and_deserialize_chunk(
     }
 
     // Resolusi seluruh ResourceId di palette ke MaterialId runtime sesi ini
-    let resolved_palette: Vec<MaterialId> = payload
-        .palette
-        .iter()
-        .map(|res_id| {
-            registry
-                .resolve_material_id(res_id)
-                .unwrap_or(MaterialId::AIR) // Fallback aman jika mod telah di-uninstall
-        })
-        .collect();
+    let mut resolved_palette = Vec::with_capacity(payload.palette.len());
+    for res_id in &payload.palette {
+        let mat_id = registry.resolve_material_id(res_id).ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!(
+                    "Missing ResourceId dalam persistent chunk data: '{}'. Operasi ditolak untuk mencegah silent data loss.",
+                    res_id
+                ),
+            )
+        })?;
+        resolved_palette.push(mat_id);
+    }
 
     let mut voxels_raw = Vec::with_capacity(CHUNK_VOLUME);
     for &palette_idx in &payload.palette_indices {
         let mat_id = resolved_palette
             .get(palette_idx as usize)
             .copied()
-            .unwrap_or(MaterialId::AIR);
+            .ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("Palette index out of bounds: {}", palette_idx),
+                )
+            })?;
         voxels_raw.push(VoxelBlock::new(mat_id));
     }
 
@@ -135,25 +151,29 @@ pub fn decompress_and_deserialize_chunk(
         ),
         voxels: voxels_box,
         non_air_count: payload.non_air_count,
-        dirty_flags: crate::chunk::dirty_flags::ALL,
+        dirty_flags: 0,
         revision: payload.revision,
     })
 }
 
-/// Trait abstraksi RegionStore untuk mendukung swap backend persistensi secara thread-safe
+/// Trait abstraksi penyimpanan region/disk dunia yang asynchronous-ready dan thread-safe
 pub trait RegionStore: Send + Sync {
-    fn save_chunk(&self, chunk: &Chunk, registry: &MaterialRegistry) -> Result<(), std::io::Error>;
     fn load_chunk(
         &self,
-        position: IVec3,
+        coord: IVec3,
         registry: &MaterialRegistry,
     ) -> Result<Option<Chunk>, std::io::Error>;
-    fn has_chunk(&self, position: IVec3) -> bool;
+
+    fn save_chunk(&self, chunk: &Chunk, registry: &MaterialRegistry) -> Result<(), std::io::Error>;
+
+    fn has_chunk(&self, coord: IVec3) -> bool;
+
+    fn delete_chunk(&self, coord: IVec3) -> Result<(), std::io::Error>;
 }
 
-/// Implementasi in-memory RegionStore terkompresi Zstd thread-safe
+/// Penyimpanan Memory terkompresi Zstd (sangat cepat untuk unit testing dan sandbox transient)
 pub struct MemoryCompressedRegionStore {
-    storage: RwLock<HashMap<IVec3, Vec<u8>>>,
+    data: RwLock<HashMap<IVec3, Vec<u8>>>,
 }
 
 impl Default for MemoryCompressedRegionStore {
@@ -165,96 +185,108 @@ impl Default for MemoryCompressedRegionStore {
 impl MemoryCompressedRegionStore {
     pub fn new() -> Self {
         Self {
-            storage: RwLock::new(HashMap::new()),
+            data: RwLock::new(HashMap::new()),
         }
-    }
-
-    pub fn total_compressed_bytes(&self) -> usize {
-        let guard = self.storage.read().unwrap();
-        guard.values().map(|v| v.len()).sum()
     }
 }
 
 impl RegionStore for MemoryCompressedRegionStore {
-    fn save_chunk(&self, chunk: &Chunk, registry: &MaterialRegistry) -> Result<(), std::io::Error> {
-        let compressed = serialize_and_compress_chunk(chunk, registry)?;
-        let mut guard = self.storage.write().unwrap();
-        guard.insert(chunk.position, compressed);
-        Ok(())
-    }
-
     fn load_chunk(
         &self,
-        position: IVec3,
+        coord: IVec3,
         registry: &MaterialRegistry,
     ) -> Result<Option<Chunk>, std::io::Error> {
-        let guard = self.storage.read().unwrap();
-        if let Some(compressed) = guard.get(&position) {
-            let chunk = decompress_and_deserialize_chunk(compressed, registry)?;
+        let read_guard = self.data.read().unwrap();
+        if let Some(bytes) = read_guard.get(&coord) {
+            let chunk = decompress_and_deserialize_chunk(bytes, registry)?;
             Ok(Some(chunk))
         } else {
             Ok(None)
         }
     }
 
-    fn has_chunk(&self, position: IVec3) -> bool {
-        let guard = self.storage.read().unwrap();
-        guard.contains_key(&position)
+    fn save_chunk(&self, chunk: &Chunk, registry: &MaterialRegistry) -> Result<(), std::io::Error> {
+        let bytes = serialize_and_compress_chunk(chunk, registry)?;
+        let mut write_guard = self.data.write().unwrap();
+        write_guard.insert(chunk.position, bytes);
+        Ok(())
+    }
+
+    fn has_chunk(&self, coord: IVec3) -> bool {
+        self.data.read().unwrap().contains_key(&coord)
+    }
+
+    fn delete_chunk(&self, coord: IVec3) -> Result<(), std::io::Error> {
+        self.data.write().unwrap().remove(&coord);
+        Ok(())
     }
 }
 
-/// Implementasi FileRegionStore untuk persistensi filesystem berbasis direktori terkompresi
+/// Penyimpanan file berbasis direktori chunk terkompresi Zstd dengan atomic write
 pub struct FileRegionStore {
-    root_dir: PathBuf,
+    base_dir: PathBuf,
 }
 
 impl FileRegionStore {
-    pub fn new<P: AsRef<Path>>(root_dir: P) -> Result<Self, std::io::Error> {
-        let path = root_dir.as_ref().to_path_buf();
+    pub fn new<P: AsRef<Path>>(base_dir: P) -> Result<Self, std::io::Error> {
+        let path = base_dir.as_ref().to_path_buf();
         fs::create_dir_all(&path)?;
-        Ok(Self { root_dir: path })
+        Ok(Self { base_dir: path })
     }
 
-    fn chunk_path(&self, pos: IVec3) -> PathBuf {
-        self.root_dir
-            .join(format!("chunk_{}_{}_{}.omc", pos.x, pos.y, pos.z))
+    fn chunk_path(&self, coord: IVec3) -> PathBuf {
+        self.base_dir
+            .join(format!("c_{}_{}_{}.chk", coord.x, coord.y, coord.z))
     }
 }
 
 impl RegionStore for FileRegionStore {
-    fn save_chunk(&self, chunk: &Chunk, registry: &MaterialRegistry) -> Result<(), std::io::Error> {
-        let compressed = serialize_and_compress_chunk(chunk, registry)?;
-        let target_path = self.chunk_path(chunk.position);
-        let temp_path = target_path.with_extension("tmp");
-
-        // Penulisan atomik: tulis ke .tmp terlebih dahulu kemudian rename
-        let mut file = File::create(&temp_path)?;
-        file.write_all(&compressed)?;
-        file.sync_all()?;
-        fs::rename(&temp_path, &target_path)?;
-
-        Ok(())
-    }
-
     fn load_chunk(
         &self,
-        position: IVec3,
+        coord: IVec3,
         registry: &MaterialRegistry,
     ) -> Result<Option<Chunk>, std::io::Error> {
-        let target_path = self.chunk_path(position);
-        if !target_path.exists() {
+        let path = self.chunk_path(coord);
+        if !path.exists() {
             return Ok(None);
         }
 
-        let mut file = File::open(&target_path)?;
-        let mut compressed_data = Vec::new();
-        file.read_to_end(&mut compressed_data)?;
+        let mut file = File::open(path)?;
+        let mut buffer = Vec::new();
+        file.read_to_end(&mut buffer)?;
 
-        let chunk = decompress_and_deserialize_chunk(&compressed_data, registry)?;
+        let chunk = decompress_and_deserialize_chunk(&buffer, registry)?;
         Ok(Some(chunk))
     }
 
-    fn has_chunk(&self, position: IVec3) -> bool {
-        self.chunk_path(position).exists()
+    fn save_chunk(&self, chunk: &Chunk, registry: &MaterialRegistry) -> Result<(), std::io::Error> {
+        let path = self.chunk_path(chunk.position);
+        let temp_path = self.base_dir.join(format!(
+            "c_{}_{}_{}.tmp",
+            chunk.position.x, chunk.position.y, chunk.position.z
+        ));
+
+        let compressed = serialize_and_compress_chunk(chunk, registry)?;
+        {
+            let mut file = File::create(&temp_path)?;
+            file.write_all(&compressed)?;
+            file.sync_all()?;
+        }
+
+        // Atomic rename
+        fs::rename(temp_path, path)?;
+        Ok(())
+    }
+
+    fn has_chunk(&self, coord: IVec3) -> bool {
+        self.chunk_path(coord).exists()
+    }
+
+    fn delete_chunk(&self, coord: IVec3) -> Result<(), std::io::Error> {
+        let path = self.chunk_path(coord);
+        if path.exists() {
+            fs::remove_file(path)?;
+        }
+        Ok(())
     }
 }

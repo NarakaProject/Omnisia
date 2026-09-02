@@ -43,13 +43,14 @@ pub enum JobType {
     BuildLOD,
 }
 
-/// Permintaan job chunk yang dimasukkan ke priority scheduler
+/// Permintaan job chunk yang dimasukkan ke priority scheduler dengan tuple identity lengkap
 #[derive(Debug, Clone)]
 pub struct ChunkJobRequest {
     pub job_id: u64,
     pub coord: IVec3,
     pub job_type: JobType,
     pub priority: JobPriority,
+    pub lifecycle_generation: u64,
     pub request_revision: u64,
     pub distance_sq: f32,
     pub cancelled: Arc<AtomicBool>,
@@ -61,6 +62,7 @@ impl ChunkJobRequest {
         coord: IVec3,
         job_type: JobType,
         priority: JobPriority,
+        lifecycle_generation: u64,
         request_revision: u64,
         distance_sq: f32,
     ) -> Self {
@@ -69,6 +71,7 @@ impl ChunkJobRequest {
             coord,
             job_type,
             priority,
+            lifecycle_generation,
             request_revision,
             distance_sq,
             cancelled: Arc::new(AtomicBool::new(false)),
@@ -126,23 +129,28 @@ impl Ord for ChunkJobRequest {
 pub enum ChunkJobResult {
     Loaded {
         chunk: Chunk,
+        lifecycle_generation: u64,
         request_revision: u64,
     },
     Generated {
         chunk: Chunk,
+        lifecycle_generation: u64,
         request_revision: u64,
     },
     Saved {
         coord: IVec3,
+        lifecycle_generation: u64,
         saved_revision: u64,
     },
     Meshed {
         coord: IVec3,
+        lifecycle_generation: u64,
         mesh: MeshData,
         mesh_revision: u64,
     },
     Failed {
         coord: IVec3,
+        lifecycle_generation: u64,
         job_type: JobType,
         error: String,
     },

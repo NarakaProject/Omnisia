@@ -8,12 +8,15 @@ use crate::modding::registry::BlockRegistry;
 use crate::modding::runtime::ContentRuntime;
 use crate::renderer::Renderer;
 use crate::storage::{MemoryCompressedRegionStore, RegionStore};
-use crate::streaming::generator::{ChunkGenerator, DemoChunkGenerator};
+use crate::streaming::generator::ChunkGenerator;
 use crate::streaming::jobs::{JobPriority, JobType};
 use crate::streaming::memory::MemoryBudget;
 use crate::streaming::scheduler::ChunkScheduler;
 use crate::streaming::store::ChunkStore;
 use crate::voxel::VoxelBlock;
+use crate::worldgen::config::WorldGenConfig;
+use crate::worldgen::pipeline::ProceduralWorldGenerator;
+use crate::worldgen::seed::WorldSeed;
 
 /// Representasi dunia runtime sparse dengan streaming asynchronous, chunk scheduling, dan memory management
 pub struct World {
@@ -39,20 +42,32 @@ impl Default for World {
 impl World {
     /// Membuat instance World baru dengan memuat konten melalui ContentRuntime
     pub fn new() -> Self {
+        Self::with_seed(WorldSeed::default())
+    }
+
+    /// Membuat instance World dengan seed tertentu
+    pub fn with_seed(seed: WorldSeed) -> Self {
+        let config = WorldGenConfig::new(seed);
         match ContentRuntime::build_runtime("content/core", "mods") {
-            Ok(resolved) => Self::with_content(resolved.materials, resolved.blocks),
+            Ok(resolved) => {
+                Self::with_content_and_config(resolved.materials, resolved.blocks, config)
+            }
             Err(e) => {
                 log::error!(
                     "Gagal memuat Core Content saat inisialisasi World: {}. Menggunakan fallback minimal.",
                     e
                 );
-                Self::with_content(MaterialRegistry::new(), BlockRegistry::new())
+                Self::with_content_and_config(MaterialRegistry::new(), BlockRegistry::new(), config)
             }
         }
     }
 
-    /// Membuat instance World dengan MaterialRegistry dan BlockRegistry yang sudah di-resolve
-    pub fn with_content(materials: MaterialRegistry, blocks: BlockRegistry) -> Self {
+    /// Membuat instance World dengan MaterialRegistry, BlockRegistry, dan WorldGenConfig yang ditentukan
+    pub fn with_content_and_config(
+        materials: MaterialRegistry,
+        blocks: BlockRegistry,
+        config: WorldGenConfig,
+    ) -> Self {
         let num_cpus = std::thread::available_parallelism()
             .map(|n| n.get())
             .unwrap_or(4)
@@ -63,7 +78,7 @@ impl World {
             materials,
             blocks,
             storage: Arc::new(MemoryCompressedRegionStore::new()),
-            generator: Arc::new(DemoChunkGenerator::new(1337)),
+            generator: Arc::new(ProceduralWorldGenerator::new(config)),
             scheduler: ChunkScheduler::new(num_cpus),
             budget: MemoryBudget::default(),
             simulation_radius: 3,
@@ -137,10 +152,12 @@ impl World {
                             JobPriority::Normal
                         };
 
+                        let lifecycle = self.store.current_lifecycle(&chunk_coord);
                         self.scheduler.request_job(
                             chunk_coord,
                             JobType::LoadChunk,
                             priority,
+                            lifecycle,
                             0,
                             dist_sq,
                         );
@@ -169,10 +186,12 @@ impl World {
                 if chunk.is_dirty(crate::chunk::dirty_flags::SAVE_DIRTY) {
                     // Chunk kotor: WAJIB dijadwalkan save sebelum dievict!
                     if !self.store.in_flight_saving.contains_key(&coord) {
+                        let lifecycle = self.store.current_lifecycle(&coord);
                         self.scheduler.request_job(
                             coord,
                             JobType::SaveChunk,
                             JobPriority::Low,
+                            lifecycle,
                             chunk.revision,
                             dist_sq,
                         );
@@ -200,8 +219,8 @@ impl World {
         );
     }
 
-    /// Menghasilkan Demo World awal
-    pub fn generate_demo_world(&mut self) {
+    /// Menghasilkan Initial Resident Chunks Omnisia
+    pub fn generate_initial_area(&mut self) {
         log::info!("Membangun initial resident chunks Omnisia...");
 
         for cx in -1..=2 {
@@ -210,10 +229,12 @@ impl World {
                     let coord = IVec3::new(cx, cy, cz);
                     let chunk = self.generator.generate_chunk(coord, &self.materials);
                     self.store.insert(chunk);
+                    let lifecycle = self.store.current_lifecycle(&coord);
                     self.scheduler.request_job(
                         coord,
                         JobType::MeshChunk,
                         JobPriority::Critical,
+                        lifecycle,
                         0,
                         0.0,
                     );

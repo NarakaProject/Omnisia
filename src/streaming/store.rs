@@ -9,10 +9,11 @@ use crate::voxel::VoxelBlock;
 /// Tempat penyimpanan dan otoritas utama untuk chunk yang sedang resident di memori
 pub struct ChunkStore {
     pub resident: HashMap<IVec3, Chunk>,
+    pub lifecycle_generations: HashMap<IVec3, u64>,
     pub in_flight_loading: HashSet<IVec3>,
     pub in_flight_generating: HashSet<IVec3>,
-    pub in_flight_saving: HashMap<IVec3, u64>,
-    pub in_flight_meshing: HashMap<IVec3, u64>,
+    pub in_flight_saving: HashMap<IVec3, (u64, u64)>, // (lifecycle_generation, revision)
+    pub in_flight_meshing: HashMap<IVec3, (u64, u64)>, // (lifecycle_generation, revision)
 }
 
 impl Default for ChunkStore {
@@ -25,6 +26,7 @@ impl ChunkStore {
     pub fn new() -> Self {
         Self {
             resident: HashMap::new(),
+            lifecycle_generations: HashMap::new(),
             in_flight_loading: HashSet::new(),
             in_flight_generating: HashSet::new(),
             in_flight_saving: HashMap::new(),
@@ -54,6 +56,12 @@ impl ChunkStore {
             || self.in_flight_saving.contains_key(coord)
     }
 
+    /// Mengambil lifecycle generation saat ini untuk sebuah koordinat chunk (default 1)
+    #[inline(always)]
+    pub fn current_lifecycle(&self, coord: &IVec3) -> u64 {
+        self.lifecycle_generations.get(coord).copied().unwrap_or(1)
+    }
+
     pub fn insert(&mut self, chunk: Chunk) -> Option<Chunk> {
         let pos = chunk.position;
         self.in_flight_loading.remove(&pos);
@@ -66,6 +74,13 @@ impl ChunkStore {
         self.in_flight_generating.remove(coord);
         self.in_flight_saving.remove(coord);
         self.in_flight_meshing.remove(coord);
+
+        // Bump lifecycle generation saat dievict sehingga job asinkron lama otomatis terinvalida
+        self.lifecycle_generations
+            .entry(*coord)
+            .and_modify(|g| *g += 1)
+            .or_insert(2);
+
         self.resident.remove(coord)
     }
 

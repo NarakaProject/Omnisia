@@ -10,3 +10,4 @@ pub mod storage;
 pub mod streaming;
 pub mod voxel;
 pub mod world;
+pub mod worldgen;
