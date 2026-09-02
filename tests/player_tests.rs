@@ -690,11 +690,18 @@ fn test_jump_holding_space_no_repeated_jumps() {
 
 #[test]
 fn test_player_gravity_airborne_acceleration() {
+    use glam::IVec3;
+    use omnisia::chunk::Chunk;
     use omnisia::player::PlayerController;
     use omnisia::streaming::store::ChunkStore;
 
-    let store = ChunkStore::new();
-    let spawn_pos = Vec3::new(0.0, 50.0, 0.0);
+    let mut store = ChunkStore::new();
+    // Muat chunk kolom y dari y=0 hingga y=4 (ketinggian 0..80m) sebagai LoadedAir
+    for cy in 0..5 {
+        store.insert(Chunk::new(IVec3::new(0, cy, 0)));
+    }
+
+    let spawn_pos = Vec3::new(8.0, 50.0, 8.0);
     let mut controller = PlayerController::new(spawn_pos);
     controller.state.grounded = false;
 
@@ -716,11 +723,20 @@ fn test_player_gravity_airborne_acceleration() {
 
 #[test]
 fn test_fixed_timestep_frame_rate_invariance_30_60_120_fps() {
+    use glam::IVec3;
+    use omnisia::chunk::Chunk;
     use omnisia::player::{PlayerController, PlayerInput};
     use omnisia::streaming::store::ChunkStore;
 
-    let store = ChunkStore::new();
-    let initial_pos = Vec3::new(0.0, 100.0, 0.0);
+    let mut store = ChunkStore::new();
+    // Muat area chunk udara di sekitar pergerakan
+    for cx in 0..3 {
+        for cy in 0..8 {
+            store.insert(Chunk::new(IVec3::new(cx, cy, 0)));
+        }
+    }
+
+    let initial_pos = Vec3::new(8.0, 100.0, 8.0);
 
     // Setup input konstan: berjalan maju W (yaw = 0 deg -> arah +X)
     let forward_input = PlayerInput::from_raw(true, false, false, false, false, false, false);
@@ -788,4 +804,212 @@ fn test_pathological_frame_stall_bounded_catchup() {
         controller.time_accumulator < controller.config.fixed_timestep,
         "Akumulator harus di-clamp dan tidak boleh menumpuk substep tak terhingga!"
     );
+}
+
+// ============================================================================
+// 8B.8 SWEPT VOXEL COLLISION RESOLUTION, ANTI-TUNNELING & UNLOADED BOUNDARY GUARD
+// ============================================================================
+
+#[test]
+fn test_high_speed_anti_tunneling_50_and_100_mps() {
+    use glam::IVec3;
+    use omnisia::chunk::Chunk;
+    use omnisia::material::MaterialId;
+    use omnisia::player::PlayerController;
+    use omnisia::streaming::store::ChunkStore;
+    use omnisia::voxel::VoxelBlock;
+
+    let mut store = ChunkStore::new();
+    let mut chunk = Chunk::new(IVec3::ZERO);
+
+    // Dinding setebal 1 voxel (0.5m) pada x = 2.0..2.5m (voxel x = 4)
+    // Tinggi dinding 3 blok (y = 0, 1, 2)
+    for vy in 0..3 {
+        for vz in 0..5 {
+            chunk.set_voxel(4, vy, vz, VoxelBlock::new(MaterialId::STONE));
+        }
+    }
+    store.insert(chunk);
+
+    // 1. Uji Kecepatan 50 m/s:
+    // delta_x dalam 1 tick (1/30 detik) = 50.0 / 30.0 = 1.667m > tebal dinding 0.5m!
+    let mut controller_50 = PlayerController::new(Vec3::new(1.0, 0.0, 1.0));
+    controller_50.state.velocity = Vec3::new(50.0, 0.0, 0.0);
+    controller_50.step_simulation(1.0 / 30.0, &store, 0.0);
+
+    // Dinding berada di x = 2.0. Kapsul ber-radius 0.3.
+    // Titik depan kapsul: position.x + radius HARUS <= 2.0m!
+    let front_x_50 = controller_50.state.position.x + controller_50.config.capsule_radius;
+    assert!(
+        front_x_50 <= 2.001,
+        "Player menembus dinding pada kecepatan 50 m/s! Ujung depan: {}",
+        front_x_50
+    );
+    assert_eq!(controller_50.state.velocity.x, 0.0);
+    assert!(controller_50.collision_hits_total > 0);
+
+    // 2. Uji Kecepatan Ekstrim 100 m/s:
+    // delta_x dalam 1 tick = 100.0 / 30.0 = 3.333m (menempuh >6 ketebalan voxel sekaligus)!
+    let mut controller_100 = PlayerController::new(Vec3::new(0.5, 0.0, 1.0));
+    controller_100.state.velocity = Vec3::new(100.0, 0.0, 0.0);
+    controller_100.step_simulation(1.0 / 30.0, &store, 0.0);
+
+    let front_x_100 = controller_100.state.position.x + controller_100.config.capsule_radius;
+    assert!(
+        front_x_100 <= 2.001,
+        "Player menembus dinding pada kecepatan 100 m/s! Ujung depan: {}",
+        front_x_100
+    );
+    assert_eq!(controller_100.state.velocity.x, 0.0);
+}
+
+#[test]
+fn test_swept_collision_one_voxel_floor() {
+    use glam::IVec3;
+    use omnisia::chunk::Chunk;
+    use omnisia::material::MaterialId;
+    use omnisia::player::PlayerController;
+    use omnisia::streaming::store::ChunkStore;
+    use omnisia::voxel::VoxelBlock;
+
+    let mut store = ChunkStore::new();
+    let mut chunk = Chunk::new(IVec3::ZERO);
+
+    // Lantai setebal 1 voxel (0.5m) di y = 0 -> permukaan atas y = 0.5m
+    for vx in 0..5 {
+        for vz in 0..5 {
+            chunk.set_voxel(vx, 0, vz, VoxelBlock::new(MaterialId::STONE));
+        }
+    }
+    store.insert(chunk);
+
+    // Pemain jatuh dengan kecepatan vertikal tinggi -50 m/s dari ketinggian y = 2.0m
+    let mut controller = PlayerController::new(Vec3::new(1.0, 2.0, 1.0));
+    controller.state.velocity = Vec3::new(0.0, -50.0, 0.0);
+    controller.step_simulation(1.0 / 30.0, &store, 0.0);
+
+    // INVARIAN KANONIKAL: Pemain harus berhenti tepat di atas lantai (y = 0.5m) tanpa menembus ke void!
+    assert!(
+        (controller.state.position.y - 0.5).abs() < 1e-3,
+        "Pemain jatuh menembus lantai 1 voxel! Posisi y: {}",
+        controller.state.position.y
+    );
+    assert!(controller.state.grounded);
+    assert_eq!(controller.state.velocity.y, 0.0);
+}
+
+#[test]
+fn test_corner_collision_no_diagonal_leak() {
+    use glam::IVec3;
+    use omnisia::chunk::Chunk;
+    use omnisia::material::MaterialId;
+    use omnisia::player::PlayerController;
+    use omnisia::streaming::store::ChunkStore;
+    use omnisia::voxel::VoxelBlock;
+
+    let mut store = ChunkStore::new();
+    let mut chunk = Chunk::new(IVec3::ZERO);
+
+    // Buat sudut dinding L:
+    // Dinding 1: x = 2.0..2.5 (vx = 4)
+    // Dinding 2: z = 2.0..2.5 (vz = 4)
+    for vy in 0..3 {
+        for vz in 0..5 {
+            chunk.set_voxel(4, vy, vz, VoxelBlock::new(MaterialId::STONE));
+        }
+        for vx in 0..5 {
+            chunk.set_voxel(vx, vy, 4, VoxelBlock::new(MaterialId::STONE));
+        }
+    }
+    store.insert(chunk);
+
+    // Pemain bergerak diagonal cepat menuju sudut (+X, +Z)
+    let mut controller = PlayerController::new(Vec3::new(1.2, 0.0, 1.2));
+    controller.state.velocity = Vec3::new(30.0, 0.0, 30.0);
+    controller.step_simulation(1.0 / 30.0, &store, 0.0);
+
+    // Ujung kapsul tidak boleh bocor menembus diagonal (x <= 2.0m dan z <= 2.0m)
+    let front_x = controller.state.position.x + controller.config.capsule_radius;
+    let front_z = controller.state.position.z + controller.config.capsule_radius;
+    assert!(
+        front_x <= 2.001,
+        "Bocor diagonal di sumbu X! front_x: {}",
+        front_x
+    );
+    assert!(
+        front_z <= 2.001,
+        "Bocor diagonal di sumbu Z! front_z: {}",
+        front_z
+    );
+}
+
+#[test]
+fn test_chunk_boundary_and_negative_coordinates_collision() {
+    use glam::IVec3;
+    use omnisia::chunk::Chunk;
+    use omnisia::material::MaterialId;
+    use omnisia::player::PlayerController;
+    use omnisia::streaming::store::ChunkStore;
+    use omnisia::voxel::VoxelBlock;
+
+    let mut store = ChunkStore::new();
+    // Chunk negatif (-1, 0, 0)
+    let mut neg_chunk = Chunk::new(IVec3::new(-1, 0, 0));
+    // Dinding di voxel lokal 31 (koordinat dunia -1 * 32 + 31 = -1 -> x = -0.5m .. 0.0m)
+    for vy in 0..3 {
+        for vz in 0..5 {
+            neg_chunk.set_voxel(31, vy, vz, VoxelBlock::new(MaterialId::STONE));
+        }
+    }
+    store.insert(neg_chunk);
+
+    // Chunk (0, 0, 0) dimuat
+    let pos_chunk = Chunk::new(IVec3::ZERO);
+    store.insert(pos_chunk);
+
+    // Pemain di chunk positif x = 0.5m bergerak ke kiri (-X) menuju dinding di batas chunk negatif
+    let mut controller = PlayerController::new(Vec3::new(0.5, 0.0, 1.0));
+    controller.state.velocity = Vec3::new(-20.0, 0.0, 0.0);
+    controller.step_simulation(1.0 / 30.0, &store, 0.0);
+
+    // Dinding di [-0.5, 0.0]. Ujung kiri kapsul (pos.x - radius) harus tertahan di >= 0.0m
+    let left_x = controller.state.position.x - controller.config.capsule_radius;
+    assert!(
+        left_x >= -0.001,
+        "Tabrakan di batas koordinat negatif tembus! Ujung kiri: {}",
+        left_x
+    );
+    assert_eq!(controller.state.velocity.x, 0.0);
+}
+
+#[test]
+fn test_unloaded_chunk_blocks_movement_unknown_not_air() {
+    use glam::IVec3;
+    use omnisia::chunk::Chunk;
+    use omnisia::player::PlayerController;
+    use omnisia::streaming::store::ChunkStore;
+
+    let mut store = ChunkStore::new();
+    // Hanya muat chunk (0, 0, 0) [x = 0..16m]
+    let loaded_chunk = Chunk::new(IVec3::ZERO);
+    store.insert(loaded_chunk);
+    // Chunk (1, 0, 0) [x = 16..32m] TIDAK DIMUAT (UNLOADED / UNKNOWN)
+
+    // Pemain berada di x = 15.5m (dekat batas chunk) bergerak ke kanan (+X) menuju chunk yang belum dimuat
+    let mut controller = PlayerController::new(Vec3::new(15.5, 0.0, 5.0));
+    controller.state.velocity = Vec3::new(10.0, 0.0, 0.0);
+    controller.step_simulation(1.0 / 30.0, &store, 0.0);
+
+    // INVARIAN KANONIKAL: Batas chunk belum dimuat (x = 16.0m) harus menahan gerakan pemain!
+    let front_x = controller.state.position.x + controller.config.capsule_radius;
+    assert!(
+        front_x <= 16.001,
+        "Pemain tidak boleh memasuki chunk yang belum dimuat! front_x: {}",
+        front_x
+    );
+    assert!(
+        controller.unknown_blocked_total > 0,
+        "unknown_blocked_total harus mencatat blokir chunk belum dimuat!"
+    );
+    assert_eq!(controller.state.velocity.x, 0.0);
 }

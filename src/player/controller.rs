@@ -267,6 +267,8 @@ impl PlayerController {
         let move_intent = self.compute_horizontal_intent(camera_yaw_deg);
         let target_speed = self.current_target_speed();
 
+        let start_tick = std::time::Instant::now();
+
         self.state.velocity.x = move_intent.x * target_speed;
         self.state.velocity.z = move_intent.z * target_speed;
 
@@ -275,8 +277,20 @@ impl PlayerController {
             self.state.velocity.y += self.config.gravity * fixed_dt;
         }
 
-        // 6. Integrasi posisi
-        self.state.position += self.state.velocity * fixed_dt;
+        // 6. Swept collision resolution kontinu per sumbu X -> Z -> Y (8B.8)
+        let mut capsule = self.current_capsule();
+        let desired_delta = self.state.velocity * fixed_dt;
+        let stats = super::collision::resolve_swept_step(
+            &mut capsule,
+            &mut self.state.velocity,
+            desired_delta,
+            store,
+        );
+
+        self.state.position = capsule.base;
+        self.collision_queries_total += stats.queries_count;
+        self.collision_hits_total += stats.hits_count;
+        self.unknown_blocked_total += stats.unknown_hits_count;
 
         // 7. Evaluasi tumpuan tanah (Ground Detection)
         let ground = super::collision::check_ground_support(
@@ -298,6 +312,15 @@ impl PlayerController {
             self.state.grounded = false;
             self.state.ground_distance = ground.ground_distance;
         }
+
+        // 8. Stationary ticks tracking
+        if self.state.speed() < 0.01 {
+            self.state.ticks_stationary = self.state.ticks_stationary.saturating_add(1);
+        } else {
+            self.state.ticks_stationary = 0;
+        }
+
+        self.last_tick_duration_us = start_tick.elapsed().as_micros() as f32;
     }
 
     /// Memperbarui simulasi pemain dengan akumulator fixed-timestep 30 Hz (8B.7).

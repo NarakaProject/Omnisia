@@ -160,3 +160,484 @@ pub fn check_capsule_clearance(
 
     true
 }
+
+/// Hasil evaluasi tabrakan kontinu 1D per sumbu (Swept Collision)
+#[derive(Debug, Clone, Copy)]
+pub struct SweptHit {
+    pub hit: bool,
+    pub t: f32,
+    pub normal: Vec3,
+    pub hit_voxel: Option<IVec3>,
+    pub is_unknown: bool,
+}
+
+impl Default for SweptHit {
+    fn default() -> Self {
+        Self {
+            hit: false,
+            t: 1.0,
+            normal: Vec3::ZERO,
+            hit_voxel: None,
+            is_unknown: false,
+        }
+    }
+}
+
+/// Statistik resolusi tabrakan pada satu langkah pergerakan
+#[derive(Debug, Clone, Copy, Default)]
+pub struct CollisionStepStats {
+    pub queries_count: u64,
+    pub hits_count: u64,
+    pub unknown_hits_count: u64,
+}
+
+/// Evaluasi swept collision kontinu sepanjang sumbu horizontal X (8B.8).
+pub fn swept_axis_x(capsule: &super::collider::Capsule, dx: f32, store: &ChunkStore) -> SweptHit {
+    if dx.abs() < 1e-6 {
+        return SweptHit::default();
+    }
+
+    let radius = capsule.radius;
+    let height = capsule.height;
+    let base = capsule.base;
+
+    let swept_min_x = (base.x - radius).min(base.x + dx - radius);
+    let swept_max_x = (base.x + radius).max(base.x + dx + radius);
+
+    let vx_min = (swept_min_x / VOXEL_SIZE).floor() as i32;
+    let vx_max = (swept_max_x / VOXEL_SIZE).floor() as i32;
+
+    let vy_min = ((base.y + 0.01) / VOXEL_SIZE).floor() as i32;
+    let vy_max = ((base.y + height - 0.01) / VOXEL_SIZE).floor() as i32;
+
+    let vz_min = ((base.z - radius) / VOXEL_SIZE).floor() as i32;
+    let vz_max = ((base.z + radius) / VOXEL_SIZE).floor() as i32;
+
+    let mut earliest_t = 1.0f32;
+    let mut hit_normal = Vec3::ZERO;
+    let mut hit_voxel = None;
+    let mut is_unknown = false;
+
+    for vy in vy_min..=vy_max {
+        for vz in vz_min..=vz_max {
+            for vx in vx_min..=vx_max {
+                let box_min = Vec3::new(
+                    vx as f32 * VOXEL_SIZE,
+                    vy as f32 * VOXEL_SIZE,
+                    vz as f32 * VOXEL_SIZE,
+                );
+                let box_max = box_min + Vec3::splat(VOXEL_SIZE);
+
+                let coord = IVec3::new(vx, vy, vz);
+                let voxel_query = store.get_voxel_world_checked(coord);
+                let is_solid = match voxel_query {
+                    Some(block) => !block.is_air(),
+                    None => true, // Unknown != Air (blokir gerakan ke chunk belum dimuat)
+                };
+
+                if !is_solid {
+                    continue;
+                }
+
+                // Periksa penampang YZ
+                let closest_z = base.z.clamp(box_min.z, box_max.z);
+                let dz = base.z - closest_z;
+
+                let y_lower = base.y + radius;
+                let y_upper = base.y + height - radius;
+                let dy_seg = if y_upper < box_min.y {
+                    box_min.y - y_upper
+                } else if y_lower > box_max.y {
+                    y_lower - box_max.y
+                } else {
+                    0.0
+                };
+
+                let cross_dist_sq = dz * dz + dy_seg * dy_seg;
+                if cross_dist_sq > (radius * radius) {
+                    continue;
+                }
+
+                let r_eff = (radius * radius - cross_dist_sq).max(0.0).sqrt();
+
+                if dx > 0.0 {
+                    let cur_front = base.x + r_eff;
+                    let target_wall = box_min.x;
+                    if cur_front <= target_wall {
+                        let t = (target_wall - cur_front) / dx;
+                        if t >= 0.0 && t < earliest_t {
+                            earliest_t = t;
+                            hit_normal = Vec3::NEG_X;
+                            hit_voxel = Some(coord);
+                            is_unknown = voxel_query.is_none();
+                        }
+                    } else if base.x < box_max.x && (base.x - r_eff) < box_max.x {
+                        let t = 0.0f32;
+                        if t < earliest_t {
+                            earliest_t = t;
+                            hit_normal = Vec3::NEG_X;
+                            hit_voxel = Some(coord);
+                            is_unknown = voxel_query.is_none();
+                        }
+                    }
+                } else {
+                    let cur_front = base.x - r_eff;
+                    let target_wall = box_max.x;
+                    if cur_front >= target_wall {
+                        let t = (target_wall - cur_front) / dx;
+                        if t >= 0.0 && t < earliest_t {
+                            earliest_t = t;
+                            hit_normal = Vec3::X;
+                            hit_voxel = Some(coord);
+                            is_unknown = voxel_query.is_none();
+                        }
+                    } else if base.x > box_min.x && (base.x + r_eff) > box_min.x {
+                        let t = 0.0f32;
+                        if t < earliest_t {
+                            earliest_t = t;
+                            hit_normal = Vec3::X;
+                            hit_voxel = Some(coord);
+                            is_unknown = voxel_query.is_none();
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if earliest_t < 1.0 {
+        SweptHit {
+            hit: true,
+            t: earliest_t,
+            normal: hit_normal,
+            hit_voxel,
+            is_unknown,
+        }
+    } else {
+        SweptHit::default()
+    }
+}
+
+/// Evaluasi swept collision kontinu sepanjang sumbu horizontal Z (8B.8).
+pub fn swept_axis_z(capsule: &super::collider::Capsule, dz: f32, store: &ChunkStore) -> SweptHit {
+    if dz.abs() < 1e-6 {
+        return SweptHit::default();
+    }
+
+    let radius = capsule.radius;
+    let height = capsule.height;
+    let base = capsule.base;
+
+    let swept_min_z = (base.z - radius).min(base.z + dz - radius);
+    let swept_max_z = (base.z + radius).max(base.z + dz + radius);
+
+    let vz_min = (swept_min_z / VOXEL_SIZE).floor() as i32;
+    let vz_max = (swept_max_z / VOXEL_SIZE).floor() as i32;
+
+    let vy_min = ((base.y + 0.01) / VOXEL_SIZE).floor() as i32;
+    let vy_max = ((base.y + height - 0.01) / VOXEL_SIZE).floor() as i32;
+
+    let vx_min = ((base.x - radius) / VOXEL_SIZE).floor() as i32;
+    let vx_max = ((base.x + radius) / VOXEL_SIZE).floor() as i32;
+
+    let mut earliest_t = 1.0f32;
+    let mut hit_normal = Vec3::ZERO;
+    let mut hit_voxel = None;
+    let mut is_unknown = false;
+
+    for vy in vy_min..=vy_max {
+        for vx in vx_min..=vx_max {
+            for vz in vz_min..=vz_max {
+                let box_min = Vec3::new(
+                    vx as f32 * VOXEL_SIZE,
+                    vy as f32 * VOXEL_SIZE,
+                    vz as f32 * VOXEL_SIZE,
+                );
+                let box_max = box_min + Vec3::splat(VOXEL_SIZE);
+
+                let coord = IVec3::new(vx, vy, vz);
+                let voxel_query = store.get_voxel_world_checked(coord);
+                let is_solid = match voxel_query {
+                    Some(block) => !block.is_air(),
+                    None => true, // Unknown != Air
+                };
+
+                if !is_solid {
+                    continue;
+                }
+
+                // Periksa penampang XY
+                let closest_x = base.x.clamp(box_min.x, box_max.x);
+                let dx = base.x - closest_x;
+
+                let y_lower = base.y + radius;
+                let y_upper = base.y + height - radius;
+                let dy_seg = if y_upper < box_min.y {
+                    box_min.y - y_upper
+                } else if y_lower > box_max.y {
+                    y_lower - box_max.y
+                } else {
+                    0.0
+                };
+
+                let cross_dist_sq = dx * dx + dy_seg * dy_seg;
+                if cross_dist_sq > (radius * radius) {
+                    continue;
+                }
+
+                let r_eff = (radius * radius - cross_dist_sq).max(0.0).sqrt();
+
+                if dz > 0.0 {
+                    let cur_front = base.z + r_eff;
+                    let target_wall = box_min.z;
+                    if cur_front <= target_wall {
+                        let t = (target_wall - cur_front) / dz;
+                        if t >= 0.0 && t < earliest_t {
+                            earliest_t = t;
+                            hit_normal = Vec3::NEG_Z;
+                            hit_voxel = Some(coord);
+                            is_unknown = voxel_query.is_none();
+                        }
+                    } else if base.z < box_max.z && (base.z - r_eff) < box_max.z {
+                        let t = 0.0f32;
+                        if t < earliest_t {
+                            earliest_t = t;
+                            hit_normal = Vec3::NEG_Z;
+                            hit_voxel = Some(coord);
+                            is_unknown = voxel_query.is_none();
+                        }
+                    }
+                } else {
+                    let cur_front = base.z - r_eff;
+                    let target_wall = box_max.z;
+                    if cur_front >= target_wall {
+                        let t = (target_wall - cur_front) / dz;
+                        if t >= 0.0 && t < earliest_t {
+                            earliest_t = t;
+                            hit_normal = Vec3::Z;
+                            hit_voxel = Some(coord);
+                            is_unknown = voxel_query.is_none();
+                        }
+                    } else if base.z > box_min.z && (base.z + r_eff) > box_min.z {
+                        let t = 0.0f32;
+                        if t < earliest_t {
+                            earliest_t = t;
+                            hit_normal = Vec3::Z;
+                            hit_voxel = Some(coord);
+                            is_unknown = voxel_query.is_none();
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if earliest_t < 1.0 {
+        SweptHit {
+            hit: true,
+            t: earliest_t,
+            normal: hit_normal,
+            hit_voxel,
+            is_unknown,
+        }
+    } else {
+        SweptHit::default()
+    }
+}
+
+/// Evaluasi swept collision kontinu sepanjang sumbu vertikal Y (8B.8).
+pub fn swept_axis_y(capsule: &super::collider::Capsule, dy: f32, store: &ChunkStore) -> SweptHit {
+    if dy.abs() < 1e-6 {
+        return SweptHit::default();
+    }
+
+    let radius = capsule.radius;
+    let height = capsule.height;
+    let base = capsule.base;
+
+    let swept_min_y = (base.y).min(base.y + dy);
+    let swept_max_y = (base.y + height).max(base.y + dy + height);
+
+    let vy_min = (swept_min_y / VOXEL_SIZE).floor() as i32;
+    let vy_max = (swept_max_y / VOXEL_SIZE).floor() as i32;
+
+    let vx_min = ((base.x - radius) / VOXEL_SIZE).floor() as i32;
+    let vx_max = ((base.x + radius) / VOXEL_SIZE).floor() as i32;
+
+    let vz_min = ((base.z - radius) / VOXEL_SIZE).floor() as i32;
+    let vz_max = ((base.z + radius) / VOXEL_SIZE).floor() as i32;
+
+    let mut earliest_t = 1.0f32;
+    let mut hit_normal = Vec3::ZERO;
+    let mut hit_voxel = None;
+    let mut is_unknown = false;
+
+    for vy in vy_min..=vy_max {
+        for vz in vz_min..=vz_max {
+            for vx in vx_min..=vx_max {
+                let box_min = Vec3::new(
+                    vx as f32 * VOXEL_SIZE,
+                    vy as f32 * VOXEL_SIZE,
+                    vz as f32 * VOXEL_SIZE,
+                );
+                let box_max = box_min + Vec3::splat(VOXEL_SIZE);
+
+                let coord = IVec3::new(vx, vy, vz);
+                let voxel_query = store.get_voxel_world_checked(coord);
+                let is_solid = match voxel_query {
+                    Some(block) => !block.is_air(),
+                    None => true, // Unknown != Air
+                };
+
+                if !is_solid {
+                    continue;
+                }
+
+                // Penampang horizontal XZ
+                let closest_x = base.x.clamp(box_min.x, box_max.x);
+                let closest_z = base.z.clamp(box_min.z, box_max.z);
+                let dx = base.x - closest_x;
+                let dz = base.z - closest_z;
+                let horiz_dist_sq = dx * dx + dz * dz;
+
+                if horiz_dist_sq > (radius * radius) {
+                    continue;
+                }
+
+                let y_offset = (radius * radius - horiz_dist_sq).max(0.0).sqrt();
+
+                if dy < 0.0 {
+                    let cur_bottom = (base.y + radius) - y_offset;
+                    let target_floor = box_max.y;
+                    if cur_bottom >= target_floor {
+                        let t = (target_floor - cur_bottom) / dy;
+                        if t >= 0.0 && t < earliest_t {
+                            earliest_t = t;
+                            hit_normal = Vec3::Y;
+                            hit_voxel = Some(coord);
+                            is_unknown = voxel_query.is_none();
+                        }
+                    } else if (base.y + height) > box_min.y {
+                        let t = 0.0f32;
+                        if t < earliest_t {
+                            earliest_t = t;
+                            hit_normal = Vec3::Y;
+                            hit_voxel = Some(coord);
+                            is_unknown = voxel_query.is_none();
+                        }
+                    }
+                } else {
+                    let cur_top = (base.y + height - radius) + y_offset;
+                    let target_ceiling = box_min.y;
+                    if cur_top <= target_ceiling {
+                        let t = (target_ceiling - cur_top) / dy;
+                        if t >= 0.0 && t < earliest_t {
+                            earliest_t = t;
+                            hit_normal = Vec3::NEG_Y;
+                            hit_voxel = Some(coord);
+                            is_unknown = voxel_query.is_none();
+                        }
+                    } else if base.y < box_max.y {
+                        let t = 0.0f32;
+                        if t < earliest_t {
+                            earliest_t = t;
+                            hit_normal = Vec3::NEG_Y;
+                            hit_voxel = Some(coord);
+                            is_unknown = voxel_query.is_none();
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if earliest_t < 1.0 {
+        SweptHit {
+            hit: true,
+            t: earliest_t,
+            normal: hit_normal,
+            hit_voxel,
+            is_unknown,
+        }
+    } else {
+        SweptHit::default()
+    }
+}
+
+/// Menyelesaikan pergerakan swept collision per sumbu berurutan: X -> Z -> Y (8B.8).
+pub fn resolve_swept_step(
+    capsule: &mut super::collider::Capsule,
+    velocity: &mut Vec3,
+    delta: Vec3,
+    store: &ChunkStore,
+) -> CollisionStepStats {
+    let mut stats = CollisionStepStats::default();
+
+    // 1. Sumbu X
+    if delta.x.abs() > 1e-6 {
+        stats.queries_count += 1;
+        let hit_x = swept_axis_x(capsule, delta.x, store);
+        if hit_x.hit {
+            stats.hits_count += 1;
+            if hit_x.is_unknown {
+                stats.unknown_hits_count += 1;
+            }
+            let mut move_x = delta.x * hit_x.t;
+            if delta.x > 0.0 {
+                move_x = (move_x - 0.001).max(0.0);
+            } else {
+                move_x = (move_x + 0.001).min(0.0);
+            }
+            capsule.base.x += move_x;
+            velocity.x = 0.0;
+        } else {
+            capsule.base.x += delta.x;
+        }
+    }
+
+    // 2. Sumbu Z
+    if delta.z.abs() > 1e-6 {
+        stats.queries_count += 1;
+        let hit_z = swept_axis_z(capsule, delta.z, store);
+        if hit_z.hit {
+            stats.hits_count += 1;
+            if hit_z.is_unknown {
+                stats.unknown_hits_count += 1;
+            }
+            let mut move_z = delta.z * hit_z.t;
+            if delta.z > 0.0 {
+                move_z = (move_z - 0.001).max(0.0);
+            } else {
+                move_z = (move_z + 0.001).min(0.0);
+            }
+            capsule.base.z += move_z;
+            velocity.z = 0.0;
+        } else {
+            capsule.base.z += delta.z;
+        }
+    }
+
+    // 3. Sumbu Y
+    if delta.y.abs() > 1e-6 {
+        stats.queries_count += 1;
+        let hit_y = swept_axis_y(capsule, delta.y, store);
+        if hit_y.hit {
+            stats.hits_count += 1;
+            if hit_y.is_unknown {
+                stats.unknown_hits_count += 1;
+            }
+            let mut move_y = delta.y * hit_y.t;
+            if delta.y > 0.0 {
+                move_y = (move_y - 0.001).max(0.0);
+            } else {
+                move_y = (move_y + 0.001).min(0.0);
+            }
+            capsule.base.y += move_y;
+            velocity.y = 0.0;
+        } else {
+            capsule.base.y += delta.y;
+        }
+    }
+
+    stats
+}
