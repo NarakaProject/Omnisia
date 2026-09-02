@@ -270,6 +270,7 @@ pub struct SweptHit {
     pub normal: Vec3,
     pub hit_voxel: Option<IVec3>,
     pub is_unknown: bool,
+    pub surface_y: Option<f32>,
 }
 
 impl Default for SweptHit {
@@ -280,6 +281,7 @@ impl Default for SweptHit {
             normal: Vec3::ZERO,
             hit_voxel: None,
             is_unknown: false,
+            surface_y: None,
         }
     }
 }
@@ -413,6 +415,7 @@ pub fn swept_axis_x(capsule: &super::collider::Capsule, dx: f32, store: &ChunkSt
             normal: hit_normal,
             hit_voxel,
             is_unknown,
+            surface_y: None,
         }
     } else {
         SweptHit::default()
@@ -540,6 +543,7 @@ pub fn swept_axis_z(capsule: &super::collider::Capsule, dz: f32, store: &ChunkSt
             normal: hit_normal,
             hit_voxel,
             is_unknown,
+            surface_y: None,
         }
     } else {
         SweptHit::default()
@@ -572,6 +576,7 @@ pub fn swept_axis_y(capsule: &super::collider::Capsule, dy: f32, store: &ChunkSt
     let mut hit_normal = Vec3::ZERO;
     let mut hit_voxel = None;
     let mut is_unknown = false;
+    let mut hit_surface_y = None;
 
     for vy in vy_min..=vy_max {
         for vz in vz_min..=vz_max {
@@ -617,6 +622,7 @@ pub fn swept_axis_y(capsule: &super::collider::Capsule, dy: f32, store: &ChunkSt
                             hit_normal = Vec3::Y;
                             hit_voxel = Some(coord);
                             is_unknown = voxel_query.is_none();
+                            hit_surface_y = Some(target_floor);
                         }
                     } else if (base.y + height) > box_min.y {
                         let t = 0.0f32;
@@ -625,26 +631,30 @@ pub fn swept_axis_y(capsule: &super::collider::Capsule, dy: f32, store: &ChunkSt
                             hit_normal = Vec3::Y;
                             hit_voxel = Some(coord);
                             is_unknown = voxel_query.is_none();
+                            hit_surface_y = Some(target_floor);
                         }
                     }
                 } else {
-                    let cur_top = (base.y + height - radius) + y_offset;
-                    let target_ceiling = box_min.y;
-                    if cur_top <= target_ceiling {
-                        let t = (target_ceiling - cur_top) / dy;
-                        if t >= 0.0 && t < earliest_t {
-                            earliest_t = t;
-                            hit_normal = Vec3::NEG_Y;
-                            hit_voxel = Some(coord);
-                            is_unknown = voxel_query.is_none();
-                        }
-                    } else if base.y < box_max.y {
-                        let t = 0.0f32;
-                        if t < earliest_t {
-                            earliest_t = t;
-                            hit_normal = Vec3::NEG_Y;
-                            hit_voxel = Some(coord);
-                            is_unknown = voxel_query.is_none();
+                    // Hanya periksa jika voxel berada di atas (kandidat langit-langit)
+                    if base.y < box_min.y {
+                        let cur_top = (base.y + height - radius) + y_offset;
+                        let target_ceiling = box_min.y;
+                        if cur_top <= target_ceiling {
+                            let t = (target_ceiling - cur_top) / dy;
+                            if t >= 0.0 && t < earliest_t {
+                                earliest_t = t;
+                                hit_normal = Vec3::NEG_Y;
+                                hit_voxel = Some(coord);
+                                is_unknown = voxel_query.is_none();
+                            }
+                        } else if base.y + height > target_ceiling {
+                            let t = 0.0f32;
+                            if t < earliest_t {
+                                earliest_t = t;
+                                hit_normal = Vec3::NEG_Y;
+                                hit_voxel = Some(coord);
+                                is_unknown = voxel_query.is_none();
+                            }
                         }
                     }
                 }
@@ -659,6 +669,7 @@ pub fn swept_axis_y(capsule: &super::collider::Capsule, dy: f32, store: &ChunkSt
             normal: hit_normal,
             hit_voxel,
             is_unknown,
+            surface_y: hit_surface_y,
         }
     } else {
         SweptHit::default()
@@ -1022,6 +1033,7 @@ pub fn swept_axis_y_with_physics(
 
         let mut earliest_t = if hit.hit { hit.t } else { 1.0f32 };
         let mut hit_normal = hit.normal;
+        let mut hit_surface_y = hit.surface_y;
 
         for body in runtime.bodies.values() {
             let (b_min, b_max) = body.world_bounds();
@@ -1070,6 +1082,7 @@ pub fn swept_axis_y_with_physics(
                                 hit.hit = true;
                                 hit.hit_voxel = None;
                                 hit.is_unknown = false;
+                                hit_surface_y = Some(target_floor);
                             }
                         } else if base.y < target_floor {
                             let t = 0.0f32;
@@ -1079,6 +1092,7 @@ pub fn swept_axis_y_with_physics(
                                 hit.hit = true;
                                 hit.hit_voxel = None;
                                 hit.is_unknown = false;
+                                hit_surface_y = Some(target_floor);
                             }
                         }
                     }
@@ -1114,6 +1128,7 @@ pub fn swept_axis_y_with_physics(
         if hit.hit {
             hit.t = earliest_t;
             hit.normal = hit_normal;
+            hit.surface_y = hit_surface_y;
         }
     }
 
@@ -1196,5 +1211,236 @@ pub fn resolve_swept_step_with_physics(
         }
     }
 
+    stats
+}
+
+/// Mencoba auto-step / step-up melewati rintangan horizontal rendah (<= step_height) berdasarkan geometri aktual (8D.1).
+///
+/// INVARIANTS:
+/// - AMENDMENT 1: Berbasis geometri sejati (geometry-based), bukan travel distance heuristic.
+/// - AMENDMENT 2: Membedakan stepable ledge (0.5m) dari dinding penuh (>= 1.0m) lewat rise support surface (0 < rise <= step_height).
+/// - AMENDMENT 3: Mencegah pemanjatan dinding vertikal datar tak berujung (no infinite wall climbing).
+/// - AMENDMENT 4: Sapuan ke bawah dibatasi ketat (bounded step-down) pada rentang [0..step_height] dari posisi awal kaki.
+/// - AMENDMENT 5: Memanfaatkan sepenuhnya kueri tabrakan kapsul dan voxel yang sudah ada tanpa menduplikasi engine.
+/// - AMENDMENT 6: Bersifat atomik (transaksional): jika gagal pada tahap mana pun, tidak ada mutasi parsial.
+/// - AMENDMENT 7: Hanya dipanggil saat pemain grounded (tidak aktif saat airborne).
+/// - AMENDMENT 9: Dynamic bodies dievaluasi berdasarkan voxel agregat terisi (bukan AABB solid).
+/// - AMENDMENT 10: Unknown chunk boundary diperlakukan sebagai pembatas keras (Unknown != Air).
+pub fn try_step_up_with_physics(
+    initial_capsule: &super::collider::Capsule,
+    initial_velocity: Vec3,
+    delta_h: Vec3,
+    step_height: f32,
+    store: &ChunkStore,
+    physics: Option<&PhysicsRuntime>,
+) -> Option<(super::collider::Capsule, Vec3, CollisionStepStats)> {
+    if step_height <= 0.0 || (delta_h.x.abs() < 1e-6 && delta_h.z.abs() < 1e-6) {
+        return None;
+    }
+
+    let mut step_stats = CollisionStepStats::default();
+
+    // 1. TAHAP 1: Sapu kapsul ke atas untuk memeriksa headroom (ruang bebas vertikal)
+    step_stats.queries_count += 1;
+    let hit_up = swept_axis_y_with_physics(initial_capsule, step_height, store, physics);
+    if hit_up.is_unknown {
+        // AMENDMENT 10: Unknown chunk boundary ditolak keras
+        return None;
+    }
+
+    let available_lift = if hit_up.hit {
+        (step_height * hit_up.t - 0.001).max(0.0)
+    } else {
+        step_height
+    };
+
+    // Jika headroom kurang dari toleransi minimum (10cm), step tidak memungkinkan
+    if available_lift < 0.10 {
+        return None;
+    }
+
+    let mut elevated_capsule = *initial_capsule;
+    elevated_capsule.base.y += available_lift;
+
+    // 2. TAHAP 2: Validasi clearance kapsul di posisi terangkat
+    step_stats.queries_count += 1;
+    if !check_capsule_clearance_with_physics(
+        elevated_capsule.base,
+        elevated_capsule.height,
+        elevated_capsule.radius,
+        store,
+        physics,
+    ) {
+        return None;
+    }
+
+    // 3. TAHAP 3: Sapuan horizontal pada ketinggian terangkat melintasi obstacle
+    let mut horiz_capsule = elevated_capsule;
+    let mut horiz_vel = initial_velocity;
+
+    // Sumbu X pada posisi terangkat
+    if delta_h.x.abs() > 1e-6 {
+        step_stats.queries_count += 1;
+        let hit_x = swept_axis_x_with_physics(&horiz_capsule, delta_h.x, store, physics);
+        if hit_x.is_unknown {
+            return None;
+        }
+        if hit_x.hit {
+            step_stats.hits_count += 1;
+            let mut mx = delta_h.x * hit_x.t;
+            if delta_h.x > 0.0 {
+                mx = (mx - 0.001).max(0.0);
+            } else {
+                mx = (mx + 0.001).min(0.0);
+            }
+            horiz_capsule.base.x += mx;
+            horiz_vel.x = 0.0;
+        } else {
+            horiz_capsule.base.x += delta_h.x;
+        }
+    }
+
+    // Sumbu Z pada posisi terangkat
+    if delta_h.z.abs() > 1e-6 {
+        step_stats.queries_count += 1;
+        let hit_z = swept_axis_z_with_physics(&horiz_capsule, delta_h.z, store, physics);
+        if hit_z.is_unknown {
+            return None;
+        }
+        if hit_z.hit {
+            step_stats.hits_count += 1;
+            let mut mz = delta_h.z * hit_z.t;
+            if delta_h.z > 0.0 {
+                mz = (mz - 0.001).max(0.0);
+            } else {
+                mz = (mz + 0.001).min(0.0);
+            }
+            horiz_capsule.base.z += mz;
+            horiz_vel.z = 0.0;
+        } else {
+            horiz_capsule.base.z += delta_h.z;
+        }
+    }
+
+    // Validasi apakah terjadi perpindahan horizontal nyata melewati rintangan
+    let moved_x = (horiz_capsule.base.x - initial_capsule.base.x).abs();
+    let moved_z = (horiz_capsule.base.z - initial_capsule.base.z).abs();
+    if moved_x < 0.001 && moved_z < 0.001 {
+        // Dinding terlalu tinggi bahkan setelah diangkat (misal dinding 1.0m+ atau dinding datar tak berujung)
+        return None;
+    }
+
+    // 4. TAHAP 4: Sapu ke bawah untuk mendeteksi permukaan tumpuan solid (AMENDMENT 2 & 4)
+    // Sapuan dibatasi ketat agar tidak mencari tumpuan di bawah ketinggian telapak kaki awal
+    let down_sweep = -(available_lift + 0.05);
+    step_stats.queries_count += 1;
+    let hit_down = swept_axis_y_with_physics(&horiz_capsule, down_sweep, store, physics);
+    if hit_down.is_unknown || !hit_down.hit {
+        // Tidak ada permukaan tumpuan solid di bawah (misal tepi jurang / void)
+        return None;
+    }
+
+    let candidate_y = if let Some(surf) = hit_down.surface_y {
+        surf
+    } else {
+        let move_down = down_sweep * hit_down.t + 0.001;
+        horiz_capsule.base.y + move_down
+    };
+
+    // AMENDMENT 2 & 4: Hitung vertical rise terhadap telapak kaki awal
+    let vertical_rise = candidate_y - initial_capsule.base.y;
+    // Rise harus positif (permukaan lebih tinggi dari awal) dan <= step_height + toleransi
+    if vertical_rise < 0.01 || vertical_rise > step_height + 0.02 {
+        return None;
+    }
+
+    let mut candidate_capsule = horiz_capsule;
+    candidate_capsule.base.y = candidate_y;
+
+    // 5. TAHAP 5: Verifikasi ground support aktual dan clearance kapsul penuh pada posisi akhir
+    step_stats.queries_count += 1;
+    let ground_check = check_ground_support_with_physics(
+        candidate_capsule.base,
+        candidate_capsule.radius,
+        0.05,
+        store,
+        physics,
+    );
+    if !ground_check.grounded {
+        return None;
+    }
+
+    step_stats.queries_count += 1;
+    if !check_capsule_clearance_with_physics(
+        candidate_capsule.base,
+        candidate_capsule.height,
+        candidate_capsule.radius,
+        store,
+        physics,
+    ) {
+        return None;
+    }
+
+    // 6. TAHAP 6: COMMIT ATOMIK (AMENDMENT 6)
+    // Seluruh kondisi geometris terpenuhi secara sempurna
+    Some((candidate_capsule, horiz_vel, step_stats))
+}
+
+/// Menyelesaikan pergerakan swept collision dengan dukungan auto-step geometry-based (8D.1).
+pub fn resolve_swept_step_with_stepup(
+    capsule: &mut super::collider::Capsule,
+    velocity: &mut Vec3,
+    delta: Vec3,
+    step_height: f32,
+    is_grounded: bool,
+    store: &ChunkStore,
+    physics: Option<&PhysicsRuntime>,
+) -> CollisionStepStats {
+    let initial_capsule = *capsule;
+    let initial_velocity = *velocity;
+
+    // 1. Jalankan resolusi normal sumbu X -> Z -> Y
+    let mut normal_capsule = *capsule;
+    let mut normal_velocity = *velocity;
+    let stats = resolve_swept_step_with_physics(
+        &mut normal_capsule,
+        &mut normal_velocity,
+        delta,
+        store,
+        physics,
+    );
+
+    // 2. Evaluasi apakah perlu auto-step (AMENDMENT 7):
+    // Hanya jika pemain grounded, ada perpindahan horizontal yang diinginkan, terjadi hambatan horizontal, dan step_height > 0
+    let delta_h = Vec3::new(delta.x, 0.0, delta.z);
+    let hit_horizontal = (normal_capsule.base.x - (initial_capsule.base.x + delta.x)).abs() > 1e-4
+        || (normal_capsule.base.z - (initial_capsule.base.z + delta.z)).abs() > 1e-4;
+
+    if is_grounded && hit_horizontal && step_height > 0.0 && delta_h.length_squared() > 1e-6 {
+        if let Some((stepped_capsule, stepped_velocity, step_stats)) = try_step_up_with_physics(
+            &initial_capsule,
+            initial_velocity,
+            delta_h,
+            step_height,
+            store,
+            physics,
+        ) {
+            *capsule = stepped_capsule;
+            *velocity = stepped_velocity;
+            // Sertakan pergerakan Y awal jika ada dan bebas
+            if delta.y.abs() > 1e-6 {
+                let move_y_capsule = *capsule;
+                let y_stats = swept_axis_y_with_physics(&move_y_capsule, delta.y, store, physics);
+                if !y_stats.hit {
+                    capsule.base.y += delta.y;
+                }
+            }
+            return step_stats;
+        }
+    }
+
+    // Jika tidak auto-step atau auto-step ditolak secara geometris, commit hasil normal (AMENDMENT 6: Atomic Rollback)
+    *capsule = normal_capsule;
+    *velocity = normal_velocity;
     stats
 }

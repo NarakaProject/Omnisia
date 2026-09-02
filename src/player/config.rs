@@ -25,9 +25,10 @@ pub struct PlayerConfig {
     /// Epsilon toleransi kontak tumpuan tanah dalam meter (default: 0.05m)
     pub ground_contact_epsilon: f32,
 
-    /// Parameter reserved untuk locomotion seam masa depan (default: 0.55m = ~1 voxel).
-    /// CATATAN: Tidak ada complex step solver di Phase 8B; disimpan sebagai config seam saja.
+    /// Parameter batas tinggi maksimum auto-step traversal dalam meter (default: 0.55m = ~1 voxel + toleransi).
     pub step_height: f32,
+    /// Apakah auto-step traversal aktif saat pemain grounded (default: true)
+    pub auto_step_enabled: bool,
 
     /// Interval waktu simulasi tetap dalam detik (default: 1/30 detik)
     pub fixed_timestep: f32,
@@ -58,6 +59,7 @@ impl Default for PlayerConfig {
 
             ground_contact_epsilon: 0.05,
             step_height: 0.55,
+            auto_step_enabled: true,
 
             fixed_timestep: 1.0 / 30.0,
             max_substeps_per_frame: 5,

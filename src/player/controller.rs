@@ -298,13 +298,20 @@ impl PlayerController {
             self.state.velocity.y += self.config.gravity * fixed_dt;
         }
 
-        // 6. Swept collision resolution kontinu per sumbu X -> Z -> Y (8B.8 & 8C.2)
+        // 6. Swept collision resolution kontinu dengan Auto-Step geometry-based (8D.1)
         let mut capsule = self.current_capsule();
         let desired_delta = self.state.velocity * fixed_dt;
-        let stats = super::collision::resolve_swept_step_with_physics(
+        let step_h = if self.config.auto_step_enabled {
+            self.config.step_height
+        } else {
+            0.0
+        };
+        let stats = super::collision::resolve_swept_step_with_stepup(
             &mut capsule,
             &mut self.state.velocity,
             desired_delta,
+            step_h,
+            self.state.grounded,
             store,
             physics,
         );
