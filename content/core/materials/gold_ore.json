@@ -1,0 +1,9 @@
+{
+  "id": "core:gold_ore",
+  "name": "Gold Ore",
+  "density": 4500.0,
+  "shear_strength": 60000.0,
+  "color": [0.95, 0.78, 0.15],
+  "solid": true,
+  "transparent": false
+}

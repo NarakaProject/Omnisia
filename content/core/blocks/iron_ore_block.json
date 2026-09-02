@@ -1,0 +1,11 @@
+{
+  "id": "core:iron_ore_block",
+  "material": "core:iron_ore",
+  "hardness": 5.5,
+  "components": {},
+  "tags": [
+    "natural",
+    "solid",
+    "ore"
+  ]
+}

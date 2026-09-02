@@ -1,0 +1,9 @@
+{
+  "id": "core:iron_ore",
+  "name": "Iron Ore",
+  "density": 3800.0,
+  "shear_strength": 55000.0,
+  "color": [0.72, 0.52, 0.40],
+  "solid": true,
+  "transparent": false
+}

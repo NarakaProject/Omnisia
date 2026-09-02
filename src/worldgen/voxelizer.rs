@@ -6,7 +6,8 @@ use crate::material::{MaterialId, MaterialRegistry};
 use crate::modding::resource_id::ResourceId;
 use crate::voxel::VoxelBlock;
 
-use super::biome::BiomeType;
+use super::caves::CaveSampler;
+use super::features::{FormationSampler, OreSampler, OverhangSampler, UndergroundStrata};
 use super::terrain::TerrainProfiler;
 
 /// Struktur cache ID material runtime untuk proses voxelization cepat tanpa alokasi / string parsing
@@ -18,35 +19,55 @@ pub struct ResolvedGenMaterials {
     pub sand: MaterialId,
     pub water: MaterialId,
     pub snow: MaterialId,
+    pub deepslate: MaterialId,
+    pub coal_ore: MaterialId,
+    pub iron_ore: MaterialId,
+    pub gold_ore: MaterialId,
+    pub crystal: MaterialId,
 }
 
 impl ResolvedGenMaterials {
-    pub fn resolve(registry: &MaterialRegistry) -> Self {
-        let resolve_or = |name: &str, fallback: MaterialId| {
-            ResourceId::core(name)
-                .ok()
-                .and_then(|res| registry.resolve_material_id(&res))
-                .unwrap_or(fallback)
+    /// Resolusi material wajib dari MaterialRegistry aktif.
+    /// Gagal secara eksplisit jika ada ResourceId inti yang tidak terdaftar (NO SILENT FALLBACK).
+    pub fn resolve(registry: &MaterialRegistry) -> Result<Self, String> {
+        let resolve_req = |name: &str| -> Result<MaterialId, String> {
+            let res = ResourceId::core(name)
+                .map_err(|e| format!("Invalid resource id core:{}: {}", name, e))?;
+            registry.resolve_material_id(&res).ok_or_else(|| {
+                format!(
+                    "Material wajib generasi '{}' tidak ditemukan dalam MaterialRegistry",
+                    res
+                )
+            })
         };
 
-        Self {
-            stone: resolve_or("stone", MaterialId::STONE),
-            dirt: resolve_or("dirt", MaterialId::DIRT),
-            grass: resolve_or("grass", MaterialId::GRASS),
-            sand: resolve_or("sand", MaterialId::STONE),
-            water: resolve_or("water", MaterialId::AIR),
-            snow: resolve_or("snow", MaterialId::STONE),
-        }
+        Ok(Self {
+            stone: resolve_req("stone")?,
+            dirt: resolve_req("dirt")?,
+            grass: resolve_req("grass")?,
+            sand: resolve_req("sand")?,
+            water: resolve_req("water")?,
+            snow: resolve_req("snow")?,
+            deepslate: resolve_req("deepslate")?,
+            coal_ore: resolve_req("coal_ore")?,
+            iron_ore: resolve_req("iron_ore")?,
+            gold_ore: resolve_req("gold_ore")?,
+            crystal: resolve_req("crystal")?,
+        })
     }
 }
 
-/// Voxelizer yang mengubah profil medan kontinu menjadi representasi 32³ micro-voxels
+/// Voxelizer yang mengubah profil medan kontinu dan medan fitur 3D menjadi representasi 32³ micro-voxels
 pub struct ChunkVoxelizer;
 
 impl ChunkVoxelizer {
     pub fn voxelize(
         chunk_coord: IVec3,
         profiler: &TerrainProfiler,
+        caves: &CaveSampler,
+        overhangs: &OverhangSampler,
+        ores: &OreSampler,
+        formations: &FormationSampler,
         materials: &ResolvedGenMaterials,
     ) -> Chunk {
         let mut chunk = Chunk::new(chunk_coord);
@@ -56,59 +77,106 @@ impl ChunkVoxelizer {
         let base_world_y = chunk_coord.y * 32;
         let base_world_z = chunk_coord.z * 32;
 
-        // Evaluasi 2D kolom terrain (32x32 titik)
+        // 1. Evaluasi 2D kolom terrain (32x32 titik)
         let mut column_points = [[None; CHUNK_SIZE_USIZE]; CHUNK_SIZE_USIZE];
+        let mut max_surface_y = f32::MIN;
+
         for (lz, row) in column_points.iter_mut().enumerate() {
             let wz = (base_world_z + lz as i32) as f32;
             for (lx, cell) in row.iter_mut().enumerate() {
                 let wx = (base_world_x + lx as i32) as f32;
-                *cell = Some(profiler.evaluate(wx, wz));
+                let pt = profiler.evaluate(wx, wz);
+                if pt.surface_height_y > max_surface_y {
+                    max_surface_y = pt.surface_height_y;
+                }
+                *cell = Some(pt);
             }
         }
 
-        // Voxelization ke volume 32x32x32
+        // Fast bounding box rejection: Jika chunk berada jauh di atas ketinggian maksimum terrain + overhang
+        if (base_world_y as f32) > max_surface_y + 18.0 {
+            return chunk; // 100% Air
+        }
+
+        // 2. Voxelization volumetrik 3D ke volume 32x32x32
         for (lz, row) in column_points.iter().enumerate() {
+            let world_z = base_world_z + lz as i32;
             for (lx, &cell) in row.iter().enumerate() {
+                let world_x = base_world_x + lx as i32;
                 let pt = cell.unwrap();
                 let surface_floor_y = pt.surface_height_y.floor() as i32;
                 let water_floor_y = pt.water_level_y.floor() as i32;
 
                 for ly in 0..CHUNK_SIZE_USIZE {
                     let world_y = base_world_y + ly as i32;
+                    let wx = world_x as f32;
+                    let wy = world_y as f32;
+                    let wz = world_z as f32;
 
-                    let mat = if world_y <= surface_floor_y {
-                        // 1. Lapisan Padat (Solid Ground)
-                        if world_y < surface_floor_y - 4 {
-                            materials.stone
-                        } else if world_y < surface_floor_y {
-                            match pt.biome {
-                                BiomeType::Desert | BiomeType::Beach => materials.sand,
-                                BiomeType::SnowPeaks | BiomeType::Mountains => materials.stone,
-                                _ => materials.dirt,
-                            }
+                    // A. Evaluasi Densitas 3D Medan & Overhang
+                    let overhang_density =
+                        overhangs.sample_density(wx, wy, wz, pt.surface_height_y, pt.biome);
+                    let terrain_density = (pt.surface_height_y - wy) + overhang_density;
+                    let mut is_solid = terrain_density >= 0.0;
+
+                    let mut formation_mat = None;
+
+                    // B. Formasi Batuan Alami Menonjol di Permukaan
+                    if !is_solid && wy > pt.surface_height_y {
+                        if let Some(f_mat) = formations.sample_surface_formation(
+                            world_x,
+                            world_y,
+                            world_z,
+                            surface_floor_y,
+                            pt.biome,
+                            materials,
+                        ) {
+                            is_solid = true;
+                            formation_mat = Some(f_mat);
+                        }
+                    }
+
+                    // C. Pengukiran Gua 3D (Carving to Air)
+                    if is_solid
+                        && formation_mat.is_none()
+                        && caves.is_cave(wx, wy, wz, pt.surface_height_y)
+                    {
+                        is_solid = false;
+                    }
+
+                    // D. Penentuan Material Voxel
+                    let mat = if is_solid {
+                        if let Some(f_mat) = formation_mat {
+                            f_mat
                         } else {
-                            // Lapisan Permukaan Teratas (Surface Topsoil)
-                            match pt.biome {
-                                BiomeType::SnowPeaks => materials.snow,
-                                BiomeType::Mountains => {
-                                    if world_y > 45 {
-                                        materials.snow
-                                    } else {
-                                        materials.stone
-                                    }
+                            // Stratifikasi Bawah Tanah
+                            let base_mat = UndergroundStrata::determine_base_material(
+                                world_y,
+                                surface_floor_y,
+                                pt.biome,
+                                materials,
+                            );
+
+                            // Distribusi Urat & Kantong Bijih Mineral (Ore Replacement pada Batu/Deepslate)
+                            if (base_mat == materials.stone || base_mat == materials.deepslate)
+                                && world_y < surface_floor_y - 2
+                            {
+                                if let Some(ore_mat) =
+                                    ores.sample_ore(world_x, world_y, world_z, materials)
+                                {
+                                    ore_mat
+                                } else {
+                                    base_mat
                                 }
-                                BiomeType::Desert
-                                | BiomeType::Beach
-                                | BiomeType::Ocean
-                                | BiomeType::DeepOcean => materials.sand,
-                                _ => materials.grass,
+                            } else {
+                                base_mat
                             }
                         }
                     } else if world_y <= water_floor_y {
-                        // 2. Lapisan Air (Water Fluid)
+                        // Lapisan Air Cair
                         materials.water
                     } else {
-                        // 3. Udara Bebas (Air)
+                        // Udara Bebas
                         MaterialId::AIR
                     };
 

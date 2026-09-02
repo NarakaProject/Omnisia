@@ -7,13 +7,13 @@
 
 **Omnisia** adalah voxel sandbox engine berkinerja tinggi yang dibangun dari nol menggunakan **Rust murni** dan abstraksi grafis **`wgpu`** (Metal backend untuk macOS). 
 
-Dirancang dengan prinsip **Engine-First, Data-Driven, Deterministic, Continuous Procedural Generation, & Scalable Hierarchical Streaming**, memisahkan secara tegas antara **Authoritative Near World (Full-Resolution Voxels)** dan **Derived Far World (Hierarchical LOD / Distant Horizons Boundary)**.
+Dirancang dengan prinsip **Engine-First, Data-Driven, Deterministic, 3D Volumetric Procedural Generation, & Scalable Hierarchical Streaming**, memisahkan secara tegas antara **Authoritative Near World (Full-Resolution Voxels)** dan **Derived Far World (Hierarchical LOD / Distant Horizons Boundary)**.
 
 ---
 
-## 🏛️ Arsitektur Pembangkitan Dunia Prosedural (Phase 4)
+## 🏛️ Arsitektur Generasi Dunia Volumetrik 3D (Phase 5)
 
-Engine ini menerapkan arsitektur generasi dunia prosedural berbasis medan multi-skala:
+Engine ini menerapkan arsitektur generasi dunia prosedural berbasis medan multi-skala dan densitas volumetrik 3D:
 
 ```text
                         WORLD SEED
@@ -35,21 +35,32 @@ Engine ini menerapkan arsitektur generasi dunia prosedural berbasis medan multi-
                  │                     │
                  └──────────┬──────────┘
                             ▼
-                       Height Field
+                  Height Field H(x,z)
                             │
                             ▼
                      Hydrology Layer
                      (Rivers & Lakes)
                             │
                             ▼
-                     Terrain Profile
+                  Terrain 3D Densities
+               (Overhangs & Cliffs D(x,y,z))
                             │
-                 ┌──────────┴──────────┐
-                 ▼                     ▼
-              Surface              Subsurface
-             Materials             Materials
-                 │                     │
-                 └──────────┬──────────┘
+                            ▼
+                     3D Cave Carving
+             (Worm Tunnels & Cheese Caverns)
+                            │
+                            ▼
+                  Underground Strata
+            (Topsoil -> Subsoil -> Stone -> Deepslate)
+                            │
+                            ▼
+                 Ore & Resource Placement
+            (Coal, Iron, Gold, Lumina Crystals)
+                            │
+                            ▼
+                    Natural Formations
+                 (Surface Rock Boulders)
+                            │
                             ▼
                      Chunk Voxelizer
                             │
@@ -58,12 +69,14 @@ Engine ini menerapkan arsitektur generasi dunia prosedural berbasis medan multi-
 ```
 
 ### Invariant & Prinsip Utama:
-1. **Deterministic & Seed-Based:** Formula murni `(WorldSeed, GeneratorVersion, WorldGenConfig, WorldCoord) -> Exact Chunk`. Bebas dari ketergantungan urutan thread atau urutan loading chunk.
-2. **Seamless Across Chunk Boundaries:** Kontinuitas matematis penuh pada perbatasan antar-chunk tanpa diskontinuitas buatan (*zero seams*) pada sumbu X, Z, maupun koordinat negatif.
-3. **Hardened Stale Async Identity:** Menggunakan tuple identitas `ChunkCoord + LifecycleGeneration + Revision` untuk mencegah race condition dan stale job execution setelah eviksi/resurrection chunk.
-4. **Coherent Hydrology & Continuous Rivers:** Jaringan sungai 2D kontinu yang mengukir lembah secara mulus menuju batas permukaan air laut (*sea level*) melintasi batas chunk.
-5. **Persistence Precedence:** Chunk yang telah tersimpan di disk (`RegionStore`) atau dimutasi oleh pemain **selalu menang** atas generator prosedural.
-6. **Explicit Missing-Content Handling:** Menolak silent fallback ke `core:air` jika `ResourceId` tidak ditemukan di registry untuk mencegah *silent data loss*.
+1. **Volumetric 3D Caves & Overhangs:** Gua 3D berongga non-kolumnar (*cheese caverns & elongated worm tunnels*) dan overhang tebing sejati ($\text{Air} \to \text{Solid} \to \text{Air} \to \text{Solid}$).
+2. **Underground Stratification:** Pembagian lapisan geologi bertingkat (*Topsoil $\to$ Subsoil $\to$ Stone $\to$ Deepslate* pada $y < -32$).
+3. **Deterministic Ore Distribution:** Sebaran urat/kantong bijih mineral (*Coal, Iron, Gold, Crystal*) yang hanya menggantikan batuan padat dan tidak pernah muncul di udara atau air.
+4. **Deterministic & Seed-Based:** Formula murni `(WorldSeed, GeneratorVersion, WorldGenConfig, WorldCoord) -> Exact Chunk`. Bebas dari ketergantungan urutan thread atau urutan loading chunk.
+5. **Seamless Across Chunk Boundaries:** Kontinuitas matematis penuh pada perbatasan antar-chunk tanpa diskontinuitas buatan (*zero seams*) pada sumbu X, Y, Z maupun koordinat negatif.
+6. **Hardened Stale Async Identity:** Menggunakan tuple identitas `ChunkCoord + LifecycleGeneration + Revision` untuk mencegah race condition dan stale job execution setelah eviksi/resurrection chunk.
+7. **Persistence Precedence:** Chunk yang telah tersimpan di disk (`RegionStore`) atau dimutasi oleh pemain **selalu menang** atas generator prosedural.
+8. **Explicit Missing-Content Handling:** Menolak silent fallback ke `core:air` jika `ResourceId` tidak ditemukan di registry untuk mencegah *silent data loss*.
 
 ---
 
@@ -73,20 +86,21 @@ Dijalankan pada arsitektur Intel Core i7 x86_64 dengan backend Metal:
 
 | No | Pengujian Benchmark | Metrik Pengukuran | Keterangan & Analisis |
 |:---|:---|:---|:---|
-| 1 | **Chunk Indexing** | **0.37 ns / op** | $10^7$ iterasi dalam 3.69 ms ($O(1)$ inlined) |
-| 2 | **Chunk Fill (32k voxels)** | **3.92 µs / chunk** | 128 KiB memory throughput ultra-cepat |
-| 3 | **Culled Meshing 32³** | **0.469 ms / chunk** | 16,896 Vertices, 4,224 Quads per chunk |
-| 4 | **Greedy Meshing 32³** | **0.885 ms / chunk** | 288 Vertices, 72 Quads (**58.67x Quad Reduction**) |
-| 5 | **AO Calculation** | **21.66 ns / face** | 500,000 sampling sudut dalam 10.83 ms |
-| 6 | **100 Chunks Procedural Meshing** | **44.66 ms** | Mengolah 100 chunk prosedural serentak (1.72M vertex) via Rayon |
-| 7 | **Chunk Palette Zstd Compress** | **1.96 ms** | 131,072 bytes $\to$ 624 bytes (**210.1x rasio kompresi**) |
-| 8 | **Chunk Palette Zstd Decompress** | **850.93 µs** | Rekonstruksi chunk 32k voxel sempurna (< 1 ms) |
-| 9 | **Noise 2D fBm Sampling** | **123.90 ns / sample** | $10^6$ sampling kontinu deterministik bebas alokasi |
-| 10 | **Terrain Profile Evaluation** | **706.52 ns / point** | 100,000 titik evaluasi profil medan, iklim, dan sungai |
-| 11 | **Procedural Chunk Generation** | **0.889 ms / chunk** | **1,124.6 chunks/detik** (Single-core voxelization) |
-| 12 | **100 Chunks Parallel Generation** | **18.18 ms** | **5,500 chunks/detik** (Rayon parallel throughput) |
-| 13 | **Voxel Hot Path Lookup (MaterialId)** | **1.47 ns / op** | **0 Overhead** runtime index array vs string hash |
-| 14 | **Mod Discovery & Parsing** | **120.30 µs / run** | Discovery deterministik + validasi TOML manifest |
+| 1 | **Chunk Indexing** | **0.25 ns / op** | Inlined $O(1)$ canonical index |
+| 2 | **Chunk Fill (32k voxels)** | **3.46 µs / chunk** | 128 KiB memory throughput |
+| 3 | **Culled Meshing 32³** | **0.305 ms / chunk** | 16,896 Vertices, 4,224 Quads per chunk |
+| 4 | **Greedy Meshing 32³** | **0.729 ms / chunk** | 580 Vertices, 145 Quads (**29.13x Quad Reduction**) |
+| 5 | **AO Calculation** | **15.76 ns / face** | 500,000 sampling sudut AO |
+| 6 | **100 Chunks Procedural Meshing** | **32.40 ms** | Mengolah 100 chunk prosedural serentak (1.73M vertex) via Rayon |
+| 7 | **Chunk Palette Zstd Compress** | **1.72 ms** | 131,072 bytes $\to$ 1,307 bytes (**100.3x rasio kompresi**) |
+| 8 | **Chunk Palette Zstd Decompress** | **683.14 µs** | Rekonstruksi chunk 32k voxel sempurna (< 1 ms) |
+| 9 | **Noise 3D fBm Sampling** | **128.38 ns / sample** | $10^6$ sampling volumetrik 3D bebas alokasi |
+| 10 | **3D Cave & Worm Tunnel Sampling** | **222.02 ns / point** | 100,000 titik evaluasi rongga gua 3D |
+| 11 | **3D Overhang & Feature Eval** | **43.47 ns / point** | 100,000 titik evaluasi densitas tebing |
+| 12 | **Phase 5 Procedural Chunk Gen** | **7.802 ms / chunk** | Generasi 32³ micro-voxels dengan fitur 3D lengkap (0 alokasi heap di hot loop) |
+| 13 | **100 Chunks Parallel Generation** | **103.47 ms** | **~966.5 chunks/detik** (Rayon parallel throughput) |
+| 14 | **Voxel Hot Path Lookup** | **1.23 ns / op** | Zero-overhead runtime index array |
+| 15 | **Mod Discovery & Parsing** | **79.84 µs / run** | Discovery deterministik + validasi TOML manifest |
 
 ---
 
@@ -108,7 +122,7 @@ cargo run --release
 cargo run --release -- --validate-mods
 ```
 
-### 3. Menjalankan Test Suite (45 Unit Tests)
+### 3. Menjalankan Test Suite (52 Unit Tests)
 ```bash
 cargo test
 ```
@@ -125,8 +139,8 @@ cargo run --release --bin benchmarks
 ```text
 content/
 └── core/                       # Authoritative Built-in Core Content
-    ├── materials/              # stone, dirt, grass, sand, water, snow, metal_frame, dll.
-    ├── blocks/                 # stone_block, dirt_block, grass_block, water_block, snow_block, dll.
+    ├── materials/              # stone, dirt, grass, sand, water, snow, deepslate, coal_ore, iron_ore, gold_ore, crystal, dll.
+    ├── blocks/                 # stone_block, dirt_block, grass_block, water_block, snow_block, deepslate_block, dll.
     ├── textures/
     ├── models/
     ├── sounds/
@@ -155,17 +169,19 @@ src/
 ├── storage.rs                  # RegionStore abstraction, palette serialization, Zstd
 ├── world.rs                    # World façade (drives streaming, eviction, & meshing)
 ├── bin/
-│   └── benchmarks.rs           # 17 Benchmark suite
-├── worldgen/                   # Procedural World Generation Subsystem (Phase 4)
+│   └── benchmarks.rs           # 18 Benchmark suite
+├── worldgen/                   # Procedural World Generation Subsystem (Phase 4 & 5)
 │   ├── mod.rs
 │   ├── seed.rs                 # WorldSeed (u64 & SplitMix64 string hash), GeneratorVersion, SeedContext
 │   ├── config.rs               # WorldGenConfig & WorldIdentity
-│   ├── noise.rs                # Deterministic Gradient noise, fBm, & Ridged noise
+│   ├── noise.rs                # Deterministic 2D/3D Gradient noise, fBm, & Ridged noise
 │   ├── climate.rs              # Continentalness, Temperature, Moisture, Erosion, Peaks/Valleys
 │   ├── biome.rs                # BiomeType & BiomeClassifier
 │   ├── hydrology.rs            # 2D continuous river curve & lake basins
 │   ├── terrain.rs              # Continuous height profiling H(x, z)
-│   ├── voxelizer.rs            # ChunkVoxelizer (32³ voxelization & material assignment)
+│   ├── caves.rs                # 3D Cave Sampler (Elongated worm tunnels & cheese caverns)
+│   ├── features.rs             # Overhangs, Underground Strata, Ore distribution, Formations
+│   ├── voxelizer.rs            # ChunkVoxelizer (32³ 3D volumetric voxelization)
 │   └── pipeline.rs             # ProceduralWorldGenerator (implements ChunkGenerator)
 ├── streaming/                  # World Streaming Subsystem
 │   ├── mod.rs

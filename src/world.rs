@@ -45,21 +45,21 @@ impl World {
         Self::with_seed(WorldSeed::default())
     }
 
-    /// Membuat instance World dengan seed tertentu
-    pub fn with_seed(seed: WorldSeed) -> Self {
+    /// Mencoba membuat instance World dengan seed tertentu, mengembalikan error jika Core Content gagal dimuat
+    pub fn try_with_seed(seed: WorldSeed) -> Result<Self, String> {
         let config = WorldGenConfig::new(seed);
-        match ContentRuntime::build_runtime("content/core", "mods") {
-            Ok(resolved) => {
-                Self::with_content_and_config(resolved.materials, resolved.blocks, config)
-            }
-            Err(e) => {
-                log::error!(
-                    "Gagal memuat Core Content saat inisialisasi World: {}. Menggunakan fallback minimal.",
-                    e
-                );
-                Self::with_content_and_config(MaterialRegistry::new(), BlockRegistry::new(), config)
-            }
-        }
+        let resolved = ContentRuntime::build_runtime("content/core", "mods")
+            .map_err(|e| format!("Gagal memuat Core Content saat inisialisasi World: {}", e))?;
+        Ok(Self::with_content_and_config(
+            resolved.materials,
+            resolved.blocks,
+            config,
+        ))
+    }
+
+    /// Membuat instance World dengan seed tertentu (panic secara eksplisit jika Core Content hilang/gagal)
+    pub fn with_seed(seed: WorldSeed) -> Self {
+        Self::try_with_seed(seed).expect("Inisialisasi World gagal karena Core Content tidak valid atau hilang (tidak ada silent minimal fallback)")
     }
 
     /// Membuat instance World dengan MaterialRegistry, BlockRegistry, dan WorldGenConfig yang ditentukan

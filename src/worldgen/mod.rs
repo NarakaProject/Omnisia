@@ -1,6 +1,8 @@
 pub mod biome;
+pub mod caves;
 pub mod climate;
 pub mod config;
+pub mod features;
 pub mod hydrology;
 pub mod noise;
 pub mod pipeline;
@@ -9,8 +11,10 @@ pub mod terrain;
 pub mod voxelizer;
 
 pub use biome::{BiomeClassifier, BiomeType};
+pub use caves::CaveSampler;
 pub use climate::{ClimateSample, ClimateSampler};
 pub use config::{WorldGenConfig, WorldIdentity};
+pub use features::{FormationSampler, OreSampler, OverhangSampler, UndergroundStrata};
 pub use hydrology::{HydrologySample, HydrologySampler};
 pub use pipeline::ProceduralWorldGenerator;
 pub use seed::{GeneratorVersion, SeedContext, WorldSeed};

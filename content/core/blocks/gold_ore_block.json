@@ -1,0 +1,11 @@
+{
+  "id": "core:gold_ore_block",
+  "material": "core:gold_ore",
+  "hardness": 6.0,
+  "components": {},
+  "tags": [
+    "natural",
+    "solid",
+    "ore"
+  ]
+}

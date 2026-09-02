@@ -1,0 +1,9 @@
+{
+  "id": "core:deepslate",
+  "name": "Deepslate",
+  "density": 2900.0,
+  "shear_strength": 65000.0,
+  "color": [0.18, 0.18, 0.22],
+  "solid": true,
+  "transparent": false
+}

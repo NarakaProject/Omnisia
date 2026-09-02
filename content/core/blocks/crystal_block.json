@@ -1,0 +1,11 @@
+{
+  "id": "core:crystal_block",
+  "material": "core:crystal",
+  "hardness": 7.0,
+  "components": {},
+  "tags": [
+    "natural",
+    "solid",
+    "crystal"
+  ]
+}

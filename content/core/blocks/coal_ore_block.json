@@ -1,0 +1,11 @@
+{
+  "id": "core:coal_ore_block",
+  "material": "core:coal_ore",
+  "hardness": 4.0,
+  "components": {},
+  "tags": [
+    "natural",
+    "solid",
+    "ore"
+  ]
+}

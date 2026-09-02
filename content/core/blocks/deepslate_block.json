@@ -1,0 +1,11 @@
+{
+  "id": "core:deepslate_block",
+  "material": "core:deepslate",
+  "hardness": 6.5,
+  "components": {},
+  "tags": [
+    "natural",
+    "solid",
+    "stone"
+  ]
+}

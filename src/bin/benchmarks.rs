@@ -16,14 +16,14 @@ use omnisia::storage::{decompress_and_deserialize_chunk, serialize_and_compress_
 use omnisia::streaming::generator::ChunkGenerator;
 use omnisia::voxel::VoxelBlock;
 use omnisia::worldgen::config::WorldGenConfig;
-use omnisia::worldgen::noise::sample_fbm_2d;
+use omnisia::worldgen::noise::sample_fbm_3d;
 use omnisia::worldgen::pipeline::ProceduralWorldGenerator;
 use omnisia::worldgen::seed::WorldSeed;
 
 fn main() {
     println!("============================================================");
     println!("     OMNISIA ENGINE ARCHITECTURE BENCHMARK SUITE           ");
-    println!("     Phase 4: Procedural World Generation Foundation       ");
+    println!("     Phase 5: 3D Voxel World Features & Volumetric Caves   ");
     println!("     Target Baseline: MacBook Pro 2018 (Intel x86_64)      ");
     println!("============================================================");
 
@@ -67,7 +67,7 @@ fn main() {
         );
     }
 
-    // Siapkan 1 Chunk Terrain Prosedural Nyata
+    // Siapkan 1 Chunk Terrain Prosedural Nyata (Phase 5 dengan 3D caves & features)
     let worldgen = ProceduralWorldGenerator::new(WorldGenConfig::new(WorldSeed::from_u64(1337)));
     let terrain_chunk = worldgen.generate_chunk(IVec3::new(0, 0, 0), &registry);
 
@@ -306,48 +306,77 @@ fn main() {
         );
     }
 
-    // 14. Benchmark Noise 2D fBm Sampling Throughput (1,000,000 samples)
+    // 14. Benchmark Noise 3D fBm Sampling Throughput (1,000,000 samples)
     {
         let start = Instant::now();
         let iterations = 1_000_000;
         let mut sum = 0.0f32;
         for i in 0..iterations {
-            let x = (i % 1000) as f32;
-            let z = (i / 1000) as f32;
-            sum += sample_fbm_2d(x, z, 1337, 4, 0.5, 2.0, 0.005);
+            let x = (i % 100) as f32;
+            let y = ((i / 100) % 100) as f32;
+            let z = (i / 10000) as f32;
+            sum += sample_fbm_3d(x, y, z, 1337, 3, 0.5, 2.0, 0.02);
         }
         let elapsed = start.elapsed();
         let ns_per_noise = elapsed.as_nanos() as f64 / iterations as f64;
         println!(
-            "[BENCHMARK 14] Noise 2D fBm Sampling (1M samples): {:.2} ns/sample (Total: {:?}, sum: {:.1})",
+            "[BENCHMARK 14] Noise 3D fBm Sampling (1M samples): {:.2} ns/sample (Total: {:?}, sum: {:.1})",
             ns_per_noise, elapsed, sum
         );
     }
 
-    // 15. Benchmark Terrain Profile Evaluation (100,000 continuous points)
+    // 15. Benchmark 3D Cave Density & Worm Tunnel Sampling (100,000 points)
     {
-        let profiler = worldgen.profiler();
+        let caves = worldgen.caves();
         let start = Instant::now();
         let iterations = 100_000;
-        let mut sum_height = 0.0f32;
+        let mut cave_count = 0;
         for i in 0..iterations {
-            let x = (i % 300) as f32 * 2.0;
-            let z = (i / 300) as f32 * 2.0;
-            let pt = profiler.evaluate(x, z);
-            sum_height += pt.surface_height_y;
+            let x = (i % 100) as f32;
+            let y = ((i / 100) % 100) as f32 - 50.0;
+            let z = (i / 1000) as f32;
+            if caves.is_cave(x, y, z, 20.0) {
+                cave_count += 1;
+            }
         }
         let elapsed = start.elapsed();
         let ns_per_point = elapsed.as_nanos() as f64 / iterations as f64;
         println!(
-            "[BENCHMARK 15] Terrain Profile Evaluation (100k points): {:.2} ns/point (Total: {:?}, avg height: {:.1})",
-            ns_per_point, elapsed, sum_height / iterations as f32
+            "[BENCHMARK 15] 3D Cave & Worm Tunnel Sampling (100k points): {:.2} ns/point (Total: {:?}, caves found: {})",
+            ns_per_point, elapsed, cave_count
         );
     }
 
-    // 16. Benchmark Single Procedural Chunk Generation (32³ voxelization)
+    // 16. Benchmark 3D Overhang & Feature Evaluation (100,000 points)
+    {
+        let overhangs = worldgen.overhangs();
+        let start = Instant::now();
+        let iterations = 100_000;
+        let mut sum_density = 0.0f32;
+        for i in 0..iterations {
+            let x = (i % 100) as f32;
+            let y = ((i / 100) % 100) as f32;
+            let z = (i / 1000) as f32;
+            sum_density += overhangs.sample_density(
+                x,
+                y,
+                z,
+                25.0,
+                omnisia::worldgen::biome::BiomeType::Mountains,
+            );
+        }
+        let elapsed = start.elapsed();
+        let ns_per_point = elapsed.as_nanos() as f64 / iterations as f64;
+        println!(
+            "[BENCHMARK 16] 3D Overhang & Feature Evaluation (100k points): {:.2} ns/point (Total: {:?}, sum density: {:.1})",
+            ns_per_point, elapsed, sum_density
+        );
+    }
+
+    // 17. Benchmark Single Phase 5 Procedural Chunk Generation (32³ voxelization with 3D features)
     {
         let start = Instant::now();
-        let iterations = 500;
+        let iterations = 200;
         for i in 0..iterations {
             let coord = IVec3::new(i % 10, 0, i / 10);
             let _ = worldgen.generate_chunk(coord, &registry);
@@ -355,13 +384,13 @@ fn main() {
         let elapsed = start.elapsed();
         let ms_per_chunk = elapsed.as_secs_f64() * 1000.0 / iterations as f64;
         println!(
-            "[BENCHMARK 16] Procedural Chunk Generation & Voxelization: {:.3} ms/chunk ({:.1} chunks/sec)",
+            "[BENCHMARK 17] Phase 5 Procedural Chunk Generation (3D Features): {:.3} ms/chunk ({:.1} chunks/sec)",
             ms_per_chunk,
             1000.0 / ms_per_chunk
         );
     }
 
-    // 17. Benchmark 100 Procedural Chunks Parallel Generation (Rayon)
+    // 18. Benchmark 100 Procedural Chunks Parallel Generation (Rayon)
     {
         use rayon::prelude::*;
         let start = Instant::now();
@@ -373,7 +402,7 @@ fn main() {
         let elapsed = start.elapsed();
         let total_voxels: usize = chunks.iter().map(|c| c.non_air_count as usize).sum();
         println!(
-            "[BENCHMARK 17] 100 Procedural Chunks Parallel Generation (Rayon): {:?} ({:.2} ms total, Total Solid Voxels: {})",
+            "[BENCHMARK 18] 100 Procedural Chunks Parallel Generation (Rayon): {:?} ({:.2} ms total, Total Solid Voxels: {})",
             elapsed,
             elapsed.as_secs_f64() * 1000.0,
             total_voxels

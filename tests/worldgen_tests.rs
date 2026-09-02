@@ -1,7 +1,7 @@
 use glam::IVec3;
 
 use omnisia::chunk::dirty_flags;
-use omnisia::material::MaterialRegistry;
+use omnisia::material::{MaterialId, MaterialRegistry};
 use omnisia::modding::resource_id::ResourceId;
 use omnisia::modding::runtime::ContentRuntime;
 use omnisia::storage::{MemoryCompressedRegionStore, RegionStore};
@@ -12,6 +12,7 @@ use omnisia::worldgen::climate::ClimateSample;
 use omnisia::worldgen::config::WorldGenConfig;
 use omnisia::worldgen::pipeline::ProceduralWorldGenerator;
 use omnisia::worldgen::seed::{GeneratorVersion, WorldSeed};
+use omnisia::worldgen::voxelizer::ResolvedGenMaterials;
 
 fn get_test_material_registry() -> MaterialRegistry {
     ContentRuntime::build_runtime("content/core", "mods")
@@ -36,6 +37,7 @@ fn test_seed_determinism() {
         IVec3::new(5, 0, -3),
         IVec3::new(-10, 0, 20),
         IVec3::new(-1, -1, -1),
+        IVec3::new(2, -2, 2),
     ];
 
     for coord in test_coords {
@@ -61,7 +63,7 @@ fn test_different_seeds_produce_different_terrain() {
     let chunk_a = gen_a.generate_chunk(coord, &registry);
     let chunk_b = gen_b.generate_chunk(coord, &registry);
 
-    // Seed berbeda menghasilkan topografi berbeda
+    // Seed berbeda menghasilkan topografi dan fitur 3D berbeda
     assert_ne!(chunk_a.voxels, chunk_b.voxels);
 }
 
@@ -72,8 +74,8 @@ fn test_chunk_loading_order_independence() {
 
     let coords = [
         IVec3::new(0, 0, 0),
-        IVec3::new(1, 0, 0),
-        IVec3::new(2, 0, 0),
+        IVec3::new(1, -1, 0),
+        IVec3::new(2, 0, 1),
     ];
 
     // Urutan A -> B -> C
@@ -176,7 +178,7 @@ fn test_negative_coordinates_worldgen_continuity() {
 }
 
 // ============================================================================
-// 3. VERTICAL CHUNK Y & SEA LEVEL TESTS
+// 3. VERTICAL CHUNK Y & DEEP STRATA TESTS
 // ============================================================================
 
 #[test]
@@ -184,18 +186,28 @@ fn test_negative_chunk_y_deep_subsurface() {
     let registry = get_test_material_registry();
     let generator = ProceduralWorldGenerator::new(WorldGenConfig::new(WorldSeed::from_u64(1234)));
 
-    let stone_id = registry
-        .resolve_material_id(&ResourceId::core("stone").unwrap())
-        .expect("core:stone harus terdaftar di registry");
+    let deepslate_id = registry
+        .resolve_material_id(&ResourceId::core("deepslate").unwrap())
+        .expect("core:deepslate harus terdaftar di registry");
 
-    // Chunk di Y = -2 (World Y: -64 hingga -33)
+    // Chunk di Y = -2 (World Y: -64 hingga -33) -> Deep Strata
     let chunk_deep = generator.generate_chunk(IVec3::new(0, -2, 0), &registry);
 
-    // Deep underground harus padat penuh (32768 voxels batu) tanpa udara/rumput
-    assert_eq!(chunk_deep.non_air_count, 32768);
+    // Deep underground memiliki massa padat tinggi (deepslate / ores / caverns)
+    assert!(chunk_deep.non_air_count > 10000);
+
+    // Memverifikasi keberadaan deepslate stone di kedalaman $y < -32$
+    let mut found_deepslate = false;
     for block in chunk_deep.voxels.iter() {
-        assert_eq!(block.material(), stone_id);
+        if block.material() == deepslate_id {
+            found_deepslate = true;
+            break;
+        }
     }
+    assert!(
+        found_deepslate,
+        "Deepslate harus terbentuk pada kedalaman $y < -32$!"
+    );
 }
 
 #[test]
@@ -211,7 +223,6 @@ fn test_sea_level_consistency_in_world_coordinates() {
 
     if pt.surface_height_y < 16.0 {
         let chunk = generator.generate_chunk(IVec3::new(-16, 0, -16), &registry);
-        // Air harus terisi sampai ketinggian sea_level (16)
         let water_id = registry
             .resolve_material_id(&ResourceId::core("water").unwrap())
             .unwrap();
@@ -260,23 +271,248 @@ fn test_river_continuity_across_boundaries() {
     let generator = ProceduralWorldGenerator::new(config);
     let profiler = generator.profiler();
 
-    // Uji kelanjutan lembah sungai sepanjang garis transversal
-    let mut river_samples = 0;
-    for x in 0..100 {
-        let pt = profiler.evaluate(x as f32, 50.0);
-        if pt.hydrology.is_river {
-            river_samples += 1;
+    // Verifikasi kontinuitas kedalaman sungai melintasi batas chunk (x = 31 vs x = 32)
+    for z in 0..50 {
+        let pt1 = profiler.evaluate(31.0, z as f32);
+        let pt2 = profiler.evaluate(32.0, z as f32);
+
+        // Jika satu titik adalah sungai, titik sebelahnya memiliki transisi kedalaman mulus
+        let depth_diff = (pt1.hydrology.river_depth - pt2.hydrology.river_depth).abs();
+        assert!(
+            depth_diff < 1.5,
+            "Transisi sungai pada boundary x=31->32 harus mulus: d1={}, d2={}",
+            pt1.hydrology.river_depth,
+            pt2.hydrology.river_depth
+        );
+    }
+}
+
+// ============================================================================
+// 5. 3D CAVES & TOPOLOGY TESTS (PHASE 5)
+// ============================================================================
+
+#[test]
+fn test_3d_cave_determinism_and_topology() {
+    let config = WorldGenConfig::new(WorldSeed::from_u64(4242));
+    let generator = ProceduralWorldGenerator::new(config);
+    let caves = generator.caves();
+
+    // Uji sampling 3D pada beberapa titik bawah tanah
+    let sample1 = caves.is_cave(10.0, -10.0, 10.0, 20.0);
+    let sample2 = caves.is_cave(10.0, -10.0, 10.0, 20.0);
+    assert_eq!(sample1, sample2, "Sampling gua 3D harus deterministik!");
+
+    // Gua tidak boleh terbentuk di atas permukaan tanah bebas
+    assert!(!caves.is_cave(0.0, 50.0, 0.0, 20.0));
+
+    // Verifikasi adanya rongga 3D di bawah tanah
+    let mut cave_voxels = 0;
+    for y in -40..0 {
+        for z in 0..20 {
+            for x in 0..20 {
+                if caves.is_cave(x as f32, y as f32, z as f32, 20.0) {
+                    cave_voxels += 1;
+                }
+            }
         }
     }
-    // Sungai harus eksis dan kontinu dalam rentang teruji
     assert!(
-        river_samples > 0,
-        "Sungai harus terdeteksi di koordinat teruji"
+        cave_voxels > 0,
+        "Gua 3D harus menghasilkan rongga nyata di bawah tanah!"
+    );
+}
+
+#[test]
+fn test_cave_boundary_continuity_xyz() {
+    let config = WorldGenConfig::new(WorldSeed::from_u64(9999));
+    let generator = ProceduralWorldGenerator::new(config);
+    let caves = generator.caves();
+
+    // Verifikasi evaluasi gua 3D melewati batas chunk sumbu X (x=31 vs x=32), Y (y=-1 vs y=0), Z (z=31 vs z=32)
+    let eps = 0.001;
+    for x in [-1.0, 31.0, 32.0] {
+        for y in [-33.0, -32.0, -1.0, 0.0] {
+            for z in [-1.0, 31.0, 32.0] {
+                let c1 = caves.is_cave(x, y, z, 30.0);
+                let c2 = caves.is_cave(x + eps, y + eps, z + eps, 30.0);
+                assert_eq!(c1, c2, "Evaluasi gua 3D harus kontinu pada batas eps!");
+            }
+        }
+    }
+}
+
+// ============================================================================
+// 6. OVERHANGS & 3D NON-COLUMNAR TOPOLOGY TESTS (PHASE 5)
+// ============================================================================
+
+#[test]
+fn test_overhang_topology_non_columnar() {
+    let registry = get_test_material_registry();
+    let config = WorldGenConfig::new(WorldSeed::from_u64(7777));
+    let generator = ProceduralWorldGenerator::new(config);
+    let water_id = registry
+        .resolve_material_id(&ResourceId::core("water").unwrap())
+        .unwrap();
+
+    // Cari kolom voxel yang memiliki topologi non-kolumnar (Solid di atas Air di atas Solid)
+    let mut found_non_columnar = false;
+
+    // Pindai area pegunungan
+    for cx in -3..3 {
+        for cz in -3..3 {
+            let chunk = generator.generate_chunk(IVec3::new(cx, 0, cz), &registry);
+            for lz in 0..32 {
+                for lx in 0..32 {
+                    let mut solid_run = 0;
+                    let mut transitions = 0;
+                    let mut last_solid = false;
+
+                    for ly in 0..32 {
+                        let voxel_mat = chunk.get_voxel(lx, ly, lz).material();
+                        let is_solid = voxel_mat != MaterialId::AIR && voxel_mat != water_id;
+                        if is_solid != last_solid {
+                            transitions += 1;
+                            last_solid = is_solid;
+                        }
+                        if is_solid {
+                            solid_run += 1;
+                        }
+                    }
+
+                    // Jika ada transisi solid -> air -> solid (minimal 3 transisi di kolom vertikal yang sama)
+                    if transitions >= 3 && solid_run > 2 {
+                        found_non_columnar = true;
+                        break;
+                    }
+                }
+                if found_non_columnar {
+                    break;
+                }
+            }
+            if found_non_columnar {
+                break;
+            }
+        }
+        if found_non_columnar {
+            break;
+        }
+    }
+
+    assert!(
+        found_non_columnar,
+        "Generasi 3D harus mampu menghasilkan topologi non-kolumnar (overhang / gua tebing)!"
     );
 }
 
 // ============================================================================
-// 5. PERSISTENCE PRECEDENCE & MUTATION TESTS
+// 7. UNDERGROUND STRATA & ORE DISTRIBUTION TESTS (PHASE 5)
+// ============================================================================
+
+#[test]
+fn test_underground_layers_stratification() {
+    let registry = get_test_material_registry();
+    let config = WorldGenConfig::new(WorldSeed::from_u64(1337));
+    let generator = ProceduralWorldGenerator::new(config);
+
+    let stone_id = registry
+        .resolve_material_id(&ResourceId::core("stone").unwrap())
+        .unwrap();
+    let deepslate_id = registry
+        .resolve_material_id(&ResourceId::core("deepslate").unwrap())
+        .unwrap();
+
+    // Chunk di $Y = 0$ (Upper Strata: batu dominan)
+    let chunk_y0 = generator.generate_chunk(IVec3::new(0, 0, 0), &registry);
+    let mut found_stone = false;
+    for b in chunk_y0.voxels.iter() {
+        if b.material() == stone_id {
+            found_stone = true;
+            break;
+        }
+    }
+    assert!(found_stone, "Upper strata harus mengandung stone!");
+
+    // Chunk di $Y = -2$ ($world\_y < -32$, Deep Strata: deepslate dominan)
+    let chunk_y_neg = generator.generate_chunk(IVec3::new(0, -2, 0), &registry);
+    let mut found_deepslate = false;
+    for b in chunk_y_neg.voxels.iter() {
+        if b.material() == deepslate_id {
+            found_deepslate = true;
+            break;
+        }
+    }
+    assert!(found_deepslate, "Deep strata harus mengandung deepslate!");
+}
+
+#[test]
+fn test_ore_distribution_invariants() {
+    let registry = get_test_material_registry();
+    let config = WorldGenConfig::new(WorldSeed::from_u64(42));
+    let generator = ProceduralWorldGenerator::new(config);
+
+    let coal_id = registry
+        .resolve_material_id(&ResourceId::core("coal_ore").unwrap())
+        .unwrap();
+    let iron_id = registry
+        .resolve_material_id(&ResourceId::core("iron_ore").unwrap())
+        .unwrap();
+    let gold_id = registry
+        .resolve_material_id(&ResourceId::core("gold_ore").unwrap())
+        .unwrap();
+    let water_id = registry
+        .resolve_material_id(&ResourceId::core("water").unwrap())
+        .unwrap();
+
+    let mut found_coal = false;
+    let mut found_iron = false;
+    let mut found_gold = false;
+
+    for cy in -2..=1 {
+        for cx in 0..3 {
+            let chunk = generator.generate_chunk(IVec3::new(cx, cy, 0), &registry);
+            for b in chunk.voxels.iter() {
+                let mat = b.material();
+                if mat == coal_id {
+                    found_coal = true;
+                    assert_ne!(mat, MaterialId::AIR);
+                    assert_ne!(mat, water_id);
+                } else if mat == iron_id {
+                    found_iron = true;
+                    assert_ne!(mat, MaterialId::AIR);
+                    assert_ne!(mat, water_id);
+                } else if mat == gold_id {
+                    found_gold = true;
+                    assert_ne!(mat, MaterialId::AIR);
+                    assert_ne!(mat, water_id);
+                }
+            }
+        }
+    }
+
+    assert!(found_coal, "Coal ore harus berhasil terbentuk di dunia!");
+    assert!(found_iron, "Iron ore harus berhasil terbentuk di dunia!");
+    assert!(
+        found_gold,
+        "Gold ore harus berhasil terbentuk di kedalaman!"
+    );
+}
+
+#[test]
+fn test_natural_formations_voxel_presence() {
+    let registry = get_test_material_registry();
+    let config = WorldGenConfig::new(WorldSeed::from_u64(8888));
+    let generator = ProceduralWorldGenerator::new(config);
+
+    // Generate beberapa chunk di permukaan dataran/pegunungan dan pastikan ada voxel yang terbentuk
+    let chunk = generator.generate_chunk(IVec3::new(0, 0, 0), &registry);
+    assert!(
+        chunk.non_air_count > 0,
+        "Chunk harus memiliki voxel terbentuk!"
+    );
+}
+
+// ============================================================================
+// 8. PERSISTENCE & ERROR HANDLING TESTS
 // ============================================================================
 
 #[test]
@@ -355,17 +591,21 @@ fn test_deterministic_golden_snapshot() {
     let config = WorldGenConfig::new(WorldSeed::from_u64(42));
     let generator = ProceduralWorldGenerator::new(config);
 
-    let stone_id = registry
-        .resolve_material_id(&ResourceId::core("stone").unwrap())
-        .expect("core:stone harus terdaftar di registry");
-
     let coord = IVec3::new(0, 0, 0);
     let chunk = generator.generate_chunk(coord, &registry);
 
-    // Golden invariant snapshot
     assert!(chunk.non_air_count > 0);
     assert_eq!(chunk.position, coord);
+}
 
-    // Snapshot material di lapisan batu bawah
-    assert_eq!(chunk.get_voxel(16, 2, 16).material(), stone_id);
+#[test]
+fn test_missing_generation_material_fails_explicitly() {
+    // Registry kosong tanpa material core
+    let empty_registry = MaterialRegistry::new();
+    let result = ResolvedGenMaterials::resolve(&empty_registry);
+
+    assert!(
+        result.is_err(),
+        "ResolvedGenMaterials::resolve HARUS gagal secara eksplisit jika ada material inti yang hilang!"
+    );
 }

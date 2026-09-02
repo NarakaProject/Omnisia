@@ -70,8 +70,8 @@ fn emit_quad(
     let s = VOXEL_SIZE;
 
     let corners: [[f32; 3]; 4] = match direction {
-        FaceDirection::PosY => [[0.0, s, 0.0], [s, s, 0.0], [s, s, s], [0.0, s, s]],
-        FaceDirection::NegY => [[0.0, 0.0, s], [s, 0.0, s], [s, 0.0, 0.0], [0.0, 0.0, 0.0]],
+        FaceDirection::PosY => [[0.0, s, s], [s, s, s], [s, s, 0.0], [0.0, s, 0.0]],
+        FaceDirection::NegY => [[0.0, 0.0, 0.0], [s, 0.0, 0.0], [s, 0.0, s], [0.0, 0.0, s]],
         FaceDirection::PosZ => [[0.0, 0.0, s], [s, 0.0, s], [s, s, s], [0.0, s, s]],
         FaceDirection::NegZ => [[s, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, s, 0.0], [s, s, 0.0]],
         FaceDirection::PosX => [[s, 0.0, s], [s, 0.0, 0.0], [s, s, 0.0], [s, s, s]],
