@@ -1,0 +1,9 @@
+{
+  "id": "core:tall_grass",
+  "name": "Tall Grass",
+  "density": 50.0,
+  "shear_strength": 300.0,
+  "color": [0.35, 0.68, 0.25],
+  "solid": true,
+  "transparent": false
+}

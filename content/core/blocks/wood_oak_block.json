@@ -1,0 +1,11 @@
+{
+  "id": "core:wood_oak_block",
+  "material": "core:wood_oak",
+  "hardness": 2.5,
+  "components": {},
+  "tags": [
+    "natural",
+    "solid",
+    "wood"
+  ]
+}

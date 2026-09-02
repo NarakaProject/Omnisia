@@ -1,7 +1,9 @@
 use bytemuck::{Pod, Zeroable};
-use glam::{Mat4, Vec3};
+use glam::{IVec3, Mat4, Vec3, Vec4};
 use winit::event::{ElementState, KeyEvent, MouseButton};
 use winit::keyboard::{KeyCode, PhysicalKey};
+
+use crate::coord::CHUNK_WORLD_SIZE;
 
 /// Uniform struct untuk binding ke GPU
 #[repr(C)]
@@ -19,6 +21,95 @@ impl Default for CameraUniform {
             camera_pos: [0.0; 3],
             _pad0: 0.0,
         }
+    }
+}
+
+/// Bidang frustum ternormalisasi: $a \cdot x + b \cdot y + c \cdot z + d = 0$
+#[derive(Debug, Clone, Copy)]
+pub struct FrustumPlane {
+    pub normal: Vec3,
+    pub distance: f32,
+}
+
+impl FrustumPlane {
+    #[inline]
+    pub fn from_vec4(v: Vec4) -> Self {
+        let normal = Vec3::new(v.x, v.y, v.z);
+        let length = normal.length();
+        if length > 1e-6 {
+            let inv_len = 1.0 / length;
+            Self {
+                normal: normal * inv_len,
+                distance: v.w * inv_len,
+            }
+        } else {
+            Self {
+                normal: Vec3::ZERO,
+                distance: 0.0,
+            }
+        }
+    }
+
+    /// Evaluasi jarak titik ke bidang frustum
+    #[inline]
+    pub fn distance_to_point(&self, point: Vec3) -> f32 {
+        self.normal.dot(point) + self.distance
+    }
+}
+
+/// Kamera view frustum yang terdiri dari 6 bidang (Left, Right, Bottom, Top, Near, Far)
+#[derive(Debug, Clone, Copy)]
+pub struct Frustum {
+    pub planes: [FrustumPlane; 6],
+}
+
+impl Frustum {
+    /// Ekstraksi 6 bidang frustum dari matriks View-Projection (wgpu NDC Depth [0, 1] standard)
+    pub fn from_view_projection(view_proj: &Mat4) -> Self {
+        let r0 = view_proj.row(0);
+        let r1 = view_proj.row(1);
+        let r2 = view_proj.row(2);
+        let r3 = view_proj.row(3);
+
+        Self {
+            planes: [
+                FrustumPlane::from_vec4(r3 + r0), // Left:   w + x >= 0
+                FrustumPlane::from_vec4(r3 - r0), // Right:  w - x >= 0
+                FrustumPlane::from_vec4(r3 + r1), // Bottom: w + y >= 0
+                FrustumPlane::from_vec4(r3 - r1), // Top:    w - y >= 0
+                FrustumPlane::from_vec4(r2),      // Near:   z >= 0 (wgpu depth 0..1)
+                FrustumPlane::from_vec4(r3 - r2), // Far:    w - z >= 0
+            ],
+        }
+    }
+
+    /// Uji irisan AABB dengan 6 bidang frustum menggunakan evaluasi p-vertex (Zero Heap Allocation)
+    #[inline]
+    pub fn intersects_aabb(&self, min: Vec3, max: Vec3) -> bool {
+        for plane in &self.planes {
+            let p = Vec3::new(
+                if plane.normal.x > 0.0 { max.x } else { min.x },
+                if plane.normal.y > 0.0 { max.y } else { min.y },
+                if plane.normal.z > 0.0 { max.z } else { min.z },
+            );
+
+            if plane.distance_to_point(p) < 0.0 {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Uji visibilitas AABB chunk terhadap frustum kamera
+    #[inline]
+    pub fn intersects_chunk(&self, chunk_coord: IVec3) -> bool {
+        let min = Vec3::new(
+            chunk_coord.x as f32 * CHUNK_WORLD_SIZE,
+            chunk_coord.y as f32 * CHUNK_WORLD_SIZE,
+            chunk_coord.z as f32 * CHUNK_WORLD_SIZE,
+        );
+        let max = min + Vec3::splat(CHUNK_WORLD_SIZE);
+        self.intersects_aabb(min, max)
     }
 }
 
@@ -89,6 +180,12 @@ impl Camera {
         let view = Mat4::look_at_rh(self.position, target, Vec3::Y);
         let proj = Mat4::perspective_rh(self.fov_y_rad, aspect, self.z_near, self.z_far);
         proj * view
+    }
+
+    /// Mengekstrak 6 bidang frustum dari kamera saat ini
+    pub fn extract_frustum(&self, aspect: f32) -> Frustum {
+        let vp = self.build_view_projection_matrix(aspect);
+        Frustum::from_view_projection(&vp)
     }
 
     /// Menghasilkan CameraUniform siap upload ke GPU

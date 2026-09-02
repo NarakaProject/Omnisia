@@ -1,0 +1,11 @@
+{
+  "id": "core:tall_grass_block",
+  "material": "core:tall_grass",
+  "hardness": 0.1,
+  "components": {},
+  "tags": [
+    "natural",
+    "plant",
+    "grass"
+  ]
+}

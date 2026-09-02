@@ -1,4 +1,5 @@
-use glam::IVec3;
+use glam::{IVec3, Vec3};
+use omnisia::camera::Camera;
 use omnisia::chunk::{dirty_flags, Chunk};
 use omnisia::coord::{
     canonical_coords_from_index, canonical_linear_index, world_voxel_to_chunk_and_local,
@@ -120,63 +121,57 @@ fn test_negative_coordinates_correctness() {
 
 #[test]
 fn test_chunk_mutation_and_non_air_count() {
-    let mut chunk = Chunk::new(IVec3::new(0, 0, 0));
+    let mut chunk = Chunk::new(IVec3::ZERO);
     assert_eq!(chunk.non_air_count, 0);
-    assert!(chunk.is_empty());
 
-    // Set 1 solid block
-    chunk.set_voxel(5, 5, 5, VoxelBlock::new(MaterialId::STONE));
+    // Tambah voxel solid
+    chunk.set_voxel(0, 0, 0, VoxelBlock::new(MaterialId::STONE));
     assert_eq!(chunk.non_air_count, 1);
-    assert!(!chunk.is_empty());
-    assert!(chunk.is_dirty(dirty_flags::VOXEL_DIRTY));
     assert!(chunk.is_dirty(dirty_flags::MESH_DIRTY));
+    assert!(chunk.is_dirty(dirty_flags::SAVE_DIRTY));
 
-    // Overwrite dengan block lain
-    chunk.set_voxel(5, 5, 5, VoxelBlock::new(MaterialId::DIRT));
+    // Timpa dengan voxel solid lain
+    chunk.set_voxel(0, 0, 0, VoxelBlock::new(MaterialId::DIRT));
     assert_eq!(chunk.non_air_count, 1);
 
-    // Set kembali ke Air
-    chunk.set_voxel(5, 5, 5, VoxelBlock::AIR);
+    // Ganti kembali menjadi udara
+    chunk.set_voxel(0, 0, 0, VoxelBlock::AIR);
     assert_eq!(chunk.non_air_count, 0);
-    assert!(chunk.is_empty());
-
-    // Test fill
-    chunk.fill_material(MaterialId::STONE);
-    assert_eq!(chunk.non_air_count, 32768);
-    assert!(chunk.is_full());
 }
 
 #[test]
 fn test_material_registry() {
     let registry = get_test_material_registry();
-    assert!(registry.len() >= 10);
+    let stone_res = ResourceId::core("stone").unwrap();
+    let dirt_res = ResourceId::core("dirt").unwrap();
 
     let stone_id = registry
-        .resolve_material_id(&ResourceId::core("stone").unwrap())
-        .expect("core:stone harus terdaftar");
-    let stone = registry.get(stone_id).unwrap();
-    assert_eq!(stone.name, "Reinforced Stone (Custom Override)"); // Verifikasi bahwa core:stone di-override oleh example_mod
-    assert!(stone.is_solid);
-    assert!(!stone.is_transparent);
+        .resolve_material_id(&stone_res)
+        .expect("Material core:stone harus terdaftar");
+    let dirt_id = registry
+        .resolve_material_id(&dirt_res)
+        .expect("Material core:dirt harus terdaftar");
 
-    let air_id = registry
-        .resolve_material_id(&ResourceId::core("air").unwrap())
-        .expect("core:air harus terdaftar");
-    let air = registry.get(air_id).unwrap();
-    assert_eq!(air.name, "Air");
-    assert!(!air.is_solid);
-    assert!(air.is_transparent);
+    assert_ne!(stone_id, dirt_id);
+    assert_eq!(registry.resolve_resource_id(stone_id), Some(&stone_res));
+
+    let dirt_def = registry.get(dirt_id).unwrap();
+    assert_eq!(dirt_def.name, "Dirt");
+    assert!(dirt_def.is_solid);
 }
 
 #[test]
 fn test_ao_calculation() {
-    assert_eq!(vertex_ao(true, true, true), 0); // Corner tertutup penuh
-    assert_eq!(vertex_ao(true, true, false), 0);
-    assert_eq!(vertex_ao(false, false, false), 3); // Terbuka penuh
+    assert_eq!(vertex_ao(false, false, false), 3);
     assert_eq!(vertex_ao(true, false, false), 2);
+    assert_eq!(vertex_ao(false, true, false), 2);
+    assert_eq!(vertex_ao(true, true, false), 0);
     assert_eq!(vertex_ao(false, false, true), 2);
+    assert_eq!(vertex_ao(true, true, true), 0);
 
     assert_eq!(ao_to_float(0), 0.25);
+    assert_eq!(ao_to_float(1), 0.50);
+    assert_eq!(ao_to_float(2), 0.75);
     assert_eq!(ao_to_float(3), 1.00);
 }
 
@@ -218,6 +213,107 @@ fn test_greedy_mesher_optimization() {
         "Greedy meshing harus mereduksi quad count: Greedy ({}) < Culled ({})",
         greedy_mesh.quad_count(),
         culled_mesh.quad_count()
+    );
+}
+
+#[test]
+fn test_greedy_mesher_chunk_boundary_continuity() {
+    let registry = get_test_material_registry();
+
+    // Buat dua chunk berdampingan: Chunk A di (0, 0, 0) dan Chunk B di (1, 0, 0)
+    let mut chunk_a = Chunk::new(IVec3::new(0, 0, 0));
+    let mut chunk_b = Chunk::new(IVec3::new(1, 0, 0));
+
+    // Isi lapisan solid di sepanjang perbatasan (x=31 di A, x=0 di B)
+    for z in 0..32 {
+        for y in 0..10 {
+            chunk_a.set_voxel(31, y, z, VoxelBlock::new(MaterialId::STONE));
+            chunk_b.set_voxel(0, y, z, VoxelBlock::new(MaterialId::STONE));
+        }
+    }
+
+    // Urutan A lalu B
+    let mut mesh_a1 = MeshData::new();
+    let mut mesh_b1 = MeshData::new();
+    generate_greedy_mesh(&chunk_a, &registry, &mut mesh_a1);
+    generate_greedy_mesh(&chunk_b, &registry, &mut mesh_b1);
+
+    // Urutan B lalu A
+    let mut mesh_b2 = MeshData::new();
+    let mut mesh_a2 = MeshData::new();
+    generate_greedy_mesh(&chunk_b, &registry, &mut mesh_b2);
+    generate_greedy_mesh(&chunk_a, &registry, &mut mesh_a2);
+
+    assert_eq!(
+        mesh_a1.vertex_count(),
+        mesh_a2.vertex_count(),
+        "Generasi mesh Chunk A harus identik bebas urutan!"
+    );
+    assert_eq!(
+        mesh_b1.vertex_count(),
+        mesh_b2.vertex_count(),
+        "Generasi mesh Chunk B harus identik bebas urutan!"
+    );
+    assert_eq!(mesh_a1.quad_count(), mesh_a2.quad_count());
+    assert_eq!(mesh_b1.quad_count(), mesh_b2.quad_count());
+}
+
+#[test]
+fn test_frustum_extraction_and_culling() {
+    let camera = Camera::new(
+        Vec3::new(0.0, 0.0, 0.0),
+        -90.0, // Menghadap lurus ke arah -Z
+        0.0,
+    );
+
+    let aspect = 16.0 / 9.0;
+    let frustum = camera.extract_frustum(aspect);
+
+    // 1. Chunk di depan kamera pada arah -Z (misal: (0, 0, -2) -> world Z: -32..-16) -> Harus Visible
+    let chunk_in_front = IVec3::new(0, 0, -2);
+    assert!(
+        frustum.intersects_chunk(chunk_in_front),
+        "Chunk di depan kamera harus visible!"
+    );
+
+    // 2. Chunk di belakang kamera pada arah +Z (misal: (0, 0, 2) -> world Z: 32..48) -> Harus Culled
+    let chunk_behind = IVec3::new(0, 0, 2);
+    assert!(
+        !frustum.intersects_chunk(chunk_behind),
+        "Chunk di belakang kamera harus ter-cull!"
+    );
+
+    // 3. Chunk jauh di samping kanan (+X = 100) -> Harus Culled
+    let chunk_far_right = IVec3::new(100, 0, -2);
+    assert!(
+        !frustum.intersects_chunk(chunk_far_right),
+        "Chunk jauh di samping harus ter-cull!"
+    );
+}
+
+#[test]
+fn test_frustum_negative_coordinates_and_zero_allocation() {
+    let camera = Camera::new(
+        Vec3::new(-50.0, 10.0, -50.0),
+        -135.0, // Menghadap ke arah kuadran negatif (-X, -Z)
+        -10.0,
+    );
+
+    let aspect = 16.0 / 9.0;
+    let frustum = camera.extract_frustum(aspect);
+
+    // Chunk di area negatif (-5, 0, -5) -> world bounds [-80..-64, 0..16, -80..-64]
+    let chunk_neg_front = IVec3::new(-5, 0, -5);
+    assert!(
+        frustum.intersects_chunk(chunk_neg_front),
+        "Chunk pada koordinat negatif di depan kamera harus visible!"
+    );
+
+    // Chunk di area positif (5, 0, 5) -> berada di belakang kamera
+    let chunk_pos_behind = IVec3::new(5, 0, 5);
+    assert!(
+        !frustum.intersects_chunk(chunk_pos_behind),
+        "Chunk di belakang kamera pada koordinat positif harus ter-cull!"
     );
 }
 

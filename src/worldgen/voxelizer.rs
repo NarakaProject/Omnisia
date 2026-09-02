@@ -9,6 +9,7 @@ use crate::voxel::VoxelBlock;
 use super::caves::CaveSampler;
 use super::features::{FormationSampler, OreSampler, OverhangSampler, UndergroundStrata};
 use super::terrain::TerrainProfiler;
+use super::vegetation::VegetationSampler;
 
 /// Struktur cache ID material runtime untuk proses voxelization cepat tanpa alokasi / string parsing
 #[derive(Debug, Clone, Copy)]
@@ -24,6 +25,12 @@ pub struct ResolvedGenMaterials {
     pub iron_ore: MaterialId,
     pub gold_ore: MaterialId,
     pub crystal: MaterialId,
+    pub wood_oak: MaterialId,
+    pub leaves_oak: MaterialId,
+    pub wood_pine: MaterialId,
+    pub leaves_pine: MaterialId,
+    pub shrub: MaterialId,
+    pub tall_grass: MaterialId,
 }
 
 impl ResolvedGenMaterials {
@@ -53,6 +60,12 @@ impl ResolvedGenMaterials {
             iron_ore: resolve_req("iron_ore")?,
             gold_ore: resolve_req("gold_ore")?,
             crystal: resolve_req("crystal")?,
+            wood_oak: resolve_req("wood_oak")?,
+            leaves_oak: resolve_req("leaves_oak")?,
+            wood_pine: resolve_req("wood_pine")?,
+            leaves_pine: resolve_req("leaves_pine")?,
+            shrub: resolve_req("shrub")?,
+            tall_grass: resolve_req("tall_grass")?,
         })
     }
 }
@@ -61,6 +74,7 @@ impl ResolvedGenMaterials {
 pub struct ChunkVoxelizer;
 
 impl ChunkVoxelizer {
+    #[allow(clippy::too_many_arguments, clippy::needless_range_loop)]
     pub fn voxelize(
         chunk_coord: IVec3,
         profiler: &TerrainProfiler,
@@ -68,6 +82,7 @@ impl ChunkVoxelizer {
         overhangs: &OverhangSampler,
         ores: &OreSampler,
         formations: &FormationSampler,
+        vegetation: &VegetationSampler,
         materials: &ResolvedGenMaterials,
     ) -> Chunk {
         let mut chunk = Chunk::new(chunk_coord);
@@ -93,36 +108,51 @@ impl ChunkVoxelizer {
             }
         }
 
-        // Fast bounding box rejection: Jika chunk berada jauh di atas ketinggian maksimum terrain + overhang
-        if (base_world_y as f32) > max_surface_y + 18.0 {
-            return chunk; // 100% Air
+        // Bounding Box Height Culling: Jika seluruh chunk berada jauh di atas permukaan tertinggi dan laut -> Chunk Udara Bersih
+        let min_chunk_y = base_world_y as f32;
+        let _max_chunk_y = (base_world_y + 31) as f32;
+        let water_level_y = profiler.config.sea_level as f32;
+
+        if min_chunk_y > max_surface_y + 20.0 && min_chunk_y > water_level_y + 20.0 {
+            // Evaluasi stamping vegetasi jika ada tajuk pohon yang menjulang ke chunk atas ini
+            vegetation.stamp_vegetation_to_chunk(
+                chunk_coord,
+                &mut chunk,
+                profiler,
+                caves,
+                materials,
+            );
+            chunk.recount_non_air();
+            chunk.dirty_flags = dirty_flags::ALL;
+            return chunk;
         }
 
-        // 2. Voxelization volumetrik 3D ke volume 32x32x32
-        for (lz, row) in column_points.iter().enumerate() {
+        // 2. Evaluasi 3D Voxel Loop (32x32x32 = 32,768 voxel)
+        for lz in 0..CHUNK_SIZE_USIZE {
+            let wz = (base_world_z + lz as i32) as f32;
             let world_z = base_world_z + lz as i32;
-            for (lx, &cell) in row.iter().enumerate() {
+
+            for lx in 0..CHUNK_SIZE_USIZE {
+                let wx = (base_world_x + lx as i32) as f32;
                 let world_x = base_world_x + lx as i32;
-                let pt = cell.unwrap();
+                let pt = column_points[lz][lx].expect("Column point harus sudah dievaluasi");
+
                 let surface_floor_y = pt.surface_height_y.floor() as i32;
                 let water_floor_y = pt.water_level_y.floor() as i32;
 
                 for ly in 0..CHUNK_SIZE_USIZE {
+                    let wy = (base_world_y + ly as i32) as f32;
                     let world_y = base_world_y + ly as i32;
-                    let wx = world_x as f32;
-                    let wy = world_y as f32;
-                    let wz = world_z as f32;
 
-                    // A. Evaluasi Densitas 3D Medan & Overhang
+                    // A. Densitas Medan 3D (Overhangs & Cliffs)
                     let overhang_density =
                         overhangs.sample_density(wx, wy, wz, pt.surface_height_y, pt.biome);
                     let terrain_density = (pt.surface_height_y - wy) + overhang_density;
                     let mut is_solid = terrain_density >= 0.0;
 
+                    // B. Formasi Batuan Alami di Permukaan
                     let mut formation_mat = None;
-
-                    // B. Formasi Batuan Alami Menonjol di Permukaan
-                    if !is_solid && wy > pt.surface_height_y {
+                    if !is_solid && world_y > surface_floor_y {
                         if let Some(f_mat) = formations.sample_surface_formation(
                             world_x,
                             world_y,
@@ -189,6 +219,11 @@ impl ChunkVoxelizer {
         }
 
         chunk.non_air_count = non_air;
+
+        // 3. Stamping Vegetasi Kanonikal
+        vegetation.stamp_vegetation_to_chunk(chunk_coord, &mut chunk, profiler, caves, materials);
+        chunk.recount_non_air();
+
         chunk.dirty_flags = dirty_flags::ALL;
         chunk
     }

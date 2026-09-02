@@ -1,0 +1,10 @@
+{
+  "id": "core:leaves_pine_block",
+  "material": "core:leaves_pine",
+  "hardness": 0.5,
+  "components": {},
+  "tags": [
+    "natural",
+    "leaves"
+  ]
+}

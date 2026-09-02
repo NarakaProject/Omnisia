@@ -1,0 +1,9 @@
+{
+  "id": "core:leaves_oak",
+  "name": "Oak Leaves",
+  "density": 120.0,
+  "shear_strength": 1000.0,
+  "color": [0.28, 0.58, 0.22],
+  "solid": true,
+  "transparent": false
+}

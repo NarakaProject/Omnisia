@@ -15,7 +15,7 @@ pub struct TerrainPoint {
 
 /// Profiler terrain global kontinu
 pub struct TerrainProfiler {
-    config: WorldGenConfig,
+    pub config: WorldGenConfig,
     climate_sampler: ClimateSampler,
     hydrology_sampler: HydrologySampler,
 }

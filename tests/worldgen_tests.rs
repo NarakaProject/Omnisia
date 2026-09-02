@@ -63,7 +63,7 @@ fn test_different_seeds_produce_different_terrain() {
     let chunk_a = gen_a.generate_chunk(coord, &registry);
     let chunk_b = gen_b.generate_chunk(coord, &registry);
 
-    // Seed berbeda menghasilkan topografi dan fitur 3D berbeda
+    // Seed berbeda menghasilkan topografi dan vegetasi berbeda
     assert_ne!(chunk_a.voxels, chunk_b.voxels);
 }
 
@@ -276,7 +276,6 @@ fn test_river_continuity_across_boundaries() {
         let pt1 = profiler.evaluate(31.0, z as f32);
         let pt2 = profiler.evaluate(32.0, z as f32);
 
-        // Jika satu titik adalah sungai, titik sebelahnya memiliki transisi kedalaman mulus
         let depth_diff = (pt1.hydrology.river_depth - pt2.hydrology.river_depth).abs();
         assert!(
             depth_diff < 1.5,
@@ -288,7 +287,7 @@ fn test_river_continuity_across_boundaries() {
 }
 
 // ============================================================================
-// 5. 3D CAVES & TOPOLOGY TESTS (PHASE 5)
+// 5. 3D CAVES & TOPOLOGY TESTS
 // ============================================================================
 
 #[test]
@@ -297,15 +296,12 @@ fn test_3d_cave_determinism_and_topology() {
     let generator = ProceduralWorldGenerator::new(config);
     let caves = generator.caves();
 
-    // Uji sampling 3D pada beberapa titik bawah tanah
     let sample1 = caves.is_cave(10.0, -10.0, 10.0, 20.0);
     let sample2 = caves.is_cave(10.0, -10.0, 10.0, 20.0);
     assert_eq!(sample1, sample2, "Sampling gua 3D harus deterministik!");
 
-    // Gua tidak boleh terbentuk di atas permukaan tanah bebas
     assert!(!caves.is_cave(0.0, 50.0, 0.0, 20.0));
 
-    // Verifikasi adanya rongga 3D di bawah tanah
     let mut cave_voxels = 0;
     for y in -40..0 {
         for z in 0..20 {
@@ -328,7 +324,6 @@ fn test_cave_boundary_continuity_xyz() {
     let generator = ProceduralWorldGenerator::new(config);
     let caves = generator.caves();
 
-    // Verifikasi evaluasi gua 3D melewati batas chunk sumbu X (x=31 vs x=32), Y (y=-1 vs y=0), Z (z=31 vs z=32)
     let eps = 0.001;
     for x in [-1.0, 31.0, 32.0] {
         for y in [-33.0, -32.0, -1.0, 0.0] {
@@ -342,7 +337,7 @@ fn test_cave_boundary_continuity_xyz() {
 }
 
 // ============================================================================
-// 6. OVERHANGS & 3D NON-COLUMNAR TOPOLOGY TESTS (PHASE 5)
+// 6. OVERHANGS & 3D NON-COLUMNAR TOPOLOGY TESTS
 // ============================================================================
 
 #[test]
@@ -354,10 +349,8 @@ fn test_overhang_topology_non_columnar() {
         .resolve_material_id(&ResourceId::core("water").unwrap())
         .unwrap();
 
-    // Cari kolom voxel yang memiliki topologi non-kolumnar (Solid di atas Air di atas Solid)
     let mut found_non_columnar = false;
 
-    // Pindai area pegunungan
     for cx in -3..3 {
         for cz in -3..3 {
             let chunk = generator.generate_chunk(IVec3::new(cx, 0, cz), &registry);
@@ -379,7 +372,6 @@ fn test_overhang_topology_non_columnar() {
                         }
                     }
 
-                    // Jika ada transisi solid -> air -> solid (minimal 3 transisi di kolom vertikal yang sama)
                     if transitions >= 3 && solid_run > 2 {
                         found_non_columnar = true;
                         break;
@@ -405,7 +397,7 @@ fn test_overhang_topology_non_columnar() {
 }
 
 // ============================================================================
-// 7. UNDERGROUND STRATA & ORE DISTRIBUTION TESTS (PHASE 5)
+// 7. UNDERGROUND STRATA & ORE DISTRIBUTION TESTS
 // ============================================================================
 
 #[test]
@@ -421,7 +413,6 @@ fn test_underground_layers_stratification() {
         .resolve_material_id(&ResourceId::core("deepslate").unwrap())
         .unwrap();
 
-    // Chunk di $Y = 0$ (Upper Strata: batu dominan)
     let chunk_y0 = generator.generate_chunk(IVec3::new(0, 0, 0), &registry);
     let mut found_stone = false;
     for b in chunk_y0.voxels.iter() {
@@ -432,7 +423,6 @@ fn test_underground_layers_stratification() {
     }
     assert!(found_stone, "Upper strata harus mengandung stone!");
 
-    // Chunk di $Y = -2$ ($world\_y < -32$, Deep Strata: deepslate dominan)
     let chunk_y_neg = generator.generate_chunk(IVec3::new(0, -2, 0), &registry);
     let mut found_deepslate = false;
     for b in chunk_y_neg.voxels.iter() {
@@ -503,7 +493,6 @@ fn test_natural_formations_voxel_presence() {
     let config = WorldGenConfig::new(WorldSeed::from_u64(8888));
     let generator = ProceduralWorldGenerator::new(config);
 
-    // Generate beberapa chunk di permukaan dataran/pegunungan dan pastikan ada voxel yang terbentuk
     let chunk = generator.generate_chunk(IVec3::new(0, 0, 0), &registry);
     assert!(
         chunk.non_air_count > 0,
@@ -512,7 +501,194 @@ fn test_natural_formations_voxel_presence() {
 }
 
 // ============================================================================
-// 8. PERSISTENCE & ERROR HANDLING TESTS
+// 8. PHASE 6: VEGETATION INVARIANT TESTS
+// ============================================================================
+
+#[test]
+fn test_vegetation_determinism() {
+    let registry = get_test_material_registry();
+    let config = WorldGenConfig::new(WorldSeed::from_u64(9999));
+    let gen1 = ProceduralWorldGenerator::new(config);
+    let gen2 = ProceduralWorldGenerator::new(config);
+
+    let test_coords = [
+        IVec3::new(0, 1, 0),
+        IVec3::new(-1, 1, -1),
+        IVec3::new(2, 1, 3),
+    ];
+
+    for coord in test_coords {
+        let chunk1 = gen1.generate_chunk(coord, &registry);
+        let chunk2 = gen2.generate_chunk(coord, &registry);
+
+        assert_eq!(
+            chunk1.voxels, chunk2.voxels,
+            "Vegetasi harus 100% deterministik pada chunk {:?}",
+            coord
+        );
+    }
+}
+
+#[test]
+fn test_vegetation_loading_order_independence() {
+    let registry = get_test_material_registry();
+    let generator = ProceduralWorldGenerator::new(WorldGenConfig::new(WorldSeed::from_u64(54321)));
+
+    let coord_a = IVec3::new(0, 1, 0);
+    let coord_b = IVec3::new(1, 1, 0);
+
+    // Urutan A lalu B
+    let chunk_a1 = generator.generate_chunk(coord_a, &registry);
+    let chunk_b1 = generator.generate_chunk(coord_b, &registry);
+
+    // Urutan B lalu A
+    let chunk_b2 = generator.generate_chunk(coord_b, &registry);
+    let chunk_a2 = generator.generate_chunk(coord_a, &registry);
+
+    assert_eq!(
+        chunk_a1.voxels, chunk_a2.voxels,
+        "Pohon lintas batas harus identik terlepas urutan A -> B vs B -> A!"
+    );
+    assert_eq!(
+        chunk_b1.voxels, chunk_b2.voxels,
+        "Pohon lintas batas harus identik terlepas urutan B -> A vs A -> B!"
+    );
+}
+
+#[test]
+fn test_vegetation_chunk_boundary_crossing() {
+    let registry = get_test_material_registry();
+    let config = WorldGenConfig::new(WorldSeed::from_u64(12345));
+    let generator = ProceduralWorldGenerator::new(config);
+
+    let oak_wood_id = registry
+        .resolve_material_id(&ResourceId::core("wood_oak").unwrap())
+        .unwrap();
+    let oak_leaves_id = registry
+        .resolve_material_id(&ResourceId::core("leaves_oak").unwrap())
+        .unwrap();
+    let pine_wood_id = registry
+        .resolve_material_id(&ResourceId::core("wood_pine").unwrap())
+        .unwrap();
+    let pine_leaves_id = registry
+        .resolve_material_id(&ResourceId::core("leaves_pine").unwrap())
+        .unwrap();
+
+    let is_tree_mat = |m: MaterialId| {
+        m == oak_wood_id || m == oak_leaves_id || m == pine_wood_id || m == pine_leaves_id
+    };
+
+    // Pindai beberapa pasang chunk tetangga pada elevasi permukaan (cy = 0 dan 1)
+    let mut found_boundary_vegetation = false;
+    for cy in 0..=1 {
+        for cz in -3..3 {
+            for cx in -3..3 {
+                let chunk_west = generator.generate_chunk(IVec3::new(cx, cy, cz), &registry);
+                let chunk_east = generator.generate_chunk(IVec3::new(cx + 1, cy, cz), &registry);
+
+                // Cek apakah ada voxel pohon pada boundary x=31 di west dan x=0 di east
+                for lz in 0..32 {
+                    for ly in 0..32 {
+                        let mat_w = chunk_west.get_voxel(31, ly, lz).material();
+                        let mat_e = chunk_east.get_voxel(0, ly, lz).material();
+                        if is_tree_mat(mat_w) && is_tree_mat(mat_e) {
+                            found_boundary_vegetation = true;
+                            break;
+                        }
+                    }
+                    if found_boundary_vegetation {
+                        break;
+                    }
+                }
+                if found_boundary_vegetation {
+                    break;
+                }
+            }
+            if found_boundary_vegetation {
+                break;
+            }
+        }
+        if found_boundary_vegetation {
+            break;
+        }
+    }
+
+    assert!(
+        found_boundary_vegetation,
+        "Dedaunan atau batang pohon harus berhasil melintasi batas chunk!"
+    );
+}
+
+#[test]
+fn test_vegetation_biome_compatibility() {
+    let registry = get_test_material_registry();
+    let config = WorldGenConfig::new(WorldSeed::from_u64(777));
+    let generator = ProceduralWorldGenerator::new(config);
+
+    let oak_wood_id = registry
+        .resolve_material_id(&ResourceId::core("wood_oak").unwrap())
+        .unwrap();
+    let pine_wood_id = registry
+        .resolve_material_id(&ResourceId::core("wood_pine").unwrap())
+        .unwrap();
+    let water_id = registry
+        .resolve_material_id(&ResourceId::core("water").unwrap())
+        .unwrap();
+
+    // Pindai area lautan luas (surface_height < sea_level)
+    let ocean_chunk = generator.generate_chunk(IVec3::new(-16, 0, -16), &registry);
+    for b in ocean_chunk.voxels.iter() {
+        let mat = b.material();
+        if mat == water_id {
+            // Di bawah air tidak boleh ada batang kayu
+            assert_ne!(mat, oak_wood_id);
+            assert_ne!(mat, pine_wood_id);
+        }
+    }
+}
+
+#[test]
+fn test_vegetation_negative_coordinates_boundary_math() {
+    let registry = get_test_material_registry();
+    let config = WorldGenConfig::new(WorldSeed::from_u64(888));
+    let generator = ProceduralWorldGenerator::new(config);
+
+    // Koordinat batas negatif: chunk (-1, 1, -1) vs (-2, 1, -1)
+    let chunk_neg1 = generator.generate_chunk(IVec3::new(-1, 1, -1), &registry);
+    let chunk_neg2 = generator.generate_chunk(IVec3::new(-2, 1, -1), &registry);
+
+    assert_eq!(chunk_neg1.position, IVec3::new(-1, 1, -1));
+    assert_eq!(chunk_neg2.position, IVec3::new(-2, 1, -1));
+}
+
+#[test]
+fn test_vegetation_replaceable_voxel_policy() {
+    let registry = get_test_material_registry();
+    let config = WorldGenConfig::new(WorldSeed::from_u64(1337));
+    let generator = ProceduralWorldGenerator::new(config);
+
+    let stone_id = registry
+        .resolve_material_id(&ResourceId::core("stone").unwrap())
+        .unwrap();
+    let coal_id = registry
+        .resolve_material_id(&ResourceId::core("coal_ore").unwrap())
+        .unwrap();
+    let oak_leaves_id = registry
+        .resolve_material_id(&ResourceId::core("leaves_oak").unwrap())
+        .unwrap();
+
+    // Voxel batuan dasar dan bijih tidak boleh tertimpa oleh dedaunan
+    let chunk = generator.generate_chunk(IVec3::new(0, 0, 0), &registry);
+    for b in chunk.voxels.iter() {
+        let mat = b.material();
+        if mat == stone_id || mat == coal_id {
+            assert_ne!(mat, oak_leaves_id);
+        }
+    }
+}
+
+// ============================================================================
+// 9. PERSISTENCE & ERROR HANDLING TESTS
 // ============================================================================
 
 #[test]
@@ -576,10 +752,7 @@ fn test_generator_does_not_depend_on_neighbor_residency() {
 
     let coord = IVec3::new(15, 0, 25);
 
-    // Generate chunk secara terisolasi tanpa ada chunk lain di memori
     let standalone_chunk = generator.generate_chunk(coord, &registry);
-
-    // Generate kembali
     let duplicate_chunk = generator.generate_chunk(coord, &registry);
 
     assert_eq!(standalone_chunk.voxels, duplicate_chunk.voxels);
@@ -600,7 +773,6 @@ fn test_deterministic_golden_snapshot() {
 
 #[test]
 fn test_missing_generation_material_fails_explicitly() {
-    // Registry kosong tanpa material core
     let empty_registry = MaterialRegistry::new();
     let result = ResolvedGenMaterials::resolve(&empty_registry);
 

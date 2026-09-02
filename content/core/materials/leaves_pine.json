@@ -1,0 +1,9 @@
+{
+  "id": "core:leaves_pine",
+  "name": "Pine Needles",
+  "density": 150.0,
+  "shear_strength": 1200.0,
+  "color": [0.18, 0.42, 0.24],
+  "solid": true,
+  "transparent": false
+}

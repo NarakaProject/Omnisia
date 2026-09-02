@@ -1,0 +1,10 @@
+{
+  "id": "core:leaves_oak_block",
+  "material": "core:leaves_oak",
+  "hardness": 0.4,
+  "components": {},
+  "tags": [
+    "natural",
+    "leaves"
+  ]
+}

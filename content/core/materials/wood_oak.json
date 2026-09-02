@@ -1,0 +1,9 @@
+{
+  "id": "core:wood_oak",
+  "name": "Oak Wood",
+  "density": 700.0,
+  "shear_strength": 15000.0,
+  "color": [0.55, 0.38, 0.22],
+  "solid": true,
+  "transparent": false
+}

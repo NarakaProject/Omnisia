@@ -1,7 +1,8 @@
 use std::collections::{HashSet, VecDeque};
 use std::time::Instant;
 
-use glam::IVec3;
+use glam::{IVec3, Vec3};
+use omnisia::camera::Camera;
 use omnisia::chunk::Chunk;
 use omnisia::coord::{canonical_linear_index, CHUNK_VOLUME};
 use omnisia::material::MaterialId;
@@ -10,7 +11,6 @@ use omnisia::mesh::culled::generate_culled_mesh;
 use omnisia::mesh::greedy::generate_greedy_mesh;
 use omnisia::mesh::types::{FaceDirection, MeshData};
 use omnisia::modding::discovery::ModDiscovery;
-use omnisia::modding::resource_id::ResourceId;
 use omnisia::modding::runtime::ContentRuntime;
 use omnisia::storage::{decompress_and_deserialize_chunk, serialize_and_compress_chunk};
 use omnisia::streaming::generator::ChunkGenerator;
@@ -23,7 +23,7 @@ use omnisia::worldgen::seed::WorldSeed;
 fn main() {
     println!("============================================================");
     println!("     OMNISIA ENGINE ARCHITECTURE BENCHMARK SUITE           ");
-    println!("     Phase 5: 3D Voxel World Features & Volumetric Caves   ");
+    println!("     Phase 6: Vegetation & Performance Stabilization       ");
     println!("     Target Baseline: MacBook Pro 2018 (Intel x86_64)      ");
     println!("============================================================");
 
@@ -67,7 +67,7 @@ fn main() {
         );
     }
 
-    // Siapkan 1 Chunk Terrain Prosedural Nyata (Phase 5 dengan 3D caves & features)
+    // Siapkan 1 Chunk Terrain Prosedural Nyata (Phase 6 dengan 3D features & vegetasi)
     let worldgen = ProceduralWorldGenerator::new(WorldGenConfig::new(WorldSeed::from_u64(1337)));
     let terrain_chunk = worldgen.generate_chunk(IVec3::new(0, 0, 0), &registry);
 
@@ -100,6 +100,8 @@ fn main() {
         }
         let elapsed = start.elapsed();
         let ms_per_chunk = elapsed.as_secs_f64() * 1000.0 / iterations as f64;
+        let reduction_ratio =
+            culled_mesh.quad_count() as f64 / greedy_mesh.quad_count().max(1) as f64;
         println!(
             "[BENCHMARK 4] Greedy Meshing 32³: {:.3} ms/chunk (Vertices: {}, Indices: {}, Quads: {})",
             ms_per_chunk,
@@ -109,49 +111,53 @@ fn main() {
         );
         println!(
             "  -> Greedy Quad Reduction Ratio: {:.2}x vs Culled",
-            culled_mesh.quad_count() as f64 / greedy_mesh.quad_count().max(1) as f64
+            reduction_ratio
         );
     }
 
-    // 5. Benchmark AO Calculation
+    // 5. Benchmark Ambient Occlusion (AO) per face
     {
         let start = Instant::now();
         let iterations = 500_000;
         let mut sum_ao = 0.0f32;
         for i in 0..iterations {
-            let x = i % 30 + 1;
-            let y = (i / 30) % 30 + 1;
-            let z = (i / 900) % 30 + 1;
+            let x = (i % 30) + 1;
+            let y = ((i / 30) % 30) + 1;
+            let z = ((i / 900) % 30) + 1;
             let ao = calculate_face_ao(&terrain_chunk, x, y, z, FaceDirection::PosY);
-            sum_ao += ao[0];
+            sum_ao += ao[0] as f32;
         }
         let elapsed = start.elapsed();
-        let ns_per_ao = elapsed.as_nanos() as f64 / iterations as f64;
+        let ns_per_face = elapsed.as_nanos() as f64 / iterations as f64;
         println!(
             "[BENCHMARK 5] AO Calculation: {:.2} ns/face (Total: {:?}, sum: {:.1})",
-            ns_per_ao, elapsed, sum_ao
+            ns_per_face, elapsed, sum_ao
         );
     }
 
-    // 6. Benchmark 100 Chunks Meshing (Rayon Parallel)
+    // 6. Benchmark Rayon Parallel Meshing Across 100 Real Chunks
     {
+        use rayon::prelude::*;
+        let start = Instant::now();
         let chunks: Vec<Chunk> = (0..100)
-            .map(|i| worldgen.generate_chunk(IVec3::new(i % 10, 0, i / 10), &registry))
+            .into_par_iter()
+            .map(|i| {
+                let coord = IVec3::new(i % 10, 0, i / 10);
+                worldgen.generate_chunk(coord, &registry)
+            })
             .collect();
 
-        let start = Instant::now();
-        use rayon::prelude::*;
-        let results: Vec<MeshData> = chunks
+        let meshes: Vec<MeshData> = chunks
             .par_iter()
             .map(|c| {
                 let mut m = MeshData::new();
-                generate_culled_mesh(c, &registry, &mut m);
+                generate_greedy_mesh(c, &registry, &mut m);
                 m
             })
             .collect();
 
         let elapsed = start.elapsed();
-        let total_verts: usize = results.iter().map(|m| m.vertex_count()).sum();
+        let total_verts: usize = meshes.iter().map(|m| m.vertex_count()).sum();
         println!(
             "[BENCHMARK 6] 100 Procedural Chunk Parallel Meshing (Rayon): {:?} ({:.2} ms/100 chunks, Total Vertices: {})",
             elapsed,
@@ -160,36 +166,30 @@ fn main() {
         );
     }
 
-    // 7. Benchmark 1,000 Chunks Synthetic Meshing (Rayon Parallel)
+    // 7. Benchmark 1,000 Chunks Parallel Meshing (Synthetic Stress Test)
     {
-        let chunks: Vec<Chunk> = (0..1000)
-            .map(|i| {
-                let mut c = Chunk::new(IVec3::new(i % 10, i / 100, (i / 10) % 10));
-                for z in 0..32 {
-                    for x in 0..32 {
-                        let h = 4 + ((x + z + i as usize) % 8);
-                        for y in 0..h {
-                            c.set_voxel(x, y, z, VoxelBlock::new(MaterialId::DIRT));
-                        }
-                    }
+        use rayon::prelude::*;
+        let mut sample_chunk = Chunk::new(IVec3::ZERO);
+        for z in 0..32 {
+            for x in 0..32 {
+                for y in 0..16 {
+                    sample_chunk.set_voxel(x, y, z, VoxelBlock::new(MaterialId::DIRT));
                 }
-                c
-            })
-            .collect();
+            }
+        }
+        let chunk_ref = &sample_chunk;
 
         let start = Instant::now();
-        use rayon::prelude::*;
-        let results: Vec<MeshData> = chunks
-            .par_iter()
-            .map(|c| {
+        let count = 1000;
+        let total_quads: usize = (0..count)
+            .into_par_iter()
+            .map(|_| {
                 let mut m = MeshData::new();
-                generate_culled_mesh(c, &registry, &mut m);
-                m
+                generate_greedy_mesh(chunk_ref, &registry, &mut m);
+                m.quad_count()
             })
-            .collect();
-
+            .sum();
         let elapsed = start.elapsed();
-        let total_quads: usize = results.iter().map(|m| m.quad_count()).sum();
         println!(
             "[BENCHMARK 7] 1,000 Chunk Synthetic Meshing (Rayon): {:?} ({:.2} ms/1000 chunks, Total Quads: {})",
             elapsed,
@@ -198,100 +198,105 @@ fn main() {
         );
     }
 
-    // 8 & 9 & 10. Chunk Palette Serialization & Zstd Compression/Decompression
-    {
-        let start_comp = Instant::now();
+    // 8 & 9. Benchmark Zstd Palette Chunk Compression
+    let compressed_bytes = {
+        let start = Instant::now();
         let compressed =
-            serialize_and_compress_chunk(&terrain_chunk, &registry).expect("Kompresi Zstd gagal");
-        let comp_time = start_comp.elapsed();
-
-        let start_decomp = Instant::now();
-        let decompressed = decompress_and_deserialize_chunk(&compressed, &registry)
-            .expect("Dekompresi Zstd gagal");
-        let decomp_time = start_decomp.elapsed();
-
-        let raw_size = CHUNK_VOLUME * std::mem::size_of::<VoxelBlock>(); // 128 KiB
-        let comp_size = compressed.len();
-        let ratio = raw_size as f64 / comp_size as f64;
-
+            serialize_and_compress_chunk(&terrain_chunk, &registry).expect("Kompresi chunk gagal");
+        let elapsed = start.elapsed();
         println!(
             "[BENCHMARK 8 & 9] Chunk Palette Zstd Compress: {:?} | Raw: {} bytes -> Compressed: {} bytes ({:.1}x ratio)",
-            comp_time, raw_size, comp_size, ratio
+            elapsed,
+            CHUNK_VOLUME * std::mem::size_of::<VoxelBlock>(),
+            compressed.len(),
+            (CHUNK_VOLUME * std::mem::size_of::<VoxelBlock>()) as f64 / compressed.len() as f64
         );
+        compressed
+    };
+
+    // 10. Benchmark Zstd Palette Chunk Decompression
+    {
+        let start = Instant::now();
+        let loaded = decompress_and_deserialize_chunk(&compressed_bytes, &registry)
+            .expect("Dekompresi chunk gagal");
+        let elapsed = start.elapsed();
         println!(
             "[BENCHMARK 10] Chunk Palette Zstd Decompress: {:?} (Valid non_air: {})",
-            decomp_time, decompressed.non_air_count
+            elapsed, loaded.non_air_count
         );
     }
 
-    // 11. Benchmark Connectivity Traversal (Coarse / Sub-Cluster BFS)
+    // 11. Benchmark Connectivity BFS
     {
         let start = Instant::now();
         let mut visited = HashSet::new();
         let mut queue = VecDeque::new();
-        let mut count = 0;
+        let mut traversed = 0;
 
-        queue.push_back(IVec3::new(16, 10, 16));
-        visited.insert(IVec3::new(16, 10, 16));
+        let start_coord = IVec3::new(0, 0, 0);
+        queue.push_back(start_coord);
+        visited.insert(start_coord);
 
-        while let Some(curr) = queue.pop_front() {
-            count += 1;
-            for offset in [
-                IVec3::new(1, 0, 0),
-                IVec3::new(-1, 0, 0),
-                IVec3::new(0, 1, 0),
-                IVec3::new(0, -1, 0),
-                IVec3::new(0, 0, 1),
-                IVec3::new(0, 0, -1),
-            ] {
-                let next = curr + offset;
+        let neighbors = [
+            IVec3::X,
+            IVec3::NEG_X,
+            IVec3::Y,
+            IVec3::NEG_Y,
+            IVec3::Z,
+            IVec3::NEG_Z,
+        ];
+
+        while let Some(current) = queue.pop_front() {
+            traversed += 1;
+            for offset in &neighbors {
+                let next = current + *offset;
                 if next.x >= 0
                     && next.x < 32
                     && next.y >= 0
                     && next.y < 32
                     && next.z >= 0
                     && next.z < 32
-                    && !terrain_chunk
-                        .get_voxel(next.x as usize, next.y as usize, next.z as usize)
-                        .is_air()
-                    && visited.insert(next)
+                    && !visited.contains(&next)
                 {
-                    queue.push_back(next);
+                    let block =
+                        terrain_chunk.get_voxel(next.x as usize, next.y as usize, next.z as usize);
+                    if !block.is_air() {
+                        visited.insert(next);
+                        queue.push_back(next);
+                    }
                 }
             }
         }
         let elapsed = start.elapsed();
         println!(
             "[BENCHMARK 11] Localized Connectivity BFS ({} voxels traversed): {:?}",
-            count, elapsed
+            traversed, elapsed
         );
     }
 
     // 12. Benchmark Mod Discovery & Manifest Parsing
     {
         let start = Instant::now();
-        let iterations = 1_000;
-        let mut discovered_count = 0;
+        let iterations = 1000;
+        let mut count = 0;
         for _ in 0..iterations {
             let (discovered, _) = ModDiscovery::discover_from_dir("mods");
-            discovered_count = discovered.len();
+            count = discovered.len();
         }
         let elapsed = start.elapsed();
-        let us_per_discovery = elapsed.as_micros() as f64 / iterations as f64;
+        let us_per_run = elapsed.as_micros() as f64 / iterations as f64;
         println!(
             "[BENCHMARK 12] Mod Discovery & Manifest Parsing: {:.2} µs/run (Mods found: {}, Total: {:?})",
-            us_per_discovery, discovered_count, elapsed
+            us_per_run, count, elapsed
         );
     }
 
-    // 13. Benchmark Registry Voxel Hot Path Lookup
+    // 13. Benchmark MaterialRegistry Hot Path Lookup (MaterialId)
     {
-        let iterations = 10_000_000;
-        let res_id = ResourceId::parse("core:stone").unwrap();
-        let mat_id = registry.resolve_material_id(&res_id).unwrap();
-
         let start_index = Instant::now();
+        let iterations = 10_000_000;
         let mut sum_density = 0.0f32;
+        let mat_id = MaterialId::STONE;
         for _ in 0..iterations {
             if let Some(def) = registry.get(mat_id) {
                 sum_density += def.density_kg_m3;
@@ -373,7 +378,7 @@ fn main() {
         );
     }
 
-    // 17. Benchmark Single Phase 5 Procedural Chunk Generation (32³ voxelization with 3D features)
+    // 17. Benchmark Phase 6 Procedural Chunk Generation (3D Features + Canonical Vegetation Stamping)
     {
         let start = Instant::now();
         let iterations = 200;
@@ -384,7 +389,7 @@ fn main() {
         let elapsed = start.elapsed();
         let ms_per_chunk = elapsed.as_secs_f64() * 1000.0 / iterations as f64;
         println!(
-            "[BENCHMARK 17] Phase 5 Procedural Chunk Generation (3D Features): {:.3} ms/chunk ({:.1} chunks/sec)",
+            "[BENCHMARK 17] Phase 6 Procedural Chunk Generation (Vegetation + 3D): {:.3} ms/chunk ({:.1} chunks/sec)",
             ms_per_chunk,
             1000.0 / ms_per_chunk
         );
@@ -406,6 +411,27 @@ fn main() {
             elapsed,
             elapsed.as_secs_f64() * 1000.0,
             total_voxels
+        );
+    }
+
+    // 19. Benchmark Frustum Extraction & 1,000 Chunk AABB Intersections
+    {
+        let camera = Camera::new(Vec3::new(0.0, 30.0, 0.0), -90.0, -10.0);
+        let start = Instant::now();
+        let frustum = camera.extract_frustum(16.0 / 9.0);
+        let iterations = 100_000;
+        let mut visible_count = 0;
+        for i in 0..iterations {
+            let coord = IVec3::new((i % 40) - 20, (i / 40) % 5, (i / 200) - 20);
+            if frustum.intersects_chunk(coord) {
+                visible_count += 1;
+            }
+        }
+        let elapsed = start.elapsed();
+        let ns_per_cull = elapsed.as_nanos() as f64 / iterations as f64;
+        println!(
+            "[BENCHMARK 19] Frustum Culling Intersection: {:.2} ns/chunk (Total: {:?}, visible: {}/{})",
+            ns_per_cull, elapsed, visible_count, iterations
         );
     }
 

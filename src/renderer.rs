@@ -339,13 +339,42 @@ impl Renderer {
             },
         );
     }
+}
 
+/// Telemetri dan metrik rendering runtime yang akurat dan ringan tanpa alokasi heap per frame
+#[derive(Debug, Clone, Default)]
+pub struct RenderMetrics {
+    pub cpu_resident_chunks: usize,
+    pub gpu_mesh_count: usize,
+    pub render_eligible_chunks: usize,
+    pub frustum_visible_chunks: usize,
+    pub frustum_culled_chunks: usize,
+    pub submitted_indices: usize,
+    pub uploads_this_frame: usize,
+    pub upload_backlog: usize,
+    pub pending_mesh_jobs: usize,
+    pub frame_time_ms: f32,
+    pub fps: f32,
+}
+
+impl Renderer {
     pub fn remove_chunk_mesh(&mut self, chunk_coord: &IVec3) {
         self.chunk_meshes.remove(chunk_coord);
     }
 
-    /// Melakukan render frame lengkap
-    pub fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
+    /// Menghapus semua GPU mesh yang tidak lagi berada dalam set chunk koordinat aktif
+    pub fn retain_only(&mut self, active_coords: &std::collections::HashSet<IVec3>) {
+        self.chunk_meshes
+            .retain(|coord, _| active_coords.contains(coord));
+    }
+
+    /// Melakukan render frame lengkap dengan Frustum Culling dan Render-Distance filtering
+    pub fn render(
+        &mut self,
+        frustum: &crate::camera::Frustum,
+        camera_chunk: IVec3,
+        render_radius: i32,
+    ) -> Result<RenderMetrics, wgpu::SurfaceError> {
         let output = self.surface.get_current_texture()?;
         let view = output
             .texture
@@ -356,6 +385,11 @@ impl Renderer {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("Primary Render Encoder"),
             });
+
+        let mut render_eligible = 0;
+        let mut frustum_visible = 0;
+        let mut frustum_culled = 0;
+        let mut submitted_indices = 0;
 
         {
             // Warna langit pastel lembut untuk background clear
@@ -389,21 +423,52 @@ impl Renderer {
             render_pass.set_pipeline(&self.render_pipeline);
             render_pass.set_bind_group(0, &self.uniform_bind_group, &[]);
 
-            for gpu_mesh in self.chunk_meshes.values() {
-                if gpu_mesh.index_count > 0 {
-                    render_pass.set_vertex_buffer(0, gpu_mesh.vertex_buffer.slice(..));
-                    render_pass.set_index_buffer(
-                        gpu_mesh.index_buffer.slice(..),
-                        wgpu::IndexFormat::Uint32,
-                    );
-                    render_pass.draw_indexed(0..gpu_mesh.index_count, 0, 0..1);
+            for (&coord, gpu_mesh) in &self.chunk_meshes {
+                if gpu_mesh.index_count == 0 {
+                    continue;
                 }
+
+                // 1. Filter Tahap: Render-Distance Eligible (<= render_radius horizontal, <= 2 vertical)
+                let dx = (coord.x - camera_chunk.x).abs();
+                let dz = (coord.z - camera_chunk.z).abs();
+                let dy = (coord.y - camera_chunk.y).abs();
+                if dx > render_radius || dz > render_radius || dy > 2 {
+                    continue;
+                }
+                render_eligible += 1;
+
+                // 2. Filter Tahap: Frustum Visible
+                if !frustum.intersects_chunk(coord) {
+                    frustum_culled += 1;
+                    continue;
+                }
+
+                // 3. Aksi: Draw Submission
+                frustum_visible += 1;
+                submitted_indices += gpu_mesh.index_count as usize;
+
+                render_pass.set_vertex_buffer(0, gpu_mesh.vertex_buffer.slice(..));
+                render_pass
+                    .set_index_buffer(gpu_mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+                render_pass.draw_indexed(0..gpu_mesh.index_count, 0, 0..1);
             }
         }
 
         self.queue.submit(std::iter::once(encoder.finish()));
         output.present();
 
-        Ok(())
+        Ok(RenderMetrics {
+            cpu_resident_chunks: 0,
+            gpu_mesh_count: self.chunk_meshes.len(),
+            render_eligible_chunks: render_eligible,
+            frustum_visible_chunks: frustum_visible,
+            frustum_culled_chunks: frustum_culled,
+            submitted_indices,
+            uploads_this_frame: 0,
+            upload_backlog: 0,
+            pending_mesh_jobs: 0,
+            frame_time_ms: 0.0,
+            fps: 0.0,
+        })
     }
 }

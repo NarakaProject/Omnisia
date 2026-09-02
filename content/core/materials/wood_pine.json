@@ -1,0 +1,9 @@
+{
+  "id": "core:wood_pine",
+  "name": "Pine Wood",
+  "density": 600.0,
+  "shear_strength": 12000.0,
+  "color": [0.42, 0.28, 0.18],
+  "solid": true,
+  "transparent": false
+}

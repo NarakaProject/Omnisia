@@ -1,45 +1,40 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use glam::Vec3;
+use glam::IVec3;
+use omnisia::camera::Camera;
+use omnisia::coord::{world_pos_to_world_voxel, CHUNK_SIZE};
+use omnisia::modding::runtime::ContentRuntime;
+use omnisia::renderer::{LightUniform, Renderer};
+use omnisia::world::World;
+use omnisia::worldgen::seed::WorldSeed;
 use winit::application::ApplicationHandler;
 use winit::dpi::PhysicalSize;
 use winit::event::{DeviceEvent, DeviceId, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
-use winit::window::{Window, WindowAttributes, WindowId};
+use winit::window::{Window, WindowId};
 
-use omnisia::camera::Camera;
-use omnisia::modding::validate_mods_directory;
-use omnisia::renderer::Renderer;
-use omnisia::world::World;
-
-struct App {
+struct AppState {
     window: Option<Arc<Window>>,
     renderer: Option<Renderer>,
-    camera: Camera,
     world: World,
+    camera: Camera,
     last_frame_time: Instant,
     fps_timer: Instant,
     frame_count: u32,
 }
 
-impl Default for App {
-    fn default() -> Self {
-        // Posisi kamera awal di atas daratan pemandangan bentang alam prosedural
-        let camera = Camera::new(
-            Vec3::new(0.0, 34.0, 60.0),
-            -90.0, // Yaw menghadap sumbu -Z
-            -18.0, // Pitch melihat ke panorama bentang alam
-        );
-
-        let mut world = World::new();
-        world.generate_initial_area();
-
+impl AppState {
+    fn new(world: World) -> Self {
         Self {
             window: None,
             renderer: None,
-            camera,
             world,
+            camera: Camera::new(
+                glam::Vec3::new(0.0, 35.0, 0.0), // Spawn sedikit di atas elevasi permukaan awal
+                -90.0,                           // Hadap ke arah -Z awal
+                -10.0,
+            ),
             last_frame_time: Instant::now(),
             fps_timer: Instant::now(),
             frame_count: 0,
@@ -47,31 +42,28 @@ impl Default for App {
     }
 }
 
-impl ApplicationHandler for App {
+impl ApplicationHandler for AppState {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        if self.window.is_some() {
-            return;
+        if self.window.is_none() {
+            let window_attributes = Window::default_attributes()
+                .with_title("Omnisia Voxel Engine - Phase 6")
+                .with_inner_size(PhysicalSize::new(1280, 720));
+
+            let window = Arc::new(
+                event_loop
+                    .create_window(window_attributes)
+                    .expect("Gagal membuat window winit"),
+            );
+
+            let renderer = pollster::block_on(Renderer::new(window.clone()))
+                .expect("Gagal menginisialisasi renderer wgpu Metal");
+
+            // Setup initial lighting
+            renderer.update_light(&LightUniform::default());
+
+            self.window = Some(window);
+            self.renderer = Some(renderer);
         }
-
-        let window_attrs = WindowAttributes::default()
-            .with_title(
-                "Omnisia - Micro-Voxel Engine [Phase 4: Procedural World Generation Active]",
-            )
-            .with_inner_size(PhysicalSize::new(1280, 720));
-
-        let window = Arc::new(
-            event_loop
-                .create_window(window_attrs)
-                .expect("Gagal membuat window winit"),
-        );
-
-        let renderer = pollster::block_on(Renderer::new(window.clone()))
-            .expect("Gagal menginisialisasi renderer wgpu");
-
-        self.window = Some(window);
-        self.renderer = Some(renderer);
-        self.last_frame_time = Instant::now();
-        self.fps_timer = Instant::now();
     }
 
     fn window_event(
@@ -112,8 +104,51 @@ impl ApplicationHandler for App {
                     let camera_uniform = self.camera.build_uniform(aspect);
                     renderer.update_camera(&camera_uniform);
 
-                    match renderer.render() {
-                        Ok(_) => {}
+                    let frustum = self.camera.extract_frustum(aspect);
+                    let camera_voxel = world_pos_to_world_voxel(self.camera.position);
+                    let center_chunk = IVec3::new(
+                        camera_voxel.x.div_euclid(CHUNK_SIZE),
+                        camera_voxel.y.div_euclid(CHUNK_SIZE),
+                        camera_voxel.z.div_euclid(CHUNK_SIZE),
+                    );
+
+                    let render_result =
+                        renderer.render(&frustum, center_chunk, self.world.render_radius);
+
+                    match render_result {
+                        Ok(mut metrics) => {
+                            self.frame_count += 1;
+                            let elapsed = self.fps_timer.elapsed().as_secs_f32();
+                            if elapsed >= 0.5 {
+                                let fps = self.frame_count as f32 / elapsed;
+                                let frame_ms = 1000.0 / fps.max(1.0);
+                                metrics.cpu_resident_chunks = self.world.store.resident_count();
+                                metrics.uploads_this_frame = self.world.last_uploads_count;
+                                metrics.upload_backlog = self.world.upload_backlog();
+                                metrics.pending_mesh_jobs = self.world.pending_jobs_count();
+                                metrics.frame_time_ms = frame_ms;
+                                metrics.fps = fps;
+
+                                let mem = self.world.store.memory_usage(0);
+                                let title = format!(
+                                    "Omnisia [Phase 6] | FPS: {:.1} ({:.2}ms) | CPU Resident: {} | GPU: {} | Vis: {}/{} | Culled: {} | Indices: {} | Uploads: +{}/backlog:{} | Mem: {:.1}MB",
+                                    fps,
+                                    frame_ms,
+                                    metrics.cpu_resident_chunks,
+                                    metrics.gpu_mesh_count,
+                                    metrics.frustum_visible_chunks,
+                                    metrics.render_eligible_chunks,
+                                    metrics.frustum_culled_chunks,
+                                    metrics.submitted_indices,
+                                    metrics.uploads_this_frame,
+                                    metrics.upload_backlog,
+                                    mem.total_megabytes(),
+                                );
+                                window.set_title(&title);
+                                self.frame_count = 0;
+                                self.fps_timer = Instant::now();
+                            }
+                        }
                         Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
                             renderer.resize(renderer.size);
                         }
@@ -124,25 +159,6 @@ impl ApplicationHandler for App {
                         Err(e) => {
                             log::warn!("Render warning: {:?}", e);
                         }
-                    }
-
-                    // FPS & Streaming Metrics
-                    self.frame_count += 1;
-                    if self.fps_timer.elapsed().as_secs_f32() >= 1.0 {
-                        let fps = self.frame_count as f32 / self.fps_timer.elapsed().as_secs_f32();
-                        let frame_ms = 1000.0 / fps.max(1.0);
-                        let mem = self.world.store.memory_usage(0);
-                        let title = format!(
-                            "Omnisia World Gen Engine | FPS: {:.1} ({:.2} ms) | Chunks: {} | Pending: {} | Mem: {:.1} MB",
-                            fps,
-                            frame_ms,
-                            self.world.store.resident_count(),
-                            self.world.scheduler.pending_job_count(),
-                            mem.total_megabytes(),
-                        );
-                        window.set_title(&title);
-                        self.frame_count = 0;
-                        self.fps_timer = Instant::now();
                     }
                 }
             }
@@ -169,29 +185,53 @@ impl ApplicationHandler for App {
 }
 
 fn main() {
-    env_logger::init_from_env(env_logger::Env::default().default_filter_or("info"));
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
     let args: Vec<String> = std::env::args().collect();
-    if args
-        .iter()
-        .any(|arg| arg == "--validate-mods" || arg == "-v")
-    {
+    if args.iter().any(|arg| arg == "--validate-mods") {
         log::info!("Menjalankan validasi Core Content dan mod Omnisia...");
-        let report = validate_mods_directory("content/core", "mods");
-        report.print_summary();
-        if !report.is_all_ok() {
-            std::process::exit(1);
+        let resolved = ContentRuntime::build_runtime("content/core", "mods")
+            .expect("Validasi Core Content & Mod gagal");
+
+        println!("============================================================");
+        println!("           OMNISIA CONTENT & MOD VALIDATION REPORT          ");
+        println!("============================================================");
+        println!(
+            "[OK] core (Built-in Core: {} materials, {} blocks)",
+            resolved.materials.len(),
+            resolved.blocks.len()
+        );
+        println!(
+            "\nMod Eksternal Ditemukan: {}",
+            resolved.report.total_discovered
+        );
+        for (mod_id, summary) in &resolved.report.loaded_mods {
+            println!(
+                "[OK] {} (Materials: {}, Blocks: {}, Overrides: {})",
+                mod_id, summary.materials_loaded, summary.blocks_loaded, summary.overrides_applied
+            );
         }
+        if !resolved.report.applied_overrides.is_empty() {
+            println!("\nExplicit Overrides Diterapkan:");
+            for ov_msg in &resolved.report.applied_overrides {
+                println!("  [OVERRIDE] {}", ov_msg);
+            }
+        }
+        println!("\nTotal Registry Terdaftar:");
+        println!("  Materials: {}", resolved.materials.len());
+        println!("  Blocks:    {}", resolved.blocks.len());
+        println!("============================================================");
         return;
     }
 
-    log::info!("Memulai Omnisia Micro-Voxel Engine [Phase 4: Procedural World Generation]...");
+    log::info!("Memulai engine Omnisia (Phase 6 - Vegetation & Performance)...");
 
-    let event_loop = EventLoop::new().expect("Gagal membuat winit EventLoop");
+    let event_loop = EventLoop::new().expect("Gagal menginisialisasi EventLoop winit");
     event_loop.set_control_flow(ControlFlow::Poll);
 
-    let mut app = App::default();
-    event_loop
-        .run_app(&mut app)
-        .expect("Terjadi error pada EventLoop");
+    let seed = WorldSeed::default();
+    let world = World::with_seed(seed);
+    let mut app = AppState::new(world);
+
+    event_loop.run_app(&mut app).expect("Aplikasi crashed");
 }

@@ -118,6 +118,12 @@ impl Chunk {
         self.non_air_count == 0
     }
 
+    /// Menghitung ulang non_air_count secara akurat dari seluruh voxel
+    pub fn recount_non_air(&mut self) {
+        let count = self.voxels.iter().filter(|v| !v.is_air()).count();
+        self.non_air_count = count as u16;
+    }
+
     /// Mengecek apakah chunk padat penuh
     #[inline(always)]
     pub fn is_full(&self) -> bool {

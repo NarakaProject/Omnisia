@@ -1,9 +1,11 @@
 use glam::{IVec3, Vec3};
+use std::collections::VecDeque;
 use std::sync::Arc;
 
 use crate::chunk::Chunk;
 use crate::coord::{world_pos_to_world_voxel, CHUNK_SIZE, CHUNK_WORLD_SIZE};
 use crate::material::MaterialRegistry;
+use crate::mesh::types::MeshData;
 use crate::modding::registry::BlockRegistry;
 use crate::modding::runtime::ContentRuntime;
 use crate::renderer::Renderer;
@@ -31,6 +33,11 @@ pub struct World {
     pub simulation_radius: i32,
     pub render_radius: i32,
     pub retain_radius: i32,
+
+    // GPU Upload Discipline
+    pub upload_queue: VecDeque<(IVec3, MeshData)>,
+    pub max_uploads_per_frame: usize,
+    pub last_uploads_count: usize,
 }
 
 impl Default for World {
@@ -84,6 +91,9 @@ impl World {
             simulation_radius: 3,
             render_radius: 5,
             retain_radius: 7,
+            upload_queue: VecDeque::new(),
+            max_uploads_per_frame: 32,
+            last_uploads_count: 0,
         }
     }
 
@@ -107,6 +117,16 @@ impl World {
         self.store.get_voxel_world(world_voxel)
     }
 
+    /// Jumlah mesh yang menunggu dalam antrean upload GPU
+    pub fn upload_backlog(&self) -> usize {
+        self.upload_queue.len()
+    }
+
+    /// Jumlah job yang sedang mengantre di scheduler
+    pub fn pending_jobs_count(&self) -> usize {
+        self.scheduler.pending_jobs_count()
+    }
+
     /// Update per frame: mengelola streaming radius, integrasi hasil worker, eviksi, dan upload GPU
     pub fn update(
         &mut self,
@@ -117,14 +137,53 @@ impl World {
         // 1. Integrasi hasil worker dari scheduler
         self.scheduler.update(&mut self.store, &self.materials);
 
-        // 2. Upload mesh baru yang siap ke Renderer GPU
-        if let Some(ref mut rend) = renderer {
-            for (coord, mesh) in self.scheduler.ready_meshes.drain(..) {
-                rend.upload_chunk_mesh(coord, &mesh);
-            }
+        // 2. Masukkan mesh baru yang siap dari scheduler ke upload_queue
+        for (coord, mesh) in self.scheduler.ready_meshes.drain(..) {
+            // Hindari duplikasi jika koordinat sama sudah ada di antrean
+            self.upload_queue.retain(|(c, _)| *c != coord);
+            self.upload_queue.push_back((coord, mesh));
         }
 
-        // 3. Streaming Radius: Permintaan chunk di sekitar posisi kamera
+        // 3. Prioritaskan upload berdasarkan jarak terdekat ke kamera
+        if self.upload_queue.len() > 1 {
+            let cam_pos = camera_world_pos;
+            let mut items: Vec<(IVec3, MeshData)> = self.upload_queue.drain(..).collect();
+            items.sort_unstable_by(|(c1, _), (c2, _)| {
+                let p1 = Vec3::new(
+                    (c1.x as f32 + 0.5) * CHUNK_WORLD_SIZE,
+                    (c1.y as f32 + 0.5) * CHUNK_WORLD_SIZE,
+                    (c1.z as f32 + 0.5) * CHUNK_WORLD_SIZE,
+                );
+                let p2 = Vec3::new(
+                    (c2.x as f32 + 0.5) * CHUNK_WORLD_SIZE,
+                    (c2.y as f32 + 0.5) * CHUNK_WORLD_SIZE,
+                    (c2.z as f32 + 0.5) * CHUNK_WORLD_SIZE,
+                );
+                let d1 = cam_pos.distance_squared(p1);
+                let d2 = cam_pos.distance_squared(p2);
+                d1.partial_cmp(&d2).unwrap_or(std::cmp::Ordering::Equal)
+            });
+            self.upload_queue = items.into();
+        }
+
+        // 4. Upload dengan batas kuota per frame (GPU Upload Budget)
+        let mut uploaded_count = 0;
+        if let Some(ref mut rend) = renderer {
+            while uploaded_count < self.max_uploads_per_frame {
+                if let Some((coord, mesh)) = self.upload_queue.pop_front() {
+                    // Hanya upload jika chunk masih ada di store (belum dievict)
+                    if self.store.contains(&coord) {
+                        rend.upload_chunk_mesh(coord, &mesh);
+                        uploaded_count += 1;
+                    }
+                } else {
+                    break;
+                }
+            }
+        }
+        self.last_uploads_count = uploaded_count;
+
+        // 5. Streaming Radius: Permintaan chunk di sekitar posisi kamera
         let camera_voxel = world_pos_to_world_voxel(camera_world_pos);
         let center_chunk = IVec3::new(
             camera_voxel.x.div_euclid(CHUNK_SIZE),
@@ -166,11 +225,11 @@ impl World {
             }
         }
 
-        // 4. Pembatalan kooperatif untuk request yang berada jauh di luar retain radius
+        // 6. Pembatalan kooperatif untuk request yang berada jauh di luar retain radius
         self.scheduler
             .cancel_outside_radius(camera_world_pos, self.retain_radius);
 
-        // 5. Evaluasi Eviksi jika melebihi batas retain radius atau memory budget
+        // 7. Evaluasi Eviksi jika melebihi batas retain radius atau memory budget
         let retain_radius_sq = (self.retain_radius as f32 * CHUNK_WORLD_SIZE).powi(2);
         let mut to_evict_clean = Vec::new();
 
@@ -204,47 +263,25 @@ impl World {
 
         for coord in to_evict_clean {
             self.store.remove(&coord);
+            self.upload_queue.retain(|(c, _)| *c != coord);
             if let Some(ref mut rend) = renderer {
                 rend.remove_chunk_mesh(&coord);
             }
         }
 
-        // 6. Dispatch pending jobs ke Worker Pool
+        // Sinkronisasi pembersihan GPU mesh agar tidak ada monotonic leak
+        if let Some(ref mut rend) = renderer {
+            let active_set = self.store.resident.keys().cloned().collect();
+            rend.retain_only(&active_set);
+        }
+
+        // 8. Dispatch pending jobs ke Worker Pool
         self.scheduler.dispatch_pending_jobs(
             &mut self.store,
             &self.materials,
             &self.storage,
             &self.generator,
             32,
-        );
-    }
-
-    /// Menghasilkan Initial Resident Chunks Omnisia
-    pub fn generate_initial_area(&mut self) {
-        log::info!("Membangun initial resident chunks Omnisia...");
-
-        for cx in -1..=2 {
-            for cz in -1..=2 {
-                for cy in 0..=1 {
-                    let coord = IVec3::new(cx, cy, cz);
-                    let chunk = self.generator.generate_chunk(coord, &self.materials);
-                    self.store.insert(chunk);
-                    let lifecycle = self.store.current_lifecycle(&coord);
-                    self.scheduler.request_job(
-                        coord,
-                        JobType::MeshChunk,
-                        JobPriority::Critical,
-                        lifecycle,
-                        0,
-                        0.0,
-                    );
-                }
-            }
-        }
-
-        log::info!(
-            "Initial chunks berhasil dibangun: {} resident chunks",
-            self.store.resident_count()
         );
     }
 }

@@ -1,0 +1,9 @@
+{
+  "id": "core:shrub",
+  "name": "Desert Shrub",
+  "density": 200.0,
+  "shear_strength": 800.0,
+  "color": [0.65, 0.58, 0.32],
+  "solid": true,
+  "transparent": false
+}

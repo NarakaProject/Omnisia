@@ -1,0 +1,10 @@
+{
+  "id": "core:shrub_block",
+  "material": "core:shrub",
+  "hardness": 0.3,
+  "components": {},
+  "tags": [
+    "natural",
+    "plant"
+  ]
+}

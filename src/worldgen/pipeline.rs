@@ -8,6 +8,7 @@ use super::caves::CaveSampler;
 use super::config::WorldGenConfig;
 use super::features::{FormationSampler, OreSampler, OverhangSampler};
 use super::terrain::TerrainProfiler;
+use super::vegetation::VegetationSampler;
 use super::voxelizer::{ChunkVoxelizer, ResolvedGenMaterials};
 
 /// Generator dunia prosedural resmi Omnisia yang deterministic, seed-based, continuous, dan streamable
@@ -18,6 +19,7 @@ pub struct ProceduralWorldGenerator {
     overhangs: OverhangSampler,
     ores: OreSampler,
     formations: FormationSampler,
+    vegetation: VegetationSampler,
 }
 
 impl ProceduralWorldGenerator {
@@ -27,6 +29,7 @@ impl ProceduralWorldGenerator {
         let overhangs = OverhangSampler::new(config);
         let ores = OreSampler::new(config.seed.raw());
         let formations = FormationSampler::new(config.seed.raw().wrapping_add(8888));
+        let vegetation = VegetationSampler::new(config);
 
         Self {
             config,
@@ -35,6 +38,7 @@ impl ProceduralWorldGenerator {
             overhangs,
             ores,
             formations,
+            vegetation,
         }
     }
 
@@ -57,6 +61,10 @@ impl ProceduralWorldGenerator {
     pub fn formations(&self) -> &FormationSampler {
         &self.formations
     }
+
+    pub fn vegetation(&self) -> &VegetationSampler {
+        &self.vegetation
+    }
 }
 
 impl ChunkGenerator for ProceduralWorldGenerator {
@@ -70,6 +78,7 @@ impl ChunkGenerator for ProceduralWorldGenerator {
             &self.overhangs,
             &self.ores,
             &self.formations,
+            &self.vegetation,
             &resolved_materials,
         )
     }

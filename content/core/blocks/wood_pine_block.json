@@ -1,0 +1,11 @@
+{
+  "id": "core:wood_pine_block",
+  "material": "core:wood_pine",
+  "hardness": 2.2,
+  "components": {},
+  "tags": [
+    "natural",
+    "solid",
+    "wood"
+  ]
+}

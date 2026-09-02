@@ -8,7 +8,7 @@ use std::thread::{self, JoinHandle};
 use crate::chunk::dirty_flags;
 use crate::coord::CHUNK_WORLD_SIZE;
 use crate::material::MaterialRegistry;
-use crate::mesh::culled::generate_culled_mesh;
+use crate::mesh::greedy::generate_greedy_mesh;
 use crate::mesh::types::MeshData;
 use crate::storage::RegionStore;
 use crate::streaming::generator::ChunkGenerator;
@@ -82,6 +82,11 @@ impl ChunkScheduler {
             workers,
             ready_meshes: Vec::new(),
         }
+    }
+
+    /// Mengembalikan jumlah job yang sedang menunggu dalam antrean scheduler
+    pub fn pending_jobs_count(&self) -> usize {
+        self.queue.len()
     }
 
     /// Meminta penjadwalan job untuk chunk tertentu dengan koalesi request duplikat dan Priority Escalation
@@ -299,7 +304,7 @@ impl ChunkScheduler {
 
                         let task = move || {
                             let mut mesh = MeshData::new();
-                            generate_culled_mesh(&chunk_clone, &reg_clone, &mut mesh);
+                            generate_greedy_mesh(&chunk_clone, &reg_clone, &mut mesh);
                             let _ = res_tx.send(ChunkJobResult::Meshed {
                                 coord,
                                 lifecycle_generation: lifecycle,
