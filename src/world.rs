@@ -9,6 +9,7 @@ use crate::mesh::types::MeshData;
 use crate::modding::registry::BlockRegistry;
 use crate::modding::runtime::ContentRuntime;
 use crate::physics::PhysicsRuntime;
+use crate::player::PlayerController;
 use crate::renderer::Renderer;
 use crate::storage::{MemoryCompressedRegionStore, RegionStore};
 use crate::streaming::generator::ChunkGenerator;
@@ -162,6 +163,23 @@ impl World {
     /// Mengambil voxel pada koordinat global dunia
     pub fn get_voxel_world(&self, world_voxel: IVec3) -> VoxelBlock {
         self.store.get_voxel_world(world_voxel)
+    }
+
+    /// Memperbarui simulasi Player Controller terintegrasi terhadap dunia statis (8C.1).
+    pub fn update_player(&self, player: &mut PlayerController, dt: f32, camera_yaw_deg: f32) {
+        player.update_fixed_time(dt, &self.store, camera_yaw_deg);
+    }
+
+    /// Menemukan titik spawn yang valid di atas permukaan tanah solid dunia statis (8C.1).
+    pub fn spawn_player_at_valid_ground(
+        &self,
+        player: &mut PlayerController,
+        center_x: f32,
+        center_z: f32,
+        search_min_y: f32,
+        search_max_y: f32,
+    ) -> bool {
+        player.spawn_at_valid_ground(center_x, center_z, search_min_y, search_max_y, &self.store)
     }
 
     /// Jumlah mesh yang menunggu dalam antrean upload GPU

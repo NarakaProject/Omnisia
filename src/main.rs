@@ -171,8 +171,8 @@ impl ApplicationHandler for AppState {
                 self.last_frame_time = now;
 
                 if self.control_mode == ControlMode::Player {
-                    self.player
-                        .update_fixed_time(dt, &self.world.store, self.camera.yaw_deg);
+                    self.world
+                        .update_player(&mut self.player, dt, self.camera.yaw_deg);
                     self.camera.position = self.player.eye_position();
                 } else {
                     self.camera.update(dt);
