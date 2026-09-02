@@ -71,44 +71,54 @@ impl PhysicsRuntime {
         let gravity = self.config.world_gravity;
 
         for body in self.bodies.values_mut() {
-            if body.state == DynamicBodyState::Active {
-                // 1. Terapkan akselerasi gravitasi
-                body.apply_gravity(gravity, dt);
+            if body.state == DynamicBodyState::Settled {
+                continue;
+            }
 
-                // 2. Deteksi tabrakan swept vertikal (Amendment 4 & 6)
-                let cand_delta_y = body.velocity.y * dt;
-                self.collision_checks_total += 1;
-
-                match super::collision::swept_vertical_step(body, cand_delta_y, store) {
-                    super::collision::VerticalCollisionResult::Clear { target_pos } => {
-                        body.position = target_pos;
-                        body.is_grounded = false;
-                    }
-                    super::collision::VerticalCollisionResult::GroundContact {
-                        clamped_pos,
-                        ..
-                    } => {
-                        self.collision_contacts_total += 1;
-                        body.position = clamped_pos;
-                        body.velocity.y = 0.0;
-                        body.is_grounded = true;
-                    }
-                    super::collision::VerticalCollisionResult::CeilingContact {
-                        clamped_pos,
-                        ..
-                    } => {
-                        self.collision_contacts_total += 1;
-                        body.position = clamped_pos;
-                        body.velocity.y = 0.0;
-                    }
-                    super::collision::VerticalCollisionResult::BlockedByUnloaded {
-                        clamped_pos,
-                    } => {
-                        body.position = clamped_pos;
-                        body.velocity.y = 0.0;
-                    }
+            // Jika berstatus Sleeping, periksa apakah ada dorongan/kecepatan yang membangunkannya
+            if body.state == DynamicBodyState::Sleeping {
+                if body.velocity.length() >= self.config.sleep_velocity_threshold {
+                    body.set_state(DynamicBodyState::Active);
+                } else {
+                    continue;
                 }
             }
+
+            // 1. Terapkan akselerasi gravitasi
+            body.apply_gravity(gravity, dt);
+
+            // 2. Deteksi tabrakan swept vertikal (Amendment 4 & 6)
+            let cand_delta_y = body.velocity.y * dt;
+            self.collision_checks_total += 1;
+
+            match super::collision::swept_vertical_step(body, cand_delta_y, store) {
+                super::collision::VerticalCollisionResult::Clear { target_pos } => {
+                    body.position = target_pos;
+                    body.is_grounded = false;
+                }
+                super::collision::VerticalCollisionResult::GroundContact {
+                    clamped_pos, ..
+                } => {
+                    self.collision_contacts_total += 1;
+                    body.position = clamped_pos;
+                    body.velocity.y = 0.0;
+                    body.is_grounded = true;
+                }
+                super::collision::VerticalCollisionResult::CeilingContact {
+                    clamped_pos, ..
+                } => {
+                    self.collision_contacts_total += 1;
+                    body.position = clamped_pos;
+                    body.velocity.y = 0.0;
+                }
+                super::collision::VerticalCollisionResult::BlockedByUnloaded { clamped_pos } => {
+                    body.position = clamped_pos;
+                    body.velocity.y = 0.0;
+                }
+            }
+
+            // 3. Evaluasi deteksi status Sleeping dan Settled (Amendment 13)
+            super::collision::update_body_sleep_and_settle(body, &self.config, store);
         }
     }
 

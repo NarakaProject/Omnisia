@@ -28,7 +28,7 @@ pub enum VerticalCollisionResult {
 }
 
 /// Menghitung kolom horizontal dan voxel terbawah/teratas untuk setiap kolom (X, Z) dari suatu aggregate
-fn get_aggregate_vertical_extents(body: &DynamicBody) -> (ColumnExtents, ColumnExtents) {
+pub fn get_aggregate_vertical_extents(body: &DynamicBody) -> (ColumnExtents, ColumnExtents) {
     let mut min_y_per_col: HashMap<(i32, i32), i32> = HashMap::new();
     let mut max_y_per_col: HashMap<(i32, i32), i32> = HashMap::new();
 
@@ -48,6 +48,60 @@ fn get_aggregate_vertical_extents(body: &DynamicBody) -> (ColumnExtents, ColumnE
     }
 
     (min_y_per_col, max_y_per_col)
+}
+
+/// Memeriksa apakah dasar dari aggregate bertumpu stabil pada setidaknya satu voxel solid statis di bawahnya
+pub fn is_firmly_supported_by_static_ground(body: &DynamicBody, store: &ChunkStore) -> bool {
+    let (bottom_cols, _) = get_aggregate_vertical_extents(body);
+    let base_voxel = body.current_base_voxel();
+
+    for (&(local_x, local_z), &local_min_y) in &bottom_cols {
+        let world_x = base_voxel.x + local_x;
+        let world_z = base_voxel.z + local_z;
+        let ground_y = base_voxel.y + local_min_y - 1;
+
+        if let Some(block) = store.get_voxel_world_checked(IVec3::new(world_x, ground_y, world_z)) {
+            if !block.is_air() {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Mengevaluasi transisi status Sleeping dan Settled (Amendment 13).
+///
+/// INVARIANTS:
+/// - Sleeping: Kecepatan di bawah ambang batas selama >= sleep_ticks_required.
+/// - Settled: Harus memiliki gravity_scale > 0.0, is_grounded == true, dan bertumpu pada tanah solid.
+/// - AntiGravity (gravity_scale == 0.0) TIDAK PERNAH SETTLED (tetap dinamis).
+pub fn update_body_sleep_and_settle(
+    body: &mut DynamicBody,
+    config: &super::config::PhysicsConfig,
+    store: &ChunkStore,
+) {
+    let speed = body.velocity.length();
+
+    if speed < config.sleep_velocity_threshold {
+        body.ticks_stationary = body.ticks_stationary.saturating_add(1);
+    } else {
+        body.ticks_stationary = 0;
+        if body.state == super::body::DynamicBodyState::Sleeping {
+            body.set_state(super::body::DynamicBodyState::Active);
+        }
+        return;
+    }
+
+    if body.ticks_stationary >= config.sleep_ticks_required {
+        if body.gravity_scale > 0.0
+            && body.is_grounded
+            && is_firmly_supported_by_static_ground(body, store)
+        {
+            body.set_state(super::body::DynamicBodyState::Settled);
+        } else {
+            body.set_state(super::body::DynamicBodyState::Sleeping);
+        }
+    }
 }
 
 /// Menguji tabrakan swept vertikal sepanjang interval translasi satu tick fisika.

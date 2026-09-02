@@ -508,3 +508,108 @@ fn test_high_velocity_swept_tunneling_prevention() {
         ),
     }
 }
+
+// ============================================================================
+// 8A.7 CONSERVATIVE SLEEP & SETTLED DETECTION
+// ============================================================================
+
+#[test]
+fn test_sleep_and_settled_transition_on_solid_ground() {
+    use omnisia::chunk::Chunk;
+    use omnisia::physics::PhysicsRuntime;
+    use omnisia::streaming::store::ChunkStore;
+
+    let mut store = ChunkStore::new();
+    store.insert(Chunk::new(IVec3::ZERO));
+    // Lantai solid di y=1
+    store.set_voxel_world(IVec3::new(5, 1, 5), VoxelBlock::new(MaterialId::STONE));
+
+    let mut runtime = PhysicsRuntime::default();
+    // Badan dinamis tepat di atas lantai (y=2 => 1.0m)
+    let voxels = vec![(IVec3::new(5, 2, 5), VoxelBlock::new(MaterialId::STONE))];
+    let agg = DetachedAggregate::from_world_voxels(1, &voxels).unwrap();
+    let body_id = runtime.spawn_from_detached_aggregate(agg);
+
+    // Jalankan simulasi selama 20 ticks (cukup untuk mencapai sleep_ticks_required = 15)
+    for _ in 0..20 {
+        runtime.tick(1.0 / 30.0, &store);
+    }
+
+    let body = runtime.get_body(body_id).unwrap();
+    assert_eq!(
+        body.state,
+        DynamicBodyState::Settled,
+        "Badan yang diam di atas tanah solid dengan gravitasi normal harus berstatus Settled!"
+    );
+    assert_eq!(runtime.settled_body_count(), 1);
+    assert_eq!(runtime.active_body_count(), 0);
+}
+
+#[test]
+fn test_antigravity_floating_stationary_never_settles() {
+    use omnisia::chunk::Chunk;
+    use omnisia::physics::PhysicsRuntime;
+    use omnisia::streaming::store::ChunkStore;
+
+    let mut store = ChunkStore::new();
+    store.insert(Chunk::new(IVec3::ZERO));
+
+    let mut runtime = PhysicsRuntime::default();
+    // Badan AntiGravity mengapung di udara bebas tanpa tanah di bawahnya
+    let voxels = vec![(IVec3::new(5, 15, 5), VoxelBlock::new(MaterialId::STONE))];
+    let agg = DetachedAggregate::from_world_voxels(2, &voxels).unwrap();
+    let body_id = runtime.spawn_from_detached_aggregate(agg);
+
+    // Atur gravitasi menjadi nol (AntiGravity)
+    runtime.get_body_mut(body_id).unwrap().gravity_scale = 0.0;
+
+    // Jalankan 30 ticks
+    for _ in 0..30 {
+        runtime.tick(1.0 / 30.0, &store);
+    }
+
+    let body = runtime.get_body(body_id).unwrap();
+    // Amendment 13: Floating AntiGravity BISA Sleeping, tetapi TIDAK PERNAH Settled!
+    assert_eq!(
+        body.state,
+        DynamicBodyState::Sleeping,
+        "Badan AntiGravity diam di udara bebas hanya boleh Sleeping, bukan Settled!"
+    );
+    assert_eq!(runtime.settled_body_count(), 0);
+    assert_eq!(runtime.sleeping_body_count(), 1);
+}
+
+#[test]
+fn test_sleep_wake_up_on_velocity_increase() {
+    use omnisia::chunk::Chunk;
+    use omnisia::physics::PhysicsRuntime;
+    use omnisia::streaming::store::ChunkStore;
+
+    let mut store = ChunkStore::new();
+    store.insert(Chunk::new(IVec3::ZERO));
+    let mut runtime = PhysicsRuntime::default();
+    let voxels = vec![(IVec3::new(5, 10, 5), VoxelBlock::new(MaterialId::STONE))];
+    let agg = DetachedAggregate::from_world_voxels(3, &voxels).unwrap();
+    let body_id = runtime.spawn_from_detached_aggregate(agg);
+
+    let body = runtime.get_body_mut(body_id).unwrap();
+    body.gravity_scale = 0.0;
+    body.set_state(DynamicBodyState::Sleeping);
+    body.ticks_stationary = 20;
+
+    assert_eq!(body.state, DynamicBodyState::Sleeping);
+
+    // Berikan kecepatan di atas threshold (> 0.05 m/s)
+    body.velocity = Vec3::new(0.0, 1.0, 0.0);
+
+    // Evaluasi tick
+    runtime.tick(1.0 / 30.0, &store);
+
+    let body = runtime.get_body(body_id).unwrap();
+    assert_eq!(
+        body.state,
+        DynamicBodyState::Active,
+        "Badan yang bergerak di atas threshold harus bangun (Active)!"
+    );
+    assert_eq!(body.ticks_stationary, 0);
+}
