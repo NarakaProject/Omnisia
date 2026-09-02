@@ -620,6 +620,83 @@ fn main() {
         );
     }
 
+    // ========================================================================
+    // BENCHMARK 24: Player Fixed 30Hz Simulation Tick
+    // ========================================================================
+    {
+        use omnisia::player::{PlayerController, PlayerInput};
+        use omnisia::streaming::store::ChunkStore;
+
+        let mut store = ChunkStore::new();
+        let mut chunk = Chunk::new(IVec3::ZERO);
+        for vx in 0..32 {
+            for vz in 0..32 {
+                chunk.set_voxel(vx, 0, vz, VoxelBlock::new(MaterialId::STONE));
+            }
+        }
+        store.insert(chunk);
+
+        let mut player = PlayerController::new(Vec3::new(8.0, 0.5, 8.0));
+        player.state.grounded = true;
+        player.set_input(PlayerInput::from_raw(
+            true, false, false, false, true, false, false,
+        ));
+
+        let iterations = 100_000;
+        let start = Instant::now();
+
+        for _ in 0..iterations {
+            player.step_simulation(1.0 / 30.0, &store, 0.0);
+            std::hint::black_box(&player.state);
+        }
+
+        let elapsed = start.elapsed();
+        let us_per_tick = elapsed.as_micros() as f64 / iterations as f64;
+        println!(
+            "[BENCHMARK 24] Player Fixed 30Hz Simulation Tick: {:.3} µs/tick ({:.1} ticks/sec)",
+            us_per_tick,
+            1_000_000.0 / us_per_tick
+        );
+    }
+
+    // ========================================================================
+    // BENCHMARK 25: Player Swept Capsule Collision Query
+    // ========================================================================
+    {
+        use omnisia::player::{resolve_swept_step, Capsule};
+        use omnisia::streaming::store::ChunkStore;
+
+        let mut store = ChunkStore::new();
+        let mut chunk = Chunk::new(IVec3::ZERO);
+        // Buat dinding vertikal di x = 16 (vx = 16)
+        for vy in 0..10 {
+            for vz in 0..32 {
+                chunk.set_voxel(16, vy, vz, VoxelBlock::new(MaterialId::STONE));
+            }
+        }
+        store.insert(chunk);
+
+        let mut capsule = Capsule::new(Vec3::new(10.0, 0.5, 10.0), 0.30, 1.8);
+        let mut velocity = Vec3::new(15.0, -9.81, 5.0);
+        let delta = velocity * (1.0 / 30.0);
+
+        let iterations = 100_000;
+        let start = Instant::now();
+
+        for _ in 0..iterations {
+            let stats = resolve_swept_step(&mut capsule, &mut velocity, delta, &store);
+            std::hint::black_box(stats);
+        }
+
+        let elapsed = start.elapsed();
+        let us_per_query = elapsed.as_micros() as f64 / iterations as f64;
+        println!(
+            "[BENCHMARK 25] Player Swept Capsule Collision Query: {:.3} µs/query ({:.1} queries/sec)",
+            us_per_query,
+            1_000_000.0 / us_per_query
+        );
+    }
+
     println!("============================================================");
     println!("             BENCHMARK SUITE COMPLETE                       ");
     println!("============================================================");

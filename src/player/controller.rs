@@ -352,4 +352,52 @@ impl PlayerController {
             self.time_accumulator = 0.0;
         }
     }
+
+    /// Menemukan titik spawn yang valid di atas permukaan tanah solid (Section 19).
+    ///
+    /// INVARIANTS:
+    /// - Memastikan tumpuan tanah solid ada di bawah telapak kaki.
+    /// - Memastikan kapsul berdiri penuh (standing capsule) bebas dari tabrakan balok solid (clearance).
+    /// - Menolak posisi di chunk yang belum dimuat (Unknown).
+    pub fn spawn_at_valid_ground(
+        &mut self,
+        center_x: f32,
+        center_z: f32,
+        search_min_y: f32,
+        search_max_y: f32,
+        store: &crate::streaming::store::ChunkStore,
+    ) -> bool {
+        let vy_max = (search_max_y / crate::voxel::VOXEL_SIZE).floor() as i32;
+        let vy_min = (search_min_y / crate::voxel::VOXEL_SIZE).floor() as i32;
+
+        for vy in (vy_min..=vy_max).rev() {
+            let vx = (center_x / crate::voxel::VOXEL_SIZE).floor() as i32;
+            let vz = (center_z / crate::voxel::VOXEL_SIZE).floor() as i32;
+            let coord = glam::IVec3::new(vx, vy, vz);
+
+            if let Some(block) = store.get_voxel_world_checked(coord) {
+                if !block.is_air() {
+                    let surface_y = (vy + 1) as f32 * crate::voxel::VOXEL_SIZE;
+                    let candidate_pos = Vec3::new(center_x, surface_y, center_z);
+
+                    // Uji clearance kapsul berdiri penuh
+                    if super::collision::check_capsule_clearance(
+                        candidate_pos,
+                        self.config.standing_height,
+                        self.config.capsule_radius,
+                        store,
+                    ) {
+                        self.state.position = candidate_pos;
+                        self.state.velocity = Vec3::ZERO;
+                        self.state.grounded = true;
+                        self.state.ground_normal = Vec3::Y;
+                        self.state.ground_distance = 0.0;
+                        return true;
+                    }
+                }
+            }
+        }
+
+        false
+    }
 }

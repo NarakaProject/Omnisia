@@ -185,6 +185,8 @@ Benchmark dijalankan secara presisi pada perangkat target **MacBook Pro 2018 (In
 | 16 | **Detached Aggregate Extraction** | **0.26 µs / op** | **3.82M extractions/sec (125 voxels)** |
 | 17 | **DynamicBody 30 Hz Physics Tick** | **10.09 µs / tick** | **99,088 ticks/sec (100 badan dinamis, swept collision)** |
 | 18 | **Two-Phase Dynamic Reintegration** | **4.70 µs / op** | **212,557 ops/sec (Prepare + Validate + Commit)** |
+| 19 | **Player Fixed 30Hz Simulation Tick** | **1.012 µs / tick** | **988,327 ticks/sec (Kinematic capsule locomotion + gravity)** |
+| 20 | **Player Swept Capsule Collision Query** | **2.081 µs / query** | **480,450 queries/sec (Continuous swept collision vs voxels)** |
 
 ---
 
@@ -195,21 +197,30 @@ Benchmark dijalankan secara presisi pada perangkat target **MacBook Pro 2018 (In
 cargo run --release
 ```
 
-Kontrol Kamera (Developer Free-Flight):
-- `W`, `A`, `S`, `D`: Gerak horizontal (relatif arah hadap)
-- `Space`: Terbang naik (+Y)
-- `Shift`: Terbang turun (-Y)
-- `1`, `2`, `3`, `4`: Preset kecepatan ($5\text{ m/s}$, $20\text{ m/s}$, $100\text{ m/s}$, $500\text{ m/s}$)
-- `Klik Kanan + Gerak Mouse`: Rotasi kamera (*First-Person Free Look*)
+**Mode Kendali Terpadu (Default: Player Mode):**
+- `F3` atau `P`: Beralih antara **Player Mode** (Kinematic Capsule) dan **Free-Flight Mode** (Developer Diagnostic).
 
-### 2. Menjalankan Scale Validation Report CLI
+**Kontrol Player Mode (Kinematic Capsule):**
+- `W`, `A`, `S`, `D`: Berjalan ($5.0\text{ m/s}$) relatif terhadap arah hadap horizontal kamera.
+- `Shift`: Berlari / Sprint ($9.0\text{ m/s}$) ketika dikombinasikan dengan tombol arah.
+- `C` atau `Ctrl`: Jongkok ($2.5\text{ m/s}$, tinggi kapsul menyusut menjadi $1.2\text{m}$, clearance guard aktif).
+- `Space`: Melompat ($6.0\text{ m/s}$, single-consumption edge trigger saat grounded).
+- `Klik Kanan + Gerak Mouse`: Rotasi kamera (*First-Person Look*).
+
+**Kontrol Free-Flight Mode (Developer Diagnostic):**
+- `W`, `A`, `S`, `D`: Terbang horizontal.
+- `Space`: Terbang naik (+Y).
+- `Shift`: Terbang turun (-Y).
+- `1`, `2`, `3`, `4`: Preset kecepatan ($5\text{ m/s}$, $20\text{ m/s}$, $100\text{ m/s}$, $500\text{ m/s}$).
+
+### 2. Menjalankan Player Controller Validation (Phase 8B)
 ```bash
-cargo run --release -- --scale-validation
+cargo run --release --bin player_validation
 ```
 
-### 3. Menjalankan Mod Validation CLI
+### 3. Menjalankan Dynamic Aggregate Runtime Validation (Phase 8A)
 ```bash
-cargo run --release -- --validate-mods
+cargo run --release --bin physics_validation
 ```
 
 ### 4. Menjalankan Real-World Traversal Validation (100m, 250m, 500m, 1km)
@@ -217,17 +228,17 @@ cargo run --release -- --validate-mods
 cargo run --release --bin traversal_validation
 ```
 
-### 5. Menjalankan Dynamic Aggregate Runtime Validation (Phase 8A)
+### 5. Menjalankan Mod Validation CLI
 ```bash
-cargo run --release --bin physics_validation
+cargo run --release -- --validate-mods
 ```
 
-### 6. Menjalankan Benchmark Suite Lengkap
+### 6. Menjalankan Benchmark Suite Lengkap (25 Benchmarks)
 ```bash
 cargo run --release --bin benchmarks
 ```
 
-### 7. Menjalankan Seluruh Unit Test Suite (102 Tests)
+### 7. Menjalankan Seluruh Unit Test Suite (132 Tests)
 ```bash
 cargo test
 ```

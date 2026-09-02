@@ -1013,3 +1013,32 @@ fn test_unloaded_chunk_blocks_movement_unknown_not_air() {
     );
     assert_eq!(controller.state.velocity.x, 0.0);
 }
+
+#[test]
+fn test_spawn_at_valid_ground() {
+    use glam::IVec3;
+    use omnisia::chunk::Chunk;
+    use omnisia::material::MaterialId;
+    use omnisia::player::PlayerController;
+    use omnisia::streaming::store::ChunkStore;
+    use omnisia::voxel::VoxelBlock;
+
+    let mut store = ChunkStore::new();
+    let mut chunk = Chunk::new(IVec3::ZERO);
+
+    // Permukaan tanah solid di y = 10 (permukaan atas y = 11 * 0.5 = 5.5m)
+    for vx in 0..10 {
+        for vz in 0..10 {
+            chunk.set_voxel(vx, 10, vz, VoxelBlock::new(MaterialId::GRASS));
+        }
+    }
+    store.insert(chunk);
+
+    let mut controller = PlayerController::new(Vec3::ZERO);
+    let spawned = controller.spawn_at_valid_ground(2.5, 2.5, 0.0, 20.0, &store);
+
+    assert!(spawned, "Spawn di atas tanah solid harus berhasil!");
+    assert_eq!(controller.state.position, Vec3::new(2.5, 5.5, 2.5));
+    assert!(controller.state.grounded);
+    assert_eq!(controller.state.velocity, Vec3::ZERO);
+}

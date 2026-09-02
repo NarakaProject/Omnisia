@@ -5,20 +5,41 @@ use glam::IVec3;
 use omnisia::camera::Camera;
 use omnisia::coord::{world_pos_to_world_voxel, world_voxel_to_chunk_and_local, CHUNK_SIZE};
 use omnisia::modding::runtime::ContentRuntime;
+use omnisia::player::{PlayerController, PlayerInput};
 use omnisia::renderer::{LightUniform, Renderer};
 use omnisia::world::World;
 use omnisia::worldgen::seed::WorldSeed;
 use winit::application::ApplicationHandler;
 use winit::dpi::PhysicalSize;
-use winit::event::{DeviceEvent, DeviceId, WindowEvent};
+use winit::event::{DeviceEvent, DeviceId, ElementState, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
+use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowId};
+
+/// Mode kendali kamera dan pergerakan (Section 22)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ControlMode {
+    Player,
+    FreeFlight,
+}
 
 struct AppState {
     window: Option<Arc<Window>>,
     renderer: Option<Renderer>,
     world: World,
     camera: Camera,
+    control_mode: ControlMode,
+    player: PlayerController,
+
+    // Status input keyboard untuk mode player
+    key_w: bool,
+    key_s: bool,
+    key_a: bool,
+    key_d: bool,
+    key_shift: bool,
+    key_crouch: bool,
+    key_jump: bool,
+
     last_frame_time: Instant,
     fps_timer: Instant,
     frame_count: u32,
@@ -26,15 +47,21 @@ struct AppState {
 
 impl AppState {
     fn new(world: World) -> Self {
+        let spawn_pos = glam::Vec3::new(0.0, 35.0, 0.0);
         Self {
             window: None,
             renderer: None,
             world,
-            camera: Camera::new(
-                glam::Vec3::new(0.0, 35.0, 0.0), // Spawn sedikit di atas elevasi permukaan awal
-                -90.0,                           // Hadap ke arah -Z awal
-                -10.0,
-            ),
+            camera: Camera::new(spawn_pos, -90.0, -10.0),
+            control_mode: ControlMode::Player,
+            player: PlayerController::new(spawn_pos),
+            key_w: false,
+            key_s: false,
+            key_a: false,
+            key_d: false,
+            key_shift: false,
+            key_crouch: false,
+            key_jump: false,
             last_frame_time: Instant::now(),
             fps_timer: Instant::now(),
             frame_count: 0,
@@ -83,7 +110,57 @@ impl ApplicationHandler for AppState {
                 }
             }
             WindowEvent::KeyboardInput { event, .. } => {
-                self.camera.handle_keyboard(&event);
+                let pressed = event.state == ElementState::Pressed;
+                if let PhysicalKey::Code(key) = event.physical_key {
+                    match key {
+                        KeyCode::KeyP | KeyCode::F3 => {
+                            if pressed {
+                                self.control_mode = match self.control_mode {
+                                    ControlMode::Player => {
+                                        log::info!(
+                                            "Beralih ke FreeFlight Mode (Developer Diagnostic)"
+                                        );
+                                        ControlMode::FreeFlight
+                                    }
+                                    ControlMode::FreeFlight => {
+                                        log::info!(
+                                            "Beralih ke Player Mode (Kinematic Capsule Controller)"
+                                        );
+                                        self.player.state.position = self.camera.position
+                                            - self
+                                                .player
+                                                .config
+                                                .eye_offset(self.player.state.crouching);
+                                        self.player.state.velocity = glam::Vec3::ZERO;
+                                        ControlMode::Player
+                                    }
+                                };
+                            }
+                        }
+                        KeyCode::KeyW => self.key_w = pressed,
+                        KeyCode::KeyS => self.key_s = pressed,
+                        KeyCode::KeyA => self.key_a = pressed,
+                        KeyCode::KeyD => self.key_d = pressed,
+                        KeyCode::ShiftLeft | KeyCode::ShiftRight => self.key_shift = pressed,
+                        KeyCode::KeyC | KeyCode::ControlLeft => self.key_crouch = pressed,
+                        KeyCode::Space => self.key_jump = pressed,
+                        _ => {}
+                    }
+                }
+
+                if self.control_mode == ControlMode::FreeFlight {
+                    self.camera.handle_keyboard(&event);
+                } else {
+                    self.player.set_input(PlayerInput::from_raw(
+                        self.key_w,
+                        self.key_s,
+                        self.key_a,
+                        self.key_d,
+                        self.key_shift,
+                        self.key_crouch,
+                        self.key_jump,
+                    ));
+                }
             }
             WindowEvent::MouseInput { button, state, .. } => {
                 self.camera.handle_mouse_button(button, state);
@@ -93,7 +170,13 @@ impl ApplicationHandler for AppState {
                 let dt = (now - self.last_frame_time).as_secs_f32().min(0.1);
                 self.last_frame_time = now;
 
-                self.camera.update(dt);
+                if self.control_mode == ControlMode::Player {
+                    self.player
+                        .update_fixed_time(dt, &self.world.store, self.camera.yaw_deg);
+                    self.camera.position = self.player.eye_position();
+                } else {
+                    self.camera.update(dt);
+                }
 
                 // Update Streaming World & Integrasi Mesh GPU
                 self.world
@@ -133,31 +216,65 @@ impl ApplicationHandler for AppState {
                                     world_voxel_to_chunk_and_local(camera_voxel);
                                 let mem = self.world.store.memory_usage(0);
 
-                                let title = format!(
-                                    "Omnisia [Phase 7] | Pos: ({:.1}, {:.1}, {:.1})m | Chunk: ({}, {}, {}) | Vox: ({}, {}, {}) | Speed: {:.0}m/s [{}] | FPS: {:.1} ({:.2}ms) | CPU: {} | GPU: {} | Vis: {}/{} | Culled: {} | Struct[Evt:{}, Pend:{}, Agg:{}] | Mem: {:.1}MB",
-                                    self.camera.position.x,
-                                    self.camera.position.y,
-                                    self.camera.position.z,
-                                    chunk_coord.x,
-                                    chunk_coord.y,
-                                    chunk_coord.z,
-                                    local_voxel.x,
-                                    local_voxel.y,
-                                    local_voxel.z,
-                                    self.camera.speed,
-                                    self.camera.active_preset.name(),
-                                    fps,
-                                    frame_ms,
-                                    metrics.cpu_resident_chunks,
-                                    metrics.gpu_mesh_count,
-                                    metrics.frustum_visible_chunks,
-                                    metrics.render_eligible_chunks,
-                                    metrics.frustum_culled_chunks,
-                                    self.world.structure.total_events_processed,
-                                    self.world.structure.pending_checks.len(),
-                                    self.world.structure.total_detached_extracted,
-                                    mem.total_megabytes(),
-                                );
+                                let title = if self.control_mode == ControlMode::Player {
+                                    let crouch_str = if self.player.state.forced_crouch {
+                                        "Yes(Forced)"
+                                    } else if self.player.state.crouching {
+                                        "Yes"
+                                    } else {
+                                        "No"
+                                    };
+                                    format!(
+                                        "Omnisia [8B: Player] | Feet: ({:.1}, {:.1}, {:.1})m | Vel: ({:.1}, {:.1}, {:.1})m/s ({:.1}m/s) | Grd: {} | Crouch: {} | Sprint: {} | Coll[q:{}, h:{}, unk:{}] | Tick: {:.1}µs | FPS: {:.1} ({:.2}ms) | CPU: {} | GPU: {} | Vis: {}/{} | Mem: {:.1}MB",
+                                        self.player.state.position.x,
+                                        self.player.state.position.y,
+                                        self.player.state.position.z,
+                                        self.player.state.velocity.x,
+                                        self.player.state.velocity.y,
+                                        self.player.state.velocity.z,
+                                        self.player.state.speed(),
+                                        self.player.state.grounded,
+                                        crouch_str,
+                                        self.player.state.sprinting,
+                                        self.player.collision_queries_total,
+                                        self.player.collision_hits_total,
+                                        self.player.unknown_blocked_total,
+                                        self.player.last_tick_duration_us,
+                                        fps,
+                                        frame_ms,
+                                        metrics.cpu_resident_chunks,
+                                        metrics.gpu_mesh_count,
+                                        metrics.frustum_visible_chunks,
+                                        metrics.render_eligible_chunks,
+                                        mem.total_megabytes(),
+                                    )
+                                } else {
+                                    format!(
+                                        "Omnisia [8B: FreeFlight] | Pos: ({:.1}, {:.1}, {:.1})m | Chunk: ({}, {}, {}) | Vox: ({}, {}, {}) | Speed: {:.0}m/s [{}] | FPS: {:.1} ({:.2}ms) | CPU: {} | GPU: {} | Vis: {}/{} | Culled: {} | Struct[Evt:{}, Pend:{}, Agg:{}] | Mem: {:.1}MB",
+                                        self.camera.position.x,
+                                        self.camera.position.y,
+                                        self.camera.position.z,
+                                        chunk_coord.x,
+                                        chunk_coord.y,
+                                        chunk_coord.z,
+                                        local_voxel.x,
+                                        local_voxel.y,
+                                        local_voxel.z,
+                                        self.camera.speed,
+                                        self.camera.active_preset.name(),
+                                        fps,
+                                        frame_ms,
+                                        metrics.cpu_resident_chunks,
+                                        metrics.gpu_mesh_count,
+                                        metrics.frustum_visible_chunks,
+                                        metrics.render_eligible_chunks,
+                                        metrics.frustum_culled_chunks,
+                                        self.world.structure.total_events_processed,
+                                        self.world.structure.pending_checks.len(),
+                                        self.world.structure.total_detached_extracted,
+                                        mem.total_megabytes(),
+                                    )
+                                };
                                 window.set_title(&title);
 
                                 // Catat telemetri ke log setiap 2 detik
