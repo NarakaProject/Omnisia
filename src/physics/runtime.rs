@@ -145,6 +145,18 @@ impl PhysicsRuntime {
         }
     }
 
+    /// Membangunkan badan yang sedang Sleeping atau Settled jika tumpuan tanah statis di bawahnya telah hancur (8C.4 & Section 21).
+    pub fn handle_static_terrain_mutation(&mut self, store: &crate::streaming::store::ChunkStore) {
+        for body in self.bodies.values_mut() {
+            if (body.state == DynamicBodyState::Sleeping || body.state == DynamicBodyState::Settled)
+                && !super::collision::is_firmly_supported_by_static_ground(body, store)
+            {
+                body.set_state(DynamicBodyState::Active);
+                body.is_grounded = false;
+            }
+        }
+    }
+
     /// Mendaftarkan DetachedAggregate ke dalam runtime fisika sebagai DynamicBody baru.
     /// Menggunakan move semantics untuk aggregate.
     pub fn spawn_from_detached_aggregate(&mut self, aggregate: DetachedAggregate) -> DynamicBodyId {

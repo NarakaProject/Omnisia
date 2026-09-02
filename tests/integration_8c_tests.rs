@@ -905,3 +905,166 @@ fn test_8c3_sleeping_body_wakes_on_disturbance() {
         "Badan sleeping harus bangun ke Active saat diberi impuls kecepatan!"
     );
 }
+
+// ============================================================================
+// PHASE 8C.4: STRUCTURAL MUTATION DURING RUNTIME INTEGRATION TESTS
+// ============================================================================
+
+#[test]
+fn test_8c4_player_breaks_support_block_spawns_dynamic_body_while_simulating() {
+    let mut world = World::with_seed(WorldSeed(123));
+
+    // Siapkan chunk (0,0,0) dengan lantai dan struktur overhang yang ditopang pilar
+    let mut chunk = Chunk::new(IVec3::ZERO);
+    for vx in 0..16 {
+        for vz in 0..16 {
+            chunk.set_voxel(vx, 0, vz, VoxelBlock::new(MaterialId::STONE));
+        }
+    }
+    // Pilar di (5, 1..=3, 5)
+    for vy in 1..=3 {
+        chunk.set_voxel(5, vy, 5, VoxelBlock::new(MaterialId::STONE));
+    }
+    // Blok overhang di atas pilar (5, 4, 5) dan cabang di (6, 4, 5)
+    chunk.set_voxel(5, 4, 5, VoxelBlock::new(MaterialId::STONE));
+    chunk.set_voxel(6, 4, 5, VoxelBlock::new(MaterialId::STONE));
+    world.store.insert(chunk);
+
+    // Pemain aktif berjalan di tanah
+    let mut player = PlayerController::new(Vec3::new(1.0, 0.5, 1.0));
+    world.update_player(&mut player, 1.0 / 30.0, 0.0);
+
+    let initial_bodies_count = world.physics.body_count();
+
+    // Hancurkan pilar dasar di (5, 1, 5)
+    let detached = world.set_voxel_world(IVec3::new(5, 1, 5), VoxelBlock::AIR);
+
+    // INVARIAN 8C.4:
+    // 1. Mutasi memicu pemisahan struktural
+    assert!(
+        !detached.is_empty(),
+        "Pilar yang hancur harus memisahkan aggregate yang menggantung!"
+    );
+
+    // 2. Aggregate langsung terdaftar sebagai DynamicBody di PhysicsRuntime
+    assert_eq!(
+        world.physics.body_count(),
+        initial_bodies_count + detached.len()
+    );
+
+    // 3. Simulasi runtime terus berjalan tanpa crash
+    for _ in 0..10 {
+        world.update(Vec3::ZERO, 1.0 / 30.0, None);
+        world.update_player(&mut player, 1.0 / 30.0, 0.0);
+    }
+}
+
+#[test]
+fn test_8c4_player_standing_on_detached_aggregate_falls_with_it() {
+    let mut world = World::with_seed(WorldSeed(123));
+
+    let mut chunk = Chunk::new(IVec3::ZERO);
+    // Lantai dasar di y = 0 (surface y = 0.5m)
+    for vx in 0..16 {
+        for vz in 0..16 {
+            chunk.set_voxel(vx, 0, vz, VoxelBlock::new(MaterialId::STONE));
+        }
+    }
+    // Pilar penopang di x = 4, y = 1..=10, z = 4
+    for vy in 1..=10 {
+        chunk.set_voxel(4, vy, 4, VoxelBlock::new(MaterialId::STONE));
+    }
+    // Platform balok di atas pilar di (5..=7, 10, 4)
+    // Permukaan atas platform = (10 + 1) * 0.5 = 5.5m
+    for vx in 5..=7 {
+        chunk.set_voxel(vx, 10, 4, VoxelBlock::new(MaterialId::STONE));
+    }
+    world.store.insert(chunk);
+
+    // Pemain berdiri di atas platform balok pada (6.0, 5.5, 2.0)
+    let mut player = PlayerController::new(Vec3::new(3.0, 5.5, 2.0)); // vx=6 -> x=3.0m, vz=4 -> z=2.0m
+    player.state.grounded = true;
+    world.update_player(&mut player, 1.0 / 30.0, 0.0);
+    assert!(player.state.grounded);
+
+    // Hancurkan pilar penopang di (4, 10, 4)
+    let detached = world.set_voxel_world(IVec3::new(4, 10, 4), VoxelBlock::AIR);
+    assert!(
+        !detached.is_empty(),
+        "Platform harus terlepas saat penopangnya dihancurkan!"
+    );
+
+    // Simulasikan jatuhnya platform bersama pemain selama 30 tick
+    for _ in 0..30 {
+        world.update(Vec3::ZERO, 1.0 / 30.0, None);
+        world.update_player(&mut player, 1.0 / 30.0, 0.0);
+    }
+
+    // INVARIAN 8C.4 & Section 20:
+    // Pemain tidak jatuh ke void, posisi Y pemain menurun seiring jatuhnya platform,
+    // dan pemain tetap berada di atas atau bertumpu pada platform yang jatuh
+    assert!(
+        player.state.position.y < 5.5,
+        "Pemain harus jatuh mengikuti platform!"
+    );
+    assert!(
+        player.state.position.y >= 0.5,
+        "Pemain tidak boleh jatuh di bawah lantai statis! y = {}",
+        player.state.position.y
+    );
+}
+
+#[test]
+fn test_8c4_breaking_terrain_beneath_sleeping_body_wakes_it() {
+    use omnisia::structure::aggregate::DetachedAggregate;
+
+    let mut world = World::with_seed(WorldSeed(123));
+
+    let mut chunk = Chunk::new(IVec3::ZERO);
+    // Lantai dasar di y = 0
+    for vx in 0..10 {
+        for vz in 0..10 {
+            chunk.set_voxel(vx, 0, vz, VoxelBlock::new(MaterialId::STONE));
+        }
+    }
+    // Pilar tumpuan statis 1-voxel di (5, 1, 5) -> surface y = 1.0m
+    chunk.set_voxel(5, 1, 5, VoxelBlock::new(MaterialId::STONE));
+    world.store.insert(chunk);
+
+    // Badan dinamis tepat di atas pilar (5, 2, 5) -> initial_pos y = 1.0m
+    let voxels = vec![(IVec3::new(5, 2, 5), VoxelBlock::new(MaterialId::STONE))];
+    let agg = DetachedAggregate::from_world_voxels(13, &voxels).unwrap();
+    let body_id = world.physics.spawn_from_detached_aggregate(agg);
+
+    // Biarkan badan mencapai kondisi diam (Sleeping/Settled) di atas pilar
+    for _ in 0..20 {
+        world.physics.tick(1.0 / 30.0, &world.store);
+    }
+
+    assert!(world.physics.get_body(body_id).unwrap().is_grounded);
+
+    // Hancurkan pilar tumpuan statis di (5, 1, 5)
+    world.set_voxel_world(IVec3::new(5, 1, 5), VoxelBlock::AIR);
+
+    let body = world.physics.get_body(body_id).unwrap();
+    // INVARIAN 8C.4 & Section 21:
+    // Badan dinamis kehilangan tumpuan tanah dan dibangunkan ke status Active!
+    assert_eq!(
+        body.state,
+        omnisia::physics::DynamicBodyState::Active,
+        "Badan harus dibangunkan ke status Active saat tumpuannya dihancurkan!"
+    );
+    assert!(
+        !body.is_grounded,
+        "Badan harus kehilangan status is_grounded!"
+    );
+
+    // Pada tick fisika berikutnya, badan mulai jatuh
+    world.physics.tick(1.0 / 30.0, &world.store);
+    let body_after = world.physics.get_body(body_id).unwrap();
+    assert!(
+        body_after.position.y < 1.0,
+        "Badan harus mulai jatuh ke arah lantai dasar! pos.y = {}",
+        body_after.position.y
+    );
+}

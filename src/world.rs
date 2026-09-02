@@ -157,6 +157,9 @@ impl World {
             self.physics.spawn_from_detached_aggregate(agg.clone());
         }
 
+        // Bangunkan badan yang sedang resting jika voxel tumpuannya hancur (8C.4 & Section 21)
+        self.physics.handle_static_terrain_mutation(&self.store);
+
         newly_detached
     }
 
