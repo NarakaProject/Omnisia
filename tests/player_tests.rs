@@ -254,3 +254,107 @@ fn test_ground_detection_unloaded_chunk_is_not_falsely_grounded() {
         "Chunk yang belum dimuat tidak boleh menghasilkan status grounded!"
     );
 }
+
+// ============================================================================
+// 8B.3 KINEMATIC WALK MOVEMENT & HORIZONTAL PLANAR PROJECTION
+// ============================================================================
+
+#[test]
+fn test_walk_movement_camera_relative_forward_backward_strafe() {
+    use omnisia::player::{PlayerController, PlayerInput};
+
+    let mut controller = PlayerController::new(Vec3::ZERO);
+
+    // 1. Arah hadap kamera: yaw = 0 deg (menghadap ke +X)
+    // Input W (maju) -> arah hadap harus (+1, 0, 0)
+    controller.set_input(PlayerInput::from_raw(
+        true, false, false, false, false, false, false,
+    ));
+    let intent_w = controller.compute_horizontal_intent(0.0);
+    assert!((intent_w.x - 1.0).abs() < 1e-4);
+    assert!(intent_w.y.abs() < 1e-5);
+    assert!(intent_w.z.abs() < 1e-4);
+
+    // Input S (mundur) -> arah hadap harus (-1, 0, 0)
+    controller.set_input(PlayerInput::from_raw(
+        false, true, false, false, false, false, false,
+    ));
+    let intent_s = controller.compute_horizontal_intent(0.0);
+    assert!((intent_s.x - (-1.0)).abs() < 1e-4);
+
+    // Input D (strafe kanan) -> arah hadap harus (+Z)
+    controller.set_input(PlayerInput::from_raw(
+        false, false, false, true, false, false, false,
+    ));
+    let intent_d = controller.compute_horizontal_intent(0.0);
+    assert!(intent_d.x.abs() < 1e-4);
+    assert!((intent_d.z - 1.0).abs() < 1e-4);
+
+    // Input A (strafe kiri) -> arah hadap harus (-Z)
+    controller.set_input(PlayerInput::from_raw(
+        false, false, true, false, false, false, false,
+    ));
+    let intent_a = controller.compute_horizontal_intent(0.0);
+    assert!((intent_a.z - (-1.0)).abs() < 1e-4);
+
+    // 2. Arah hadap kamera: yaw = 90 deg (menghadap ke +Z)
+    // Input W (maju) -> harus (+Z)
+    controller.set_input(PlayerInput::from_raw(
+        true, false, false, false, false, false, false,
+    ));
+    let intent_w_90 = controller.compute_horizontal_intent(90.0);
+    assert!(intent_w_90.x.abs() < 1e-4);
+    assert!((intent_w_90.z - 1.0).abs() < 1e-4);
+}
+
+#[test]
+fn test_diagonal_movement_normalized_not_sqrt2() {
+    use omnisia::player::{PlayerController, PlayerInput};
+
+    let mut controller = PlayerController::new(Vec3::ZERO);
+
+    // Tekan W saja
+    controller.set_input(PlayerInput::from_raw(
+        true, false, false, false, false, false, false,
+    ));
+    let intent_w = controller.compute_horizontal_intent(0.0);
+    let speed_w = intent_w.length() * controller.current_target_speed();
+    assert!((speed_w - 5.0).abs() < 1e-4);
+
+    // Tekan W + D (diagonal)
+    controller.set_input(PlayerInput::from_raw(
+        true, false, false, true, false, false, false,
+    ));
+    let intent_diagonal = controller.compute_horizontal_intent(0.0);
+    let speed_diagonal = intent_diagonal.length() * controller.current_target_speed();
+
+    // INVARIAN KANONIKAL: Kecepatan diagonal TIDAK BOLEH melebihi walk_speed (tidak ada speed exploit 5 * sqrt(2))!
+    assert!(
+        (speed_diagonal - 5.0).abs() < 1e-4,
+        "Kecepatan diagonal harus dinormalisasi menjadi tepat 5.0 m/s, terukur: {}",
+        speed_diagonal
+    );
+    assert!(
+        (intent_diagonal.length() - 1.0).abs() < 1e-4,
+        "Panjang vektor niat gerak diagonal harus tepat 1.0!"
+    );
+}
+
+#[test]
+fn test_camera_pitch_does_not_cause_vertical_movement() {
+    use omnisia::player::{PlayerController, PlayerInput};
+
+    let mut controller = PlayerController::new(Vec3::ZERO);
+    controller.set_input(PlayerInput::from_raw(
+        true, false, false, false, false, false, false,
+    ));
+
+    // Evaluasi niat gerak horizontal
+    let intent = controller.compute_horizontal_intent(45.0);
+
+    // Sumbu vertikal Y dari niat gerak horizontal HARUS NOL MUTLAK
+    assert_eq!(
+        intent.y, 0.0,
+        "Niat gerak horizontal pemain tidak boleh mengandung komponen vertikal!"
+    );
+}
