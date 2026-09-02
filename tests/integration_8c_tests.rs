@@ -681,3 +681,227 @@ fn test_8c2_player_supported_by_falling_dynamic_body() {
         "Pemain harus grounded saat mendarat bersama platform!"
     );
 }
+
+// ============================================================================
+// PHASE 8C.3: DYNAMICBODY <-> STATIC WORLD INTEGRATION TESTS
+// ============================================================================
+
+#[test]
+fn test_8c3_dynamic_body_gravity_and_ground_snapping() {
+    use omnisia::structure::aggregate::DetachedAggregate;
+
+    let mut world = World::with_seed(WorldSeed(123));
+
+    // Lantai statis di y = 0..1 (surface y = 0.5m)
+    let mut floor_chunk = Chunk::new(IVec3::ZERO);
+    for vx in 0..16 {
+        for vz in 0..16 {
+            floor_chunk.set_voxel(vx, 0, vz, VoxelBlock::new(MaterialId::STONE));
+        }
+    }
+    world.store.insert(floor_chunk);
+
+    // Badan dinamis (2x2x2) di y = 10 (ketinggian awal 5.0m)
+    let mut voxels = Vec::new();
+    for vx in 0..2 {
+        for vy in 0..2 {
+            for vz in 0..2 {
+                voxels.push((
+                    IVec3::new(vx, 10 + vy, vz),
+                    VoxelBlock::new(MaterialId::STONE),
+                ));
+            }
+        }
+    }
+    let agg = DetachedAggregate::from_world_voxels(8, &voxels).unwrap();
+    let body_id = world.physics.spawn_from_detached_aggregate(agg);
+
+    // Simulasikan jatuhnya badan dinamis hingga menyentuh lantai statis
+    // Gunakan world.physics.tick untuk memeriksa grounding dan snapping sebelum auto-reintegrasi
+    for _ in 0..60 {
+        world.physics.tick(1.0 / 30.0, &world.store);
+        if let Some(body) = world.physics.get_body(body_id) {
+            if body.is_grounded {
+                break;
+            }
+        }
+    }
+
+    let body = world.physics.get_body(body_id).unwrap();
+    // INVARIAN 8C.3: Badan harus bertumpu tepat pada integer grid (y = 0.5m)
+    assert!(
+        body.is_grounded,
+        "DynamicBody harus terdeteksi grounded pada lantai statis!"
+    );
+    assert!(
+        (body.position.y - 0.5).abs() < 1e-3,
+        "Posisi Y DynamicBody harus di-snap tepat ke 0.5m, terukur: {}",
+        body.position.y
+    );
+    assert_eq!(body.velocity.y, 0.0);
+}
+
+#[test]
+fn test_8c3_dynamic_body_horizontal_wall_collision_and_anti_tunneling() {
+    use omnisia::structure::aggregate::DetachedAggregate;
+
+    let mut world = World::with_seed(WorldSeed(123));
+
+    let mut chunk = Chunk::new(IVec3::ZERO);
+    // Lantai di y = 0
+    for vx in 0..32 {
+        for vz in 0..16 {
+            chunk.set_voxel(vx, 0, vz, VoxelBlock::new(MaterialId::STONE));
+        }
+    }
+    // Dinding tipis 1-voxel di vx = 20 (x = 10.0..10.5m)
+    for vy in 1..4 {
+        for vz in 0..16 {
+            chunk.set_voxel(20, vy, vz, VoxelBlock::new(MaterialId::STONE));
+        }
+    }
+    world.store.insert(chunk);
+
+    // Badan dinamis (1-voxel) di x = 2.0m, bergerak cepat ke arah +X (vx = 50.0 m/s)
+    let voxels = vec![(IVec3::new(4, 1, 4), VoxelBlock::new(MaterialId::STONE))];
+    let agg = DetachedAggregate::from_world_voxels(9, &voxels).unwrap();
+    let body_id = world.physics.spawn_from_detached_aggregate(agg);
+    let body_mut = world.physics.get_body_mut(body_id).unwrap();
+    body_mut.gravity_scale = 0.0;
+    body_mut.velocity = Vec3::new(50.0, 0.0, 0.0); // 50 m/s ke arah dinding 10.0m
+
+    // Dalam 1 tick (1/30 detik), delta_x teoritis = 50.0 / 30 = 1.67m
+    // Jalankan 10 tick (cukup untuk menempuh 16.7m jika tidak terhalang)
+    for _ in 0..10 {
+        world.update(Vec3::ZERO, 1.0 / 30.0, None);
+    }
+
+    let body = world.physics.get_body(body_id).unwrap();
+    // INVARIAN 8C.3: Badan dinamis tidak boleh menembus dinding di x = 10.0m!
+    // Ujung kanan voxel badan (pos.x + 0.5) harus <= 10.001m
+    let max_x = body.position.x + 0.5;
+    assert!(
+        max_x <= 10.001,
+        "DynamicBody menembus dinding tipis statis! max_x: {}",
+        max_x
+    );
+    assert_eq!(body.velocity.x, 0.0);
+}
+
+#[test]
+fn test_8c3_dynamic_body_unloaded_chunk_boundary_blocks_motion() {
+    use omnisia::structure::aggregate::DetachedAggregate;
+
+    let mut world = World::with_seed(WorldSeed(123));
+
+    // Hanya muat chunk (0, 0, 0) [x = 0..16m]
+    let mut chunk = Chunk::new(IVec3::ZERO);
+    for vx in 0..32 {
+        for vz in 0..10 {
+            chunk.set_voxel(vx, 0, vz, VoxelBlock::new(MaterialId::STONE));
+        }
+    }
+    world.store.insert(chunk);
+
+    let initial_resident_chunks = world.store.resident_count();
+
+    // Badan dinamis di x = 15.0m bergerak ke +X menuju chunk (1,0,0) yang belum dimuat
+    let voxels = vec![(IVec3::new(30, 1, 4), VoxelBlock::new(MaterialId::STONE))];
+    let agg = DetachedAggregate::from_world_voxels(10, &voxels).unwrap();
+    let body_id = world.physics.spawn_from_detached_aggregate(agg);
+    let body_mut = world.physics.get_body_mut(body_id).unwrap();
+    body_mut.gravity_scale = 0.0;
+    body_mut.velocity = Vec3::new(10.0, 0.0, 0.0);
+
+    for _ in 0..5 {
+        world.update(Vec3::ZERO, 1.0 / 30.0, None);
+    }
+
+    let body = world.physics.get_body(body_id).unwrap();
+    // INVARIAN 8C.3 & UNLOADED BOUNDARY:
+    // 1. Badan dinamis diblokir di perbatasan chunk yang belum dimuat (x <= 16.0m)
+    let max_x = body.position.x + 0.5;
+    assert!(
+        max_x <= 16.001,
+        "DynamicBody tidak boleh menembus ke chunk belum dimuat! max_x: {}",
+        max_x
+    );
+    assert_eq!(body.velocity.x, 0.0);
+
+    // 2. ChunkStore tidak termutasi
+    assert_eq!(
+        world.store.resident_count(),
+        initial_resident_chunks,
+        "Kueri tabrakan DynamicBody tidak boleh membuat chunk baru secara diam-diam!"
+    );
+}
+
+#[test]
+fn test_8c3_sleep_and_settled_state_transition() {
+    use omnisia::structure::aggregate::DetachedAggregate;
+
+    let mut world = World::with_seed(WorldSeed(123));
+
+    let mut chunk = Chunk::new(IVec3::ZERO);
+    for vx in 0..10 {
+        for vz in 0..10 {
+            chunk.set_voxel(vx, 0, vz, VoxelBlock::new(MaterialId::STONE));
+        }
+    }
+    world.store.insert(chunk);
+
+    // Badan dinamis tepat di atas tanah (y = 0.5m)
+    let voxels = vec![(IVec3::new(2, 1, 2), VoxelBlock::new(MaterialId::STONE))];
+    let agg = DetachedAggregate::from_world_voxels(11, &voxels).unwrap();
+    let body_id = world.physics.spawn_from_detached_aggregate(agg);
+
+    // Simulasikan melebihi sleep_ticks_required (15 tick) menggunakan world.physics.tick
+    for _ in 0..25 {
+        world.physics.tick(1.0 / 30.0, &world.store);
+    }
+
+    let body = world.physics.get_body(body_id).unwrap();
+    // INVARIAN 8C.3: Badan dengan gravitasi di atas tanah solid harus berstatus Settled
+    assert_eq!(
+        body.state,
+        omnisia::physics::DynamicBodyState::Settled,
+        "Badan dinamis harus bertransisi ke Settled setelah diam di tanah solid!"
+    );
+
+    // Update dunia penuh sekarang akan memicu reintegrasi dua fase (8C.6)
+    world.update(Vec3::ZERO, 1.0 / 30.0, None);
+    assert!(world.physics.get_body(body_id).is_none());
+    assert!(!world.store.get_voxel_world(IVec3::new(2, 1, 2)).is_air());
+}
+
+#[test]
+fn test_8c3_sleeping_body_wakes_on_disturbance() {
+    use omnisia::structure::aggregate::DetachedAggregate;
+
+    let mut world = World::with_seed(WorldSeed(123));
+    world.store.insert(Chunk::new(IVec3::ZERO));
+
+    let voxels = vec![(IVec3::new(2, 5, 2), VoxelBlock::new(MaterialId::STONE))];
+    let agg = DetachedAggregate::from_world_voxels(12, &voxels).unwrap();
+    let body_id = world.physics.spawn_from_detached_aggregate(agg);
+    let body_mut = world.physics.get_body_mut(body_id).unwrap();
+    body_mut.gravity_scale = 0.0;
+    body_mut.state = omnisia::physics::DynamicBodyState::Sleeping;
+
+    assert_eq!(
+        world.physics.get_body(body_id).unwrap().state,
+        omnisia::physics::DynamicBodyState::Sleeping
+    );
+
+    // Berikan impuls kecepatan yang melebihi threshold
+    world.physics.get_body_mut(body_id).unwrap().velocity = Vec3::new(5.0, 0.0, 0.0);
+
+    // Tick berikutnya harus membangunkannya ke Active
+    world.update(Vec3::ZERO, 1.0 / 30.0, None);
+
+    assert_eq!(
+        world.physics.get_body(body_id).unwrap().state,
+        omnisia::physics::DynamicBodyState::Active,
+        "Badan sleeping harus bangun ke Active saat diberi impuls kecepatan!"
+    );
+}

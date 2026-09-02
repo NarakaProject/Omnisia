@@ -87,7 +87,30 @@ impl PhysicsRuntime {
             // 1. Terapkan akselerasi gravitasi
             body.apply_gravity(gravity, dt);
 
-            // 2. Deteksi tabrakan swept vertikal (Amendment 4 & 6)
+            // 2. Deteksi tabrakan swept horizontal di sumbu X dan Z (8C.3)
+            let cand_delta_x = body.velocity.x * dt;
+            let cand_delta_z = body.velocity.z * dt;
+            if cand_delta_x.abs() > 1e-6 || cand_delta_z.abs() > 1e-6 {
+                self.collision_checks_total += 1;
+                let horiz_res = super::collision::swept_horizontal_step(
+                    body,
+                    cand_delta_x,
+                    cand_delta_z,
+                    store,
+                );
+                body.position.x = horiz_res.clamped_pos.x;
+                body.position.z = horiz_res.clamped_pos.z;
+                if horiz_res.hit_x {
+                    self.collision_contacts_total += 1;
+                    body.velocity.x = 0.0;
+                }
+                if horiz_res.hit_z {
+                    self.collision_contacts_total += 1;
+                    body.velocity.z = 0.0;
+                }
+            }
+
+            // 3. Deteksi tabrakan swept vertikal (Amendment 4 & 6)
             let cand_delta_y = body.velocity.y * dt;
             self.collision_checks_total += 1;
 

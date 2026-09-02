@@ -273,3 +273,204 @@ pub fn swept_vertical_step(
         }
     }
 }
+
+/// Hasil evaluasi tabrakan swept horizontal per langkah (8C.3).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct HorizontalCollisionResult {
+    pub clamped_pos: Vec3,
+    pub hit_x: bool,
+    pub hit_z: bool,
+    pub blocked_by_unloaded: bool,
+}
+
+/// Menguji tabrakan swept horizontal di sumbu X dan Z terhadap voxel statis ChunkStore (8C.3).
+/// Mencegah tunneling melewati dinding dan menjaga batas Unknown != Air pada perbatasan chunk.
+pub fn swept_horizontal_step(
+    body: &DynamicBody,
+    cand_delta_x: f32,
+    cand_delta_z: f32,
+    store: &ChunkStore,
+) -> HorizontalCollisionResult {
+    let mut clamped_x = body.position.x + cand_delta_x;
+    let mut clamped_z = body.position.z + cand_delta_z;
+    let mut hit_x = false;
+    let mut hit_z = false;
+    let mut blocked_by_unloaded = false;
+
+    let base_voxel = body.current_base_voxel();
+
+    // 1. Evaluasi sumbu X
+    if cand_delta_x.abs() > 1e-6 {
+        let start_pos_x = body.position.x;
+        let cand_pos_x = start_pos_x + cand_delta_x;
+
+        let start_base_vx = base_voxel.x;
+        let cand_base_vx = (cand_pos_x / VOXEL_SIZE).floor() as i32;
+
+        let mut earliest_rest_x: Option<f32> = None;
+
+        for v in &body.aggregate.voxels {
+            let world_y = base_voxel.y + v.relative_coord.y;
+            let world_z = base_voxel.z + v.relative_coord.z;
+
+            let start_test_x = start_base_vx + v.relative_coord.x;
+            let end_test_x = cand_base_vx + v.relative_coord.x;
+
+            if cand_delta_x > 0.0 {
+                for test_x in (start_test_x + 1)..=end_test_x {
+                    let coord = IVec3::new(test_x, world_y, world_z);
+                    match store.get_voxel_world_checked(coord) {
+                        None => {
+                            blocked_by_unloaded = true;
+                            let safe_rest_x =
+                                (test_x - v.relative_coord.x - 1) as f32 * VOXEL_SIZE - 0.001;
+                            earliest_rest_x = Some(match earliest_rest_x {
+                                Some(prev) => prev.min(safe_rest_x),
+                                None => safe_rest_x,
+                            });
+                            break;
+                        }
+                        Some(block) => {
+                            if !block.is_air() {
+                                let snap_rest_x =
+                                    (test_x - v.relative_coord.x - 1) as f32 * VOXEL_SIZE - 0.001;
+                                earliest_rest_x = Some(match earliest_rest_x {
+                                    Some(prev) => prev.min(snap_rest_x),
+                                    None => snap_rest_x,
+                                });
+                                break;
+                            }
+                        }
+                    }
+                }
+            } else {
+                for test_x in (end_test_x..start_test_x).rev() {
+                    let coord = IVec3::new(test_x, world_y, world_z);
+                    match store.get_voxel_world_checked(coord) {
+                        None => {
+                            blocked_by_unloaded = true;
+                            let safe_rest_x =
+                                (test_x + 1 - v.relative_coord.x) as f32 * VOXEL_SIZE + 0.001;
+                            earliest_rest_x = Some(match earliest_rest_x {
+                                Some(prev) => prev.max(safe_rest_x),
+                                None => safe_rest_x,
+                            });
+                            break;
+                        }
+                        Some(block) => {
+                            if !block.is_air() {
+                                let snap_rest_x =
+                                    (test_x + 1 - v.relative_coord.x) as f32 * VOXEL_SIZE + 0.001;
+                                earliest_rest_x = Some(match earliest_rest_x {
+                                    Some(prev) => prev.max(snap_rest_x),
+                                    None => snap_rest_x,
+                                });
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if let Some(rest_x) = earliest_rest_x {
+            hit_x = true;
+            clamped_x = if cand_delta_x > 0.0 {
+                rest_x.min(cand_pos_x)
+            } else {
+                rest_x.max(cand_pos_x)
+            };
+        }
+    }
+
+    // 2. Evaluasi sumbu Z
+    if cand_delta_z.abs() > 1e-6 {
+        let start_pos_z = body.position.z;
+        let cand_pos_z = start_pos_z + cand_delta_z;
+
+        let start_base_vz = base_voxel.z;
+        let cand_base_vz = (cand_pos_z / VOXEL_SIZE).floor() as i32;
+
+        let mut earliest_rest_z: Option<f32> = None;
+
+        for v in &body.aggregate.voxels {
+            let world_x = base_voxel.x + v.relative_coord.x;
+            let world_y = base_voxel.y + v.relative_coord.y;
+
+            let start_test_z = start_base_vz + v.relative_coord.z;
+            let end_test_z = cand_base_vz + v.relative_coord.z;
+
+            if cand_delta_z > 0.0 {
+                for test_z in (start_test_z + 1)..=end_test_z {
+                    let coord = IVec3::new(world_x, world_y, test_z);
+                    match store.get_voxel_world_checked(coord) {
+                        None => {
+                            blocked_by_unloaded = true;
+                            let safe_rest_z =
+                                (test_z - v.relative_coord.z - 1) as f32 * VOXEL_SIZE - 0.001;
+                            earliest_rest_z = Some(match earliest_rest_z {
+                                Some(prev) => prev.min(safe_rest_z),
+                                None => safe_rest_z,
+                            });
+                            break;
+                        }
+                        Some(block) => {
+                            if !block.is_air() {
+                                let snap_rest_z =
+                                    (test_z - v.relative_coord.z - 1) as f32 * VOXEL_SIZE - 0.001;
+                                earliest_rest_z = Some(match earliest_rest_z {
+                                    Some(prev) => prev.min(snap_rest_z),
+                                    None => snap_rest_z,
+                                });
+                                break;
+                            }
+                        }
+                    }
+                }
+            } else {
+                for test_z in (end_test_z..start_test_z).rev() {
+                    let coord = IVec3::new(world_x, world_y, test_z);
+                    match store.get_voxel_world_checked(coord) {
+                        None => {
+                            blocked_by_unloaded = true;
+                            let safe_rest_z =
+                                (test_z + 1 - v.relative_coord.z) as f32 * VOXEL_SIZE + 0.001;
+                            earliest_rest_z = Some(match earliest_rest_z {
+                                Some(prev) => prev.max(safe_rest_z),
+                                None => safe_rest_z,
+                            });
+                            break;
+                        }
+                        Some(block) => {
+                            if !block.is_air() {
+                                let snap_rest_z =
+                                    (test_z + 1 - v.relative_coord.z) as f32 * VOXEL_SIZE + 0.001;
+                                earliest_rest_z = Some(match earliest_rest_z {
+                                    Some(prev) => prev.max(snap_rest_z),
+                                    None => snap_rest_z,
+                                });
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if let Some(rest_z) = earliest_rest_z {
+            hit_z = true;
+            clamped_z = if cand_delta_z > 0.0 {
+                rest_z.min(cand_pos_z)
+            } else {
+                rest_z.max(cand_pos_z)
+            };
+        }
+    }
+
+    HorizontalCollisionResult {
+        clamped_pos: Vec3::new(clamped_x, body.position.y, clamped_z),
+        hit_x,
+        hit_z,
+        blocked_by_unloaded,
+    }
+}
