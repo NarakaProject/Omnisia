@@ -188,4 +188,34 @@ impl PlayerController {
             self.state.sprinting = self.input.sprint && self.input_has_movement();
         }
     }
+
+    /// Mengevaluasi transisi status jongkok dan clearance langit-langit (8B.5).
+    ///
+    /// INVARIANTS:
+    /// - Saat input.crouch = true: pemain langsung berjongkok.
+    /// - Saat input.crouch = false: pemain mencoba berdiri; diperiksa clearance kapsul berdiri penuh.
+    /// - Jika terhalang langit-langit rendah: pemain tetap jongkok (forced_crouch = true).
+    /// - Jika clearance bebas: pemain berdiri (crouching = false, forced_crouch = false).
+    /// - Telapak kaki (feet_pos) tetap stabil (zero foot teleportation)!
+    pub fn update_crouch_state(&mut self, store: &crate::streaming::store::ChunkStore) {
+        if self.input.crouch {
+            self.state.crouching = true;
+            self.state.forced_crouch = false;
+        } else if self.state.crouching {
+            let has_clearance = super::collision::check_capsule_clearance(
+                self.state.position,
+                self.config.standing_height,
+                self.config.capsule_radius,
+                store,
+            );
+
+            if has_clearance {
+                self.state.crouching = false;
+                self.state.forced_crouch = false;
+            } else {
+                self.state.crouching = true;
+                self.state.forced_crouch = true;
+            }
+        }
+    }
 }

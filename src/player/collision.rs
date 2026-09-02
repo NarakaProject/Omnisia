@@ -105,3 +105,58 @@ pub fn check_ground_support(
         GroundContactResult::default()
     }
 }
+
+/// Memeriksa apakah kapsul dengan ketinggian target (misalnya standing_height = 1.8m)
+/// memiliki ruang bebas penuh (clearance) tanpa beririsan dengan voxel solid statis (8B.5).
+///
+/// INVARIANTS:
+/// - Menggunakan geometri kapsul penuh (Narrow-Phase), bukan hanya cek 1 voxel di atas kepala.
+/// - Menghindari alokasi heap (Zero Allocation).
+/// - Jika seluruh kandidat voxel adalah AIR (atau di luar jangkauan kapsul), mengembalikan `true`.
+/// - Jika beririsan dengan balok solid atau chunk yang belum dimuat (Unknown), mengembalikan `false`.
+pub fn check_capsule_clearance(
+    feet_pos: Vec3,
+    target_height: f32,
+    radius: f32,
+    store: &ChunkStore,
+) -> bool {
+    let standing_capsule = super::collider::Capsule::new(feet_pos, radius, target_height);
+    let (aabb_min, aabb_max) = standing_capsule.aabb();
+
+    let vx_min = (aabb_min.x / VOXEL_SIZE).floor() as i32;
+    let vx_max = (aabb_max.x / VOXEL_SIZE).floor() as i32;
+    let vy_min = (aabb_min.y / VOXEL_SIZE).floor() as i32;
+    let vy_max = (aabb_max.y / VOXEL_SIZE).floor() as i32;
+    let vz_min = (aabb_min.z / VOXEL_SIZE).floor() as i32;
+    let vz_max = (aabb_max.z / VOXEL_SIZE).floor() as i32;
+
+    for vy in vy_min..=vy_max {
+        for vz in vz_min..=vz_max {
+            for vx in vx_min..=vx_max {
+                let block_min = Vec3::new(
+                    vx as f32 * VOXEL_SIZE,
+                    vy as f32 * VOXEL_SIZE,
+                    vz as f32 * VOXEL_SIZE,
+                );
+                let block_max = block_min + Vec3::splat(VOXEL_SIZE);
+
+                let coord = IVec3::new(vx, vy, vz);
+                match store.get_voxel_world_checked(coord) {
+                    Some(block) => {
+                        if !block.is_air() && standing_capsule.intersects_aabb(block_min, block_max)
+                        {
+                            return false;
+                        }
+                    }
+                    None => {
+                        if standing_capsule.intersects_aabb(block_min, block_max) {
+                            return false;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    true
+}

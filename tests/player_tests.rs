@@ -435,3 +435,137 @@ fn test_sprint_does_not_alter_capsule_dimensions() {
     assert_eq!(capsule.radius, 0.30);
     assert_eq!(capsule.base, Vec3::new(10.0, 5.0, 10.0));
 }
+
+// ============================================================================
+// 8B.5 CROUCH HEIGHT TRANSITION & CEILING CLEARANCE CHECK
+// ============================================================================
+
+#[test]
+fn test_crouch_height_and_feet_stability() {
+    use omnisia::player::{PlayerController, PlayerInput};
+    use omnisia::streaming::store::ChunkStore;
+
+    let store = ChunkStore::new();
+    let feet_pos = Vec3::new(15.0, 4.0, 15.0);
+    let mut controller = PlayerController::new(feet_pos);
+
+    // Default berdiri
+    assert_eq!(controller.current_capsule().height, 1.8);
+    assert_eq!(controller.current_capsule().base, feet_pos);
+
+    // Input crouch aktif
+    controller.set_input(PlayerInput::from_raw(
+        false, false, false, false, false, true, false,
+    ));
+    controller.update_crouch_state(&store);
+
+    assert!(controller.state.crouching);
+    assert!(!controller.state.forced_crouch);
+    // Tinggi kapsul berkurang menjadi 1.2m
+    assert_eq!(controller.current_capsule().height, 1.2);
+    // INVARIAN KANONIKAL: Telapak kaki tidak boleh bergerak/teleportasi!
+    assert_eq!(controller.current_capsule().base, feet_pos);
+    assert_eq!(controller.state.position, feet_pos);
+
+    // Eye position turun mengikuti tinggi jongkok
+    let standing_eye = feet_pos.y + 1.62;
+    let crouching_eye = feet_pos.y + 1.08;
+    assert!((controller.eye_position().y - crouching_eye).abs() < 1e-4);
+    assert!(controller.eye_position().y < standing_eye);
+}
+
+#[test]
+fn test_crouch_stand_clearance_blocked_by_low_ceiling() {
+    use glam::IVec3;
+    use omnisia::chunk::Chunk;
+    use omnisia::material::MaterialId;
+    use omnisia::player::{PlayerController, PlayerInput};
+    use omnisia::streaming::store::ChunkStore;
+    use omnisia::voxel::VoxelBlock;
+
+    let mut store = ChunkStore::new();
+    let mut chunk = Chunk::new(IVec3::ZERO);
+
+    // Lantai di y = 0 -> permukaan atas y = 0.5m
+    chunk.set_voxel(10, 0, 10, VoxelBlock::new(MaterialId::STONE));
+
+    // Langit-langit rendah di y = 4 -> dasar bawah langit-langit y = 4 * 0.5 = 2.0m
+    // Jarak bebas dari lantai (0.5m) ke langit-langit (2.0m) adalah 1.5m!
+    // Kapsul berdiri butuh 1.8m (0.5m + 1.8m = 2.3m > 2.0m -> MENEMBUS!)
+    // Kapsul jongkok butuh 1.2m (0.5m + 1.2m = 1.7m < 2.0m -> MUAT!)
+    chunk.set_voxel(10, 4, 10, VoxelBlock::new(MaterialId::STONE));
+    store.insert(chunk);
+
+    // Pemain berdiri di lantai (y = 0.5m)
+    let feet_pos = Vec3::new(5.25, 0.50, 5.25);
+    let mut controller = PlayerController::new(feet_pos);
+
+    // 1. Pemain jongkok di bawah langit-langit rendah
+    controller.set_input(PlayerInput::from_raw(
+        false, false, false, false, false, true, false,
+    ));
+    controller.update_crouch_state(&store);
+    assert!(controller.state.crouching);
+    assert_eq!(controller.current_capsule().height, 1.2);
+
+    // 2. Pemain melepas tombol crouch (crouch = false), mencoba berdiri!
+    controller.set_input(PlayerInput::from_raw(
+        false, false, false, false, false, false, false,
+    ));
+    controller.update_crouch_state(&store);
+
+    // INVARIAN KANONIKAL: Berdiri harus DITOLAK karena terhalang langit-langit!
+    assert!(
+        controller.state.crouching,
+        "Pemain harus tetap berjongkok saat berada di bawah langit-langit rendah!"
+    );
+    assert!(
+        controller.state.forced_crouch,
+        "Flag forced_crouch harus aktif!"
+    );
+    assert_eq!(controller.current_capsule().height, 1.2);
+    // Kaki tidak boleh berpindah
+    assert_eq!(controller.state.position, feet_pos);
+}
+
+#[test]
+fn test_crouch_stand_clearance_success_after_clear() {
+    use glam::IVec3;
+    use omnisia::chunk::Chunk;
+    use omnisia::material::MaterialId;
+    use omnisia::player::{PlayerController, PlayerInput};
+    use omnisia::streaming::store::ChunkStore;
+    use omnisia::voxel::VoxelBlock;
+
+    let mut store = ChunkStore::new();
+    let mut chunk = Chunk::new(IVec3::ZERO);
+    chunk.set_voxel(10, 0, 10, VoxelBlock::new(MaterialId::STONE));
+    // Langit-langit tinggi di y = 6 (dasar y = 3.0m). Kapsul berdiri butuh 0.5 + 1.8 = 2.3m <= 3.0m -> BEBAS!
+    chunk.set_voxel(10, 6, 10, VoxelBlock::new(MaterialId::STONE));
+    store.insert(chunk);
+
+    let feet_pos = Vec3::new(5.25, 0.50, 5.25);
+    let mut controller = PlayerController::new(feet_pos);
+
+    // Jongkok
+    controller.set_input(PlayerInput::from_raw(
+        false, false, false, false, false, true, false,
+    ));
+    controller.update_crouch_state(&store);
+    assert!(controller.state.crouching);
+
+    // Lepas tombol jongkok
+    controller.set_input(PlayerInput::from_raw(
+        false, false, false, false, false, false, false,
+    ));
+    controller.update_crouch_state(&store);
+
+    // Langit-langit cukup tinggi -> berhasil berdiri!
+    assert!(
+        !controller.state.crouching,
+        "Pemain harus berhasil berdiri saat clearance mencukupi!"
+    );
+    assert!(!controller.state.forced_crouch);
+    assert_eq!(controller.current_capsule().height, 1.8);
+    assert_eq!(controller.state.position, feet_pos);
+}
