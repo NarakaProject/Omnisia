@@ -8,6 +8,7 @@ use crate::material::MaterialRegistry;
 use crate::mesh::types::MeshData;
 use crate::modding::registry::BlockRegistry;
 use crate::modding::runtime::ContentRuntime;
+use crate::physics::PhysicsRuntime;
 use crate::renderer::Renderer;
 use crate::storage::{MemoryCompressedRegionStore, RegionStore};
 use crate::streaming::generator::ChunkGenerator;
@@ -34,6 +35,7 @@ pub struct World {
     pub scheduler: ChunkScheduler,
     pub budget: MemoryBudget,
     pub structure: StructuralSystem,
+    pub physics: PhysicsRuntime,
 
     pub simulation_radius: i32,
     pub render_radius: i32,
@@ -97,6 +99,7 @@ impl World {
             scheduler: ChunkScheduler::new(num_cpus),
             budget: MemoryBudget::default(),
             structure,
+            physics: PhysicsRuntime::default(),
             simulation_radius: 3,
             render_radius: 5,
             retain_radius: 7,
@@ -117,7 +120,7 @@ impl World {
     }
 
     /// Menetapkan voxel pada koordinat global dunia (world voxel), memancarkan StructuralEvent,
-    /// dan mengekstrak gugusan yang terlepas secara langsung.
+    /// dan mengekstrak gugusan yang terlepas secara langsung ke PhysicsRuntime.
     ///
     /// GUARDRAIL 1: StructuralEvent terintegrasi langsung di production pipeline.
     pub fn set_voxel_world(
@@ -146,7 +149,14 @@ impl World {
         };
 
         let event = StructuralEvent::new(world_voxel, mutation);
-        self.structure.process_event(&event, &mut self.store)
+        let newly_detached = self.structure.process_event(&event, &mut self.store);
+
+        // Daftarkan gugusan yang lepas langsung ke runtime fisika (DynamicBody)
+        for agg in &newly_detached {
+            self.physics.spawn_from_detached_aggregate(agg.clone());
+        }
+
+        newly_detached
     }
 
     /// Mengambil voxel pada koordinat global dunia
@@ -175,7 +185,10 @@ impl World {
         self.scheduler.update(&mut self.store, &self.materials);
 
         // 2. Proses antrean pending structural connectivity checks saat chunk baru telah selesai dimuat
-        let _ = self.structure.process_pending_checks(&mut self.store);
+        let newly_detached = self.structure.process_pending_checks(&mut self.store);
+        for agg in newly_detached {
+            self.physics.spawn_from_detached_aggregate(agg);
+        }
 
         // 3. Masukkan mesh baru yang siap dari scheduler ke upload_queue
         for (coord, mesh) in self.scheduler.ready_meshes.drain(..) {

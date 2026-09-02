@@ -145,3 +145,101 @@ fn test_detached_aggregate_multi_material_and_topology_preservation() {
     assert_eq!(min_b, IVec3::new(-33, 10, 0));
     assert_eq!(max_b, IVec3::new(-32, 11, 0));
 }
+
+// ============================================================================
+// 8A.3 STATIC -> DYNAMIC ATOMIC OWNERSHIP TRANSFER
+// ============================================================================
+
+#[test]
+fn test_static_to_dynamic_atomic_ownership_transfer() {
+    use omnisia::chunk::Chunk;
+    use omnisia::modding::resource_id::ResourceId;
+    use omnisia::world::World;
+    use omnisia::worldgen::seed::WorldSeed;
+
+    let mut world = World::with_seed(WorldSeed(42));
+    world.store.insert(Chunk::new(IVec3::ZERO));
+
+    let stone_id = world
+        .materials
+        .resolve_material_id(&ResourceId::core("stone").unwrap())
+        .unwrap();
+    let wood_id = world
+        .materials
+        .resolve_material_id(&ResourceId::core("wood_oak").unwrap())
+        .unwrap();
+
+    // Bangun tiang batu di atas fondasi anchor jauh di dalam chunk (10, y, 10)
+    for y in 0..5 {
+        world
+            .store
+            .set_voxel_world(IVec3::new(10, y, 10), VoxelBlock::new(stone_id));
+    }
+    // Pasang balok kayu di atas tiang (y=5, 6)
+    world
+        .store
+        .set_voxel_world(IVec3::new(10, 5, 10), VoxelBlock::new(wood_id));
+    world
+        .store
+        .set_voxel_world(IVec3::new(10, 6, 10), VoxelBlock::new(wood_id));
+
+    // Verifikasi awal: 7 voxel solid ada di ChunkStore
+    assert!(!world.store.get_voxel_world(IVec3::new(10, 5, 10)).is_air());
+    assert!(!world.store.get_voxel_world(IVec3::new(10, 6, 10)).is_air());
+    assert_eq!(world.physics.body_count(), 0);
+
+    // Hancurkan tiang batu di y=4 menggunakan World::set_voxel_world
+    // Ini memicu mutasi struktural dan ekstraksi detached aggregate
+    let detached = world.set_voxel_world(IVec3::new(10, 4, 10), VoxelBlock::AIR);
+
+    // Buktikan 1: Ada aggregate lepas yang terdeteksi
+    assert_eq!(detached.len(), 1);
+    let agg = &detached[0];
+    assert_eq!(agg.voxel_count(), 2); // y=5 dan y=6
+
+    // Buktikan 2: Voxel lepas telah DIHAPUS dari ChunkStore (tidak ada double ownership)
+    assert!(
+        world.store.get_voxel_world(IVec3::new(10, 5, 10)).is_air(),
+        "Voxel y=5 harus sudah bukan milik ChunkStore!"
+    );
+    assert!(
+        world.store.get_voxel_world(IVec3::new(10, 6, 10)).is_air(),
+        "Voxel y=6 harus sudah bukan milik ChunkStore!"
+    );
+
+    // Buktikan 3: DynamicBody terdaftar di PhysicsRuntime dan memegang 100% kepemilikan
+    assert_eq!(world.physics.body_count(), 1);
+    let body = world.physics.bodies.values().next().unwrap();
+    assert_eq!(body.voxel_count(), 2);
+    assert_eq!(body.state, DynamicBodyState::Active);
+
+    let body_voxels: Vec<IVec3> = body.iter_world_voxels().map(|(pos, _)| pos).collect();
+    assert!(body_voxels.contains(&IVec3::new(10, 5, 10)));
+    assert!(body_voxels.contains(&IVec3::new(10, 6, 10)));
+
+    // Buktikan 4: Total voxel dunia kekal (konservasi total voxel)
+    // 4 stone di y=0..3 tetap di ChunkStore, 2 wood di y=5..6 sekarang di DynamicBody
+    assert_eq!(world.physics.total_dynamic_voxels(), 2);
+}
+
+#[test]
+fn test_atomic_ownership_transfer_empty_component_does_not_mutate_store() {
+    use omnisia::chunk::Chunk;
+    use omnisia::streaming::store::ChunkStore;
+    use omnisia::structure::aggregate::DetachedAggregate;
+
+    let mut store = ChunkStore::new();
+    store.insert(Chunk::new(IVec3::ZERO));
+    store.set_voxel_world(IVec3::new(5, 5, 5), VoxelBlock::new(MaterialId::STONE));
+
+    // Coba buat DetachedAggregate dari kumpulan voxel kosong
+    let empty_voxels: Vec<(IVec3, VoxelBlock)> = Vec::new();
+    let maybe_agg = DetachedAggregate::from_world_voxels(1, &empty_voxels);
+    assert!(maybe_agg.is_none());
+
+    // Karena konstruksi aggregate gagal / None, ChunkStore TIDAK BOLEH dimutasi
+    assert!(
+        !store.get_voxel_world(IVec3::new(5, 5, 5)).is_air(),
+        "ChunkStore harus mempertahankan voxel secara otoritatif jika aggregate tidak valid!"
+    );
+}

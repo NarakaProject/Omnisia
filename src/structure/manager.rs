@@ -99,16 +99,16 @@ impl StructuralSystem {
                         continue;
                     }
 
-                    // 1. Transfer kepemilikan: Hapus voxel dari ChunkStore otoritatif agar tidak duplikasi
-                    for &(vpos, _) in &component_voxels {
-                        store.set_voxel_world(vpos, VoxelBlock::AIR);
-                    }
-
-                    // 2. Buat DetachedAggregate murni data struktural
+                    // 1. PREPARE & VALIDATE (Amendment 1): Buat DetachedAggregate terlebih dahulu
                     if let Some(agg) = DetachedAggregate::from_world_voxels(
                         self.next_aggregate_id,
                         &component_voxels,
                     ) {
+                        // 2. COMMIT: Hanya rilis kepemilikan dari ChunkStore jika konstruksi aggregate berhasil
+                        for &(vpos, _) in &component_voxels {
+                            store.set_voxel_world(vpos, VoxelBlock::AIR);
+                        }
+
                         self.next_aggregate_id += 1;
                         self.total_detached_extracted += 1;
                         self.detached_aggregates.push(agg.clone());
@@ -149,13 +149,13 @@ impl StructuralSystem {
                         self.pending_checks.push_back(pos);
                     }
                     ConnectivityStatus::Detached { component_voxels } => {
-                        for &(vpos, _) in &component_voxels {
-                            store.set_voxel_world(vpos, VoxelBlock::AIR);
-                        }
                         if let Some(agg) = DetachedAggregate::from_world_voxels(
                             self.next_aggregate_id,
                             &component_voxels,
                         ) {
+                            for &(vpos, _) in &component_voxels {
+                                store.set_voxel_world(vpos, VoxelBlock::AIR);
+                            }
                             self.next_aggregate_id += 1;
                             self.total_detached_extracted += 1;
                             self.detached_aggregates.push(agg.clone());
