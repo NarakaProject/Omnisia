@@ -93,3 +93,55 @@ fn test_physics_config_defaults() {
     assert_eq!(config.sleep_ticks_required, 15);
     assert_eq!(config.max_substeps_per_frame, 5);
 }
+
+// ============================================================================
+// 8A.2 DETACHED AGGREGATE -> DYNAMIC BODY (MOVE SEMANTICS & INTEGRITY)
+// ============================================================================
+
+#[test]
+fn test_detached_aggregate_to_dynamic_body_move_semantics() {
+    let voxels = vec![
+        (IVec3::new(-5, 12, -8), VoxelBlock::new(MaterialId::STONE)),
+        (IVec3::new(-5, 13, -8), VoxelBlock::new(MaterialId::DIRT)),
+        (IVec3::new(-4, 12, -8), VoxelBlock::new(MaterialId::GRASS)),
+    ];
+    let agg = DetachedAggregate::from_world_voxels(99, &voxels).expect("Valid aggregate");
+
+    // Move semantics: agg berpindah langsung ke dalam DynamicBody
+    let body = DynamicBody::from_detached_aggregate(DynamicBodyId(99), agg)
+        .with_gravity_scale(0.5)
+        .with_velocity(Vec3::new(0.0, -2.0, 0.0));
+
+    assert_eq!(body.id, DynamicBodyId(99));
+    assert_eq!(body.gravity_scale, 0.5);
+    assert_eq!(body.velocity, Vec3::new(0.0, -2.0, 0.0));
+    assert_eq!(body.voxel_count(), 3);
+    assert!(body.validate_integrity());
+
+    // Verifikasi identitas material & posisi dunia asal tetap 100% utuh
+    let world_voxels: Vec<(IVec3, VoxelBlock)> = body.iter_world_voxels().collect();
+    assert_eq!(world_voxels.len(), 3);
+    assert!(world_voxels.contains(&(IVec3::new(-5, 12, -8), VoxelBlock::new(MaterialId::STONE))));
+    assert!(world_voxels.contains(&(IVec3::new(-5, 13, -8), VoxelBlock::new(MaterialId::DIRT))));
+    assert!(world_voxels.contains(&(IVec3::new(-4, 12, -8), VoxelBlock::new(MaterialId::GRASS))));
+}
+
+#[test]
+fn test_detached_aggregate_multi_material_and_topology_preservation() {
+    // Struktur berbentuk L melintasi kuadran negatif
+    let voxels = vec![
+        (IVec3::new(-33, 10, 0), VoxelBlock::new(MaterialId::STONE)),
+        (IVec3::new(-32, 10, 0), VoxelBlock::new(MaterialId::SAND)),
+        (IVec3::new(-32, 11, 0), VoxelBlock::new(MaterialId::DIRT)),
+    ];
+    let agg = DetachedAggregate::from_world_voxels(10, &voxels).unwrap();
+    let body = DynamicBody::from_detached_aggregate(DynamicBodyId(10), agg);
+
+    assert_eq!(body.voxel_count(), 3);
+    assert_eq!(body.voxel_dimensions(), IVec3::new(2, 2, 1));
+    assert!(body.validate_integrity());
+
+    let (min_b, max_b) = body.world_voxel_bounds();
+    assert_eq!(min_b, IVec3::new(-33, 10, 0));
+    assert_eq!(max_b, IVec3::new(-32, 11, 0));
+}

@@ -68,9 +68,44 @@ impl DynamicBody {
     }
 
     /// Membuat DynamicBody di posisi awal yang tepat sesuai koordinat dunia asal `min_voxel`
+    /// Menggunakan Rust move semantics (zero clone alokasi heap untuk aggregate.voxels)
     pub fn from_detached_aggregate(id: DynamicBodyId, aggregate: DetachedAggregate) -> Self {
         let initial_position = world_voxel_to_world_pos(aggregate.min_voxel);
         Self::new(id, aggregate, initial_position)
+    }
+
+    /// Builder untuk mengatur pengali gravitasi (misal 0.0 untuk AntiGravity)
+    pub fn with_gravity_scale(mut self, scale: f32) -> Self {
+        self.gravity_scale = scale;
+        self
+    }
+
+    /// Builder untuk mengatur kecepatan awal
+    pub fn with_velocity(mut self, velocity: Vec3) -> Self {
+        self.velocity = velocity;
+        self
+    }
+
+    /// Memvalidasi integritas internal dari badan dinamis:
+    /// - Tidak boleh kosong (voxel_count > 0)
+    /// - Seluruh voxel berada dalam rentang [0 .. dimensions]
+    pub fn validate_integrity(&self) -> bool {
+        if self.voxel_count() == 0 {
+            return false;
+        }
+        let dims = self.voxel_dimensions();
+        for v in &self.aggregate.voxels {
+            if v.relative_coord.x < 0
+                || v.relative_coord.y < 0
+                || v.relative_coord.z < 0
+                || v.relative_coord.x >= dims.x
+                || v.relative_coord.y >= dims.y
+                || v.relative_coord.z >= dims.z
+            {
+                return false;
+            }
+        }
+        true
     }
 
     /// Jumlah voxel solid dalam badan dinamis
