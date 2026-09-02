@@ -1,18 +1,33 @@
-use glam::IVec3;
-use std::collections::HashMap;
+use glam::{IVec3, Vec3};
+use std::sync::Arc;
 
 use crate::chunk::Chunk;
-use crate::coord::world_voxel_to_chunk_and_local;
-use crate::material::{MaterialId, MaterialRegistry};
+use crate::coord::{world_pos_to_world_voxel, CHUNK_SIZE, CHUNK_WORLD_SIZE};
+use crate::material::MaterialRegistry;
 use crate::modding::registry::BlockRegistry;
 use crate::modding::runtime::ContentRuntime;
+use crate::renderer::Renderer;
+use crate::storage::{MemoryCompressedRegionStore, RegionStore};
+use crate::streaming::generator::{ChunkGenerator, DemoChunkGenerator};
+use crate::streaming::jobs::{JobPriority, JobType};
+use crate::streaming::memory::MemoryBudget;
+use crate::streaming::scheduler::ChunkScheduler;
+use crate::streaming::store::ChunkStore;
 use crate::voxel::VoxelBlock;
 
-/// Representasi dunia runtime sparse dengan integrasi registry konten yang telah di-resolve
+/// Representasi dunia runtime sparse dengan streaming asynchronous, chunk scheduling, dan memory management
 pub struct World {
-    pub chunks: HashMap<IVec3, Chunk>,
+    pub store: ChunkStore,
     pub materials: MaterialRegistry,
     pub blocks: BlockRegistry,
+    pub storage: Arc<dyn RegionStore>,
+    pub generator: Arc<dyn ChunkGenerator>,
+    pub scheduler: ChunkScheduler,
+    pub budget: MemoryBudget,
+
+    pub simulation_radius: i32,
+    pub render_radius: i32,
+    pub retain_radius: i32,
 }
 
 impl Default for World {
@@ -38,143 +53,177 @@ impl World {
 
     /// Membuat instance World dengan MaterialRegistry dan BlockRegistry yang sudah di-resolve
     pub fn with_content(materials: MaterialRegistry, blocks: BlockRegistry) -> Self {
+        let num_cpus = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(4)
+            .clamp(2, 8);
+
         Self {
-            chunks: HashMap::new(),
+            store: ChunkStore::new(),
             materials,
             blocks,
+            storage: Arc::new(MemoryCompressedRegionStore::new()),
+            generator: Arc::new(DemoChunkGenerator::new(1337)),
+            scheduler: ChunkScheduler::new(num_cpus),
+            budget: MemoryBudget::default(),
+            simulation_radius: 3,
+            render_radius: 5,
+            retain_radius: 7,
         }
     }
 
     #[inline(always)]
     pub fn get_chunk(&self, coord: &IVec3) -> Option<&Chunk> {
-        self.chunks.get(coord)
+        self.store.get(coord)
     }
 
     #[inline(always)]
     pub fn get_chunk_mut(&mut self, coord: &IVec3) -> Option<&mut Chunk> {
-        self.chunks.get_mut(coord)
-    }
-
-    #[inline(always)]
-    pub fn get_or_create_chunk(&mut self, coord: IVec3) -> &mut Chunk {
-        self.chunks
-            .entry(coord)
-            .or_insert_with(|| Chunk::new(coord))
+        self.store.get_mut(coord)
     }
 
     /// Menetapkan voxel pada koordinat global dunia (world voxel)
     pub fn set_voxel_world(&mut self, world_voxel: IVec3, block: VoxelBlock) {
-        let (chunk_coord, local_coord) = world_voxel_to_chunk_and_local(world_voxel);
-        let chunk = self.get_or_create_chunk(chunk_coord);
-        chunk.set_voxel(
-            local_coord.x as usize,
-            local_coord.y as usize,
-            local_coord.z as usize,
-            block,
-        );
+        self.store.set_voxel_world(world_voxel, block);
     }
 
     /// Mengambil voxel pada koordinat global dunia
     pub fn get_voxel_world(&self, world_voxel: IVec3) -> VoxelBlock {
-        let (chunk_coord, local_coord) = world_voxel_to_chunk_and_local(world_voxel);
-        if let Some(chunk) = self.chunks.get(&chunk_coord) {
-            *chunk.get_voxel(
-                local_coord.x as usize,
-                local_coord.y as usize,
-                local_coord.z as usize,
-            )
-        } else {
-            VoxelBlock::AIR
-        }
+        self.store.get_voxel_world(world_voxel)
     }
 
-    /// Menghasilkan Demo World: Terrain berundak dan Floating Island anti-gravitasi
-    pub fn generate_demo_world(&mut self) {
-        log::info!("Membangun Demo World Omnisia...");
+    /// Update per frame: mengelola streaming radius, integrasi hasil worker, eviksi, dan upload GPU
+    pub fn update(
+        &mut self,
+        camera_world_pos: Vec3,
+        _dt: f32,
+        mut renderer: Option<&mut Renderer>,
+    ) {
+        // 1. Integrasi hasil worker dari scheduler
+        self.scheduler.update(&mut self.store, &self.materials);
 
-        // 1. Terrain Statis Dasar (Chunk [0, 0, 0], [1, 0, 0], [0, 0, 1], [1, 0, 1])
-        for cx in 0..2 {
-            for cz in 0..2 {
-                let chunk_pos = IVec3::new(cx, 0, cz);
-                let chunk = self.get_or_create_chunk(chunk_pos);
+        // 2. Upload mesh baru yang siap ke Renderer GPU
+        if let Some(ref mut rend) = renderer {
+            for (coord, mesh) in self.scheduler.ready_meshes.drain(..) {
+                rend.upload_chunk_mesh(coord, &mesh);
+            }
+        }
 
-                for lz in 0..32 {
-                    for lx in 0..32 {
-                        let wx = cx * 32 + lx as i32;
-                        let wz = cz * 32 + lz as i32;
+        // 3. Streaming Radius: Permintaan chunk di sekitar posisi kamera
+        let camera_voxel = world_pos_to_world_voxel(camera_world_pos);
+        let center_chunk = IVec3::new(
+            camera_voxel.x.div_euclid(CHUNK_SIZE),
+            camera_voxel.y.div_euclid(CHUNK_SIZE),
+            camera_voxel.z.div_euclid(CHUNK_SIZE),
+        );
 
-                        // Variasi ketinggian bukit kecil
-                        let height = 10
-                            + (((wx as f32 * 0.15).sin() + (wz as f32 * 0.15).cos()) * 3.0)
-                                as usize;
+        let r = self.render_radius;
+        for dy in -2..=2 {
+            for dz in -r..=r {
+                for dx in -r..=r {
+                    let chunk_coord = center_chunk + IVec3::new(dx, dy, dz);
+                    if !self.store.contains(&chunk_coord) && !self.store.is_in_flight(&chunk_coord)
+                    {
+                        let chunk_center = Vec3::new(
+                            (chunk_coord.x as f32 + 0.5) * CHUNK_WORLD_SIZE,
+                            (chunk_coord.y as f32 + 0.5) * CHUNK_WORLD_SIZE,
+                            (chunk_coord.z as f32 + 0.5) * CHUNK_WORLD_SIZE,
+                        );
+                        let dist_sq = camera_world_pos.distance_squared(chunk_center);
 
-                        for ly in 0..=height.min(31) {
-                            let mat = if ly < height.saturating_sub(4) {
-                                MaterialId::STONE
-                            } else if ly < height {
-                                MaterialId::DIRT
-                            } else {
-                                MaterialId::GRASS
-                            };
+                        let priority = if dx.abs() <= 1 && dz.abs() <= 1 {
+                            JobPriority::High
+                        } else {
+                            JobPriority::Normal
+                        };
 
-                            chunk.set_voxel(lx, ly, lz, VoxelBlock::new(mat));
-                        }
+                        self.scheduler.request_job(
+                            chunk_coord,
+                            JobType::LoadChunk,
+                            priority,
+                            0,
+                            dist_sq,
+                        );
                     }
                 }
             }
         }
 
-        // 2. Pulau Mengapung Dinamis / Anti-Gravity Structure (Chunk [0, 1, 0])
-        let island_chunk = self.get_or_create_chunk(IVec3::new(0, 1, 0));
+        // 4. Pembatalan kooperatif untuk request yang berada jauh di luar retain radius
+        self.scheduler
+            .cancel_outside_radius(camera_world_pos, self.retain_radius);
 
-        // Dasar pulau (Stone & Dirt)
-        for lz in 8..24 {
-            for lx in 8..24 {
-                let dist_sq = ((lx as i32 - 16).pow(2) + (lz as i32 - 16).pow(2)) as f32;
-                if dist_sq < 48.0 {
-                    island_chunk.set_voxel(lx, 6, lz, VoxelBlock::new(MaterialId::DIRT));
-                    island_chunk.set_voxel(lx, 7, lz, VoxelBlock::new(MaterialId::GRASS));
+        // 5. Evaluasi Eviksi jika melebihi batas retain radius atau memory budget
+        let retain_radius_sq = (self.retain_radius as f32 * CHUNK_WORLD_SIZE).powi(2);
+        let mut to_evict_clean = Vec::new();
+
+        for (&coord, chunk) in self.store.resident.iter() {
+            let chunk_center = Vec3::new(
+                (coord.x as f32 + 0.5) * CHUNK_WORLD_SIZE,
+                (coord.y as f32 + 0.5) * CHUNK_WORLD_SIZE,
+                (coord.z as f32 + 0.5) * CHUNK_WORLD_SIZE,
+            );
+            let dist_sq = camera_world_pos.distance_squared(chunk_center);
+
+            if dist_sq > retain_radius_sq {
+                if chunk.is_dirty(crate::chunk::dirty_flags::SAVE_DIRTY) {
+                    // Chunk kotor: WAJIB dijadwalkan save sebelum dievict!
+                    if !self.store.in_flight_saving.contains_key(&coord) {
+                        self.scheduler.request_job(
+                            coord,
+                            JobType::SaveChunk,
+                            JobPriority::Low,
+                            chunk.revision,
+                            dist_sq,
+                        );
+                    }
+                } else {
+                    to_evict_clean.push(coord);
                 }
             }
         }
 
-        // Struktur Penopang Metal Frame & Gold Accents
-        for y in 8..14 {
-            island_chunk.set_voxel(10, y, 10, VoxelBlock::new(MaterialId::METAL_FRAME));
-            island_chunk.set_voxel(22, y, 10, VoxelBlock::new(MaterialId::METAL_FRAME));
-            island_chunk.set_voxel(10, y, 22, VoxelBlock::new(MaterialId::METAL_FRAME));
-            island_chunk.set_voxel(22, y, 22, VoxelBlock::new(MaterialId::METAL_FRAME));
+        for coord in to_evict_clean {
+            self.store.remove(&coord);
+            if let Some(ref mut rend) = renderer {
+                rend.remove_chunk_mesh(&coord);
+            }
         }
 
-        // Balok penghubung atas
-        for x in 10..=22 {
-            island_chunk.set_voxel(x, 14, 10, VoxelBlock::new(MaterialId::GOLD_ACCENT));
-            island_chunk.set_voxel(x, 14, 22, VoxelBlock::new(MaterialId::GOLD_ACCENT));
-        }
-        for z in 10..=22 {
-            island_chunk.set_voxel(10, 14, z, VoxelBlock::new(MaterialId::GOLD_ACCENT));
-            island_chunk.set_voxel(22, 14, z, VoxelBlock::new(MaterialId::GOLD_ACCENT));
-        }
+        // 6. Dispatch pending jobs ke Worker Pool
+        self.scheduler.dispatch_pending_jobs(
+            &mut self.store,
+            &self.materials,
+            &self.storage,
+            &self.generator,
+            32,
+        );
+    }
 
-        // Anti-Gravity Core Casing di tengah
-        for dy in 0..3 {
-            for dz in 0..3 {
-                for dx in 0..3 {
-                    island_chunk.set_voxel(
-                        15 + dx,
-                        10 + dy,
-                        15 + dz,
-                        VoxelBlock::new(MaterialId::AG_CORE_CASING),
+    /// Menghasilkan Demo World awal
+    pub fn generate_demo_world(&mut self) {
+        log::info!("Membangun initial resident chunks Omnisia...");
+
+        for cx in -1..=2 {
+            for cz in -1..=2 {
+                for cy in 0..=1 {
+                    let coord = IVec3::new(cx, cy, cz);
+                    let chunk = self.generator.generate_chunk(coord, &self.materials);
+                    self.store.insert(chunk);
+                    self.scheduler.request_job(
+                        coord,
+                        JobType::MeshChunk,
+                        JobPriority::Critical,
+                        0,
+                        0.0,
                     );
                 }
             }
         }
 
         log::info!(
-            "Demo world berhasil dibangun dengan {} chunks, {} materials, {} blocks",
-            self.chunks.len(),
-            self.materials.len(),
-            self.blocks.len()
+            "Initial chunks berhasil dibangun: {} resident chunks",
+            self.store.resident_count()
         );
     }
 }

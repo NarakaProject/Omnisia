@@ -7,137 +7,62 @@
 
 **Omnisia** adalah voxel sandbox engine berkinerja tinggi yang dibangun dari nol menggunakan **Rust murni** dan abstraksi grafis **`wgpu`** (Metal backend untuk macOS). 
 
-Dirancang dengan prinsip **Engine-First, Data-Driven, & Deterministic**, memisahkan secara fisik dan arsitektural antara **Engine Core**, **Core Content**, **Mod Content**, dan **Assets**.
+Dirancang dengan prinsip **Engine-First, Data-Driven, Deterministic, & Scalable Hierarchical Streaming**, memisahkan secara tegas antara **Authoritative Near World (Full-Resolution Voxels)** dan **Derived Far World (Hierarchical LOD / Distant Horizons Boundary)**.
 
 ---
 
-## 🏛️ Filosofi & Content Architecture
+## 🏛️ Filosofi & Streaming Architecture (Phase 3)
 
-Engine ini menerapkan pemisahan batas konten secara tegas:
+Engine ini menerapkan arsitektur streaming hirarkis:
 
 ```text
-                    ┌──────────────────┐
-                    │      ENGINE      │
-                    └────────┬─────────┘
-                             │
-             ┌───────────────┴────────────────┐
-             │                                │
-             ▼                                ▼
-    ┌─────────────────┐             ┌─────────────────┐
-    │   CORE CONTENT  │             │   MOD CONTENT   │
-    │                 │             │                 │
-    │ content/core/   │             │ mods/<id>/      │
-    │                 │             │                 │
-    │ materials       │             │ materials       │
-    │ blocks          │             │ blocks          │
-    │ textures        │             │ textures        │
-    │ models          │             │ models          │
-    └────────┬────────┘             └────────┬────────┘
-             │                               │
-             └──────────────┬────────────────┘
-                            ▼
-                  ┌─────────────────────┐
-                  │ VALIDATION +        │
-                  │ OWNERSHIP CHECK     │
-                  └──────────┬──────────┘
-                             │
-                             ▼
-                  ┌─────────────────────┐
-                  │ OVERRIDE RESOLVER   │
-                  │                     │
-                  │ explicit only       │
-                  └──────────┬──────────┘
-                             │
-                             ▼
-                  ┌─────────────────────┐
-                  │ RESOLVED REGISTRY   │
-                  │                     │
-                  │ ResourceId →        │
-                  │ Definition +        │
-                  │ Provenance          │
-                  └──────────┬──────────┘
-                             │
-                ┌────────────┴────────────┐
-                ▼                         ▼
-        ┌───────────────┐         ┌───────────────┐
-        │ Runtime       │         │ AssetResolver │
-        │ MaterialId    │         │ AssetId       │
-        │ BlockId       │         │               │
-        └───────────────┘         └───────────────┘
+                         WORLD
+                           │
+                           ▼
+                    Chunk Scheduler
+                           │
+             ┌─────────────┼─────────────┐
+             │             │             │
+             ▼             ▼             ▼
+          Load/IO      Generation      Save
+             │             │             │
+             └─────────────┼─────────────┘
+                           ▼
+                      Chunk Store
+                           │
+                     Resident Chunks
+                           │
+             ┌─────────────┴─────────────┐
+             ▼                           ▼
+        Meshing Jobs                Future Systems
+             │
+             ▼
+        GPU Chunk Mesh
+
+
+              Authoritative World
+                     │
+                     ▼
+              Full Resolution
+                32³ Chunks
+                     │
+                     ▼
+              Future LOD Builder
+                     │
+                     ▼
+           Distant Representation
 ```
 
-> **"Safety by architecture, bukan safety by convention."**
-> Mod bebas mengganti konten bawaan atau menambahkan konten baru, tetapi sistem secara struktural menolak penggantian tidak disengaja (*accidental replacement*).
+> **"Near world = full-resolution voxel truth."**
+> **"Far world = hierarchical derived representation."**
 
-* **Physical Content Separation:** Konten bawaan game berada di `content/core/`, sedangkan konten mod berada di `mods/<mod_id>/`.
-* **Single Source of Truth:** Seluruh definisi material & blok bawaan adalah data JSON murni di `content/core/` (bukan hardcoded di Rust).
-* **Reserved Namespace:** Namespace `core:*` hanya boleh didefinisikan oleh Core Content. Mod eksternal dilarang membuat resource baru ber-namespace `core`.
-* **Explicit Override System:** Penimpaan konten bawaan wajib dideklarasikan secara eksplisit di `mod.toml` melalui blok `[[overrides]]`.
-* **Persistent Identity Preservation:** Jika mod meng-override `core:stone`, identitas persisten dunia/save file tetap `core:stone`, bukan ID replacement.
-* **Namespaced Asset Identity:** Asset ID menggunakan format kanonikal `namespace:path` (misal: `core:textures/stone.png`, `example_mod:models/reactor.glb`) yang di-resolve secara aman via `AssetResolver` dengan proteksi path traversal.
-
----
-
-## 🛠️ Panduan Pembuatan Mod & Explicit Override
-
-### 1. Struktur Folder Mod
-Buat folder mod di dalam direktori `mods/`, misalnya `mods/my_custom_mod/`:
-```text
-mods/
-└── my_custom_mod/
-    ├── mod.toml
-    ├── materials/
-    │   ├── titanium.json
-    │   └── custom_stone.json
-    ├── blocks/
-    │   └── heavy_thruster.json
-    ├── textures/
-    │   └── thruster.png
-    └── models/
-        └── thruster.glb
-```
-
-### 2. Manifest `mod.toml` dengan Explicit Override
-```toml
-id = "my_custom_mod"
-name = "My Custom Mod"
-version = "0.1.0"
-engine_api = "0.2"
-description = "Mod kustom menambahkan material titanium dan meng-override batu bawaan"
-
-[author]
-name = "Developer Name"
-
-[dependencies]
-core = "0.2"
-
-# Deklarasi Explicit Override (Mengganti core:stone dengan custom_stone milik mod ini)
-[[overrides]]
-target = "core:stone"
-replacement = "my_custom_mod:custom_stone"
-```
-
-### 3. Definisikan Material (`materials/custom_stone.json`)
-```json
-{
-  "id": "my_custom_mod:custom_stone",
-  "name": "Heavy Granite Stone",
-  "density": 3100.0,
-  "shear_strength": 18.0,
-  "color": [0.48, 0.50, 0.54],
-  "solid": true,
-  "transparent": false
-}
-```
-
-### 4. Validasi & Jalankan Game
-```bash
-# Validasi integritas Core Content, Mod, Namespace, & Overrides:
-cargo run --release -- --validate-mods
-
-# Jalankan game:
-cargo run --release
-```
+* **Chunk ≠ LOD Invariant:** `Chunk` tetap berukuran murni $32 \times 32 \times 32$ micro-voxel ($16 \times 16 \times 16$ meter, 128 KiB memory contiguous). Data LOD jauh tidak pernah mencemari struct `Chunk`.
+* **Zero Main-Thread Blocking:** Seluruh operasi I/O disk, kompresi/dekompresi Zstd, generasi prosedural, dan meshing CPU berjalan pada background worker pool (`crossbeam_channel`). Main thread hanya menangani input, camera uniform, integrasi scheduler, dan upload GPU.
+* **Deterministic Priority Scheduling:** Priority queue dengan penanganan berurutan: `Critical` $\to$ `High` $\to$ `Normal` $\to$ `Low` $\to$ `VeryLow`, dengan tie-breaking deterministik berdasarkan jarak, usia request, dan koordinat chunk.
+* **Request Coalescing & Cancellation:** Mencegah redundansi permintaan job untuk koordinat yang sama dan membatalkan job yang keluar dari radius pandang secara kooperatif saat kamera bergerak cepat.
+* **Stale Job Protection:** Pelacakan mutasi berbasis `revision` memastikan hasil async worker yang terlambat tidak dapat menimpa mutasi voxel terbaru (*no stale overwrites*).
+* **Safe Eviction with Dirty Protection:** Chunk dengan status `SAVE_DIRTY` wajib disimpan ke disk terlebih dahulu sebelum dievict dari memori. Jika proses simpan gagal, chunk tetap resident.
+* **Stable ResourceId Persistence via Palette Compression:** Persistensi ke disk menggunakan **Local Palette Table** berbasis stable `ResourceId` (`Vec<ResourceId>` + voxel palette indices) dikompresi Zstd level 3 (mencapai rasio kompresi hingga **120.9x**). Runtime `MaterialId` tidak pernah disimpan ke disk.
 
 ---
 
@@ -147,24 +72,26 @@ Dijalankan pada arsitektur Intel Core i7 x86_64 dengan backend Metal:
 
 | No | Pengujian Benchmark | Metrik Pengukuran | Keterangan & Analisis |
 |:---|:---|:---|:---|
-| 1 | **Chunk Indexing** | **0.25 ns / op** | $10^7$ iterasi dalam 2.47 ms ($O(1)$ inlined) |
-| 2 | **Chunk Fill (32k voxels)** | **3.54 µs / chunk** | 128 KiB memory throughput ultra-cepat |
-| 3 | **Culled Meshing 32³** | **0.321 ms / chunk** | 17,768 Vertices, 4,442 Quads per chunk |
-| 4 | **Greedy Meshing 32³** | **0.667 ms / chunk** | 2,564 Vertices, 641 Quads (**6.93x Quad Reduction**) |
-| 5 | **AO Calculation** | **13.77 ns / face** | 500,000 sampling sudut dalam 6.88 ms |
-| 6 | **100 Chunks Parallel Meshing** | **54.31 ms** | Mengolah 100 chunk serentak (2.88 juta vertex) via Rayon |
-| 7 | **1,000 Chunks Synthetic Meshing** | **745.34 ms** | Mengolah 1,000 chunk (6.48 juta quad) via Rayon |
-| 8 | **Chunk Zstd Compression** | **5.54 ms** | 131,072 bytes $\to$ 1,863 bytes (**70.4x rasio kompresi**) |
-| 9 | **Chunk Zstd Decompression** | **8.48 ms** | Rekonstruksi chunk 32k voxel sempurna |
-| 10 | **Connectivity BFS Traversal** | **5.13 ms** | Penelusuran 14,759 voxel klaster struktural |
-| 11 | **Mod Discovery & Parsing** | **79.95 µs / run** | Discovery deterministik + validasi TOML manifest |
-| 12 | **Voxel Hot Path Lookup (MaterialId)** | **1.23 ns / op** | **0 Overhead** runtime index array vs 34.77 ns String Hash |
+| 1 | **Chunk Indexing** | **0.23 ns / op** | $10^7$ iterasi dalam 2.34 ms ($O(1)$ inlined) |
+| 2 | **Chunk Fill (32k voxels)** | **3.37 µs / chunk** | 128 KiB memory throughput ultra-cepat |
+| 3 | **Culled Meshing 32³** | **0.319 ms / chunk** | 17,768 Vertices, 4,442 Quads per chunk |
+| 4 | **Greedy Meshing 32³** | **0.820 ms / chunk** | 2,564 Vertices, 641 Quads (**6.93x Quad Reduction**) |
+| 5 | **AO Calculation** | **19.84 ns / face** | 500,000 sampling sudut dalam 9.92 ms |
+| 6 | **100 Chunks Parallel Meshing** | **89.33 ms** | Mengolah 100 chunk serentak (2.88 juta vertex) via Rayon |
+| 7 | **1,000 Chunks Synthetic Meshing** | **1.02 s** | Mengolah 1,000 chunk (6.48 juta quad) via Rayon |
+| 8 | **Chunk Palette Zstd Compress** | **2.09 ms** | 131,072 bytes $\to$ 1,084 bytes (**120.9x rasio kompresi**) |
+| 9 | **Chunk Palette Zstd Decompress** | **885.49 µs** | Rekonstruksi chunk 32k voxel sempurna (< 1 ms) |
+| 10 | **Connectivity BFS Traversal** | **10.77 ms** | Penelusuran 14,759 voxel klaster struktural |
+| 11 | **Mod Discovery & Parsing** | **114.25 µs / run** | Discovery deterministik + validasi TOML manifest |
+| 12 | **Voxel Hot Path Lookup (MaterialId)** | **1.36 ns / op** | **0 Overhead** runtime index array vs 34.77 ns String Hash |
+| 13 | **Scheduler Queue Throughput** | **263.23 ns / req** | 10,000 request prioritization & insertion dalam 2.63 ms |
+| 14 | **Streaming Simulation (1,000 Chunks)**| **106.43 ms** | 1,000 chunk streaming + memory budget management |
 
 ---
 
 ## 🚀 Menjalankan Engine & Tooling
 
-### 1. Menjalankan Demo World Interaktif
+### 1. Menjalankan Demo World Streaming Interaktif
 ```bash
 cargo run --release
 ```
@@ -180,7 +107,7 @@ cargo run --release
 cargo run --release -- --validate-mods
 ```
 
-### 3. Menjalankan Test Suite
+### 3. Menjalankan Test Suite (30 Unit Tests)
 ```bash
 cargo test
 ```
@@ -216,37 +143,47 @@ mods/
 
 src/
 ├── lib.rs                      # Root library re-exports
-├── main.rs                     # Winit 0.30 interactive app & CLI arguments
+├── main.rs                     # Winit 0.30 interactive streaming app & CLI
 ├── material.rs                 # MaterialId (2 bytes) & MaterialRegistry
 ├── voxel.rs                    # VoxelBlock (4 bytes compact struct)
 ├── coord.rs                    # Canonical indexing & Euclidean negative math
-├── chunk.rs                    # Authoritative Chunk 32³ (128 KiB flat array)
+├── chunk.rs                    # Authoritative Chunk 32³ (128 KiB flat array, revision counter)
 ├── camera.rs                   # FPS/Orbital 3D camera & ViewProj uniform
 ├── renderer.rs                 # wgpu Metal pipeline, depth buffer, mesh cache
 ├── shader.wgsl                 # Half-Lambert + Pastel palette + Baked AO shader
-├── storage.rs                  # RegionStore abstraction & Zstd compression
-├── world.rs                    # World runtime (consumes ResolvedContent)
+├── storage.rs                  # RegionStore abstraction, palette serialization, Zstd
+├── world.rs                    # World façade (drives streaming, eviction, & meshing)
 ├── bin/
-│   └── benchmarks.rs           # 13 Benchmark suite
+│   └── benchmarks.rs           # 15 Benchmark suite
+├── streaming/                  # World Streaming Subsystem
+│   ├── mod.rs
+│   ├── residency.rs            # Lifecycle StateMachine (Residency, Persistence, Mesh)
+│   ├── memory.rs               # MemoryBudget & MemoryUsage accounting
+│   ├── eviction.rs             # Safe eviction policy (dirty protection)
+│   ├── jobs.rs                 # JobPriority, ChunkJobRequest, ChunkJobResult
+│   ├── generator.rs            # Deterministic ChunkGenerator & DemoChunkGenerator
+│   ├── store.rs                # ChunkStore (resident chunks & in-flight sets)
+│   └── scheduler.rs            # ChunkScheduler (priority queue, workers, coalescing, stale protect)
+├── lod/                        # Distant Horizons / Voxy Architectural Boundary
+│   └── mod.rs                  # DistantRepresentation trait & HierarchicalLodStore (derived)
 ├── modding/
-│   ├── mod.rs                  # Root modding exports
-│   ├── asset.rs                # AssetId (namespaced) & AssetResolver (path traversal safe)
-│   ├── resource_id.rs          # ModId & ResourceId (namespace:path)
-│   ├── version.rs              # ENGINE_API_VERSION & semver compatibility
-│   ├── manifest.rs             # ModManifest, OverrideDeclaration, & mod.toml parser
-│   ├── definitions.rs          # MaterialDefinition & BlockDefinition JSON schemas
-│   ├── registry.rs             # ResourceRegistry<T>, BlockRegistry, & Provenance
-│   ├── dependency.rs           # DependencyResolver (Kahn Topological Sort)
-│   ├── discovery.rs            # Deterministic ModDiscovery
-│   ├── loader.rs               # ModLoader for Core Content, Mod Content, & Overrides
-│   ├── runtime.rs              # ContentRuntime & ResolvedContent orchestration
-│   └── validation.rs           # ValidationReport & CLI tooling (--validate-mods)
+│   ├── mod.rs
+│   ├── asset.rs                # AssetId & AssetResolver
+│   ├── definitions.rs
+│   ├── dependency.rs
+│   ├── discovery.rs
+│   ├── loader.rs
+│   ├── manifest.rs
+│   ├── registry.rs
+│   ├── resource_id.rs
+│   ├── runtime.rs
+│   └── validation.rs
 └── mesh/
-    ├── mod.rs                  # Mesher module exports
-    ├── types.rs                # VoxelVertex (GPU) & MeshData (CPU)
-    ├── ao.rs                   # Vertex Ambient Occlusion calculation
-    ├── culled.rs               # Culled Face Mesher
-    └── greedy.rs               # High-performance Greedy Mesher
+    ├── mod.rs
+    ├── types.rs
+    ├── ao.rs
+    ├── culled.rs
+    └── greedy.rs
 ```
 
 ---

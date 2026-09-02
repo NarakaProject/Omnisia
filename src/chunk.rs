@@ -18,7 +18,7 @@ pub mod dirty_flags {
 ///
 /// INVARIANT 2: 32x32x32 = 32,768 voxel per chunk.
 /// INVARIANT 3: Memory storage flat & contiguous (128 KiB per chunk).
-/// INVARIANT 4: Chunk adalah authoritative world voxel storage (bukan renderer).
+/// INVARIANT 4: Chunk adalah authoritative world voxel storage (bukan renderer / bukan LOD).
 #[derive(Clone)]
 pub struct Chunk {
     pub position: IVec3,
@@ -26,6 +26,8 @@ pub struct Chunk {
     pub voxels: Box<[VoxelBlock; CHUNK_VOLUME]>,
     pub non_air_count: u16,
     pub dirty_flags: u16,
+    /// Revision counter mutasi untuk stale async job protection
+    pub revision: u64,
 }
 
 impl Chunk {
@@ -42,6 +44,7 @@ impl Chunk {
             voxels,
             non_air_count: 0,
             dirty_flags: dirty_flags::ALL,
+            revision: 0,
         }
     }
 
@@ -81,6 +84,7 @@ impl Chunk {
         }
 
         self.voxels[idx] = new_block;
+        self.revision = self.revision.wrapping_add(1);
         self.mark_dirty(
             dirty_flags::VOXEL_DIRTY
                 | dirty_flags::MESH_DIRTY
@@ -98,7 +102,14 @@ impl Chunk {
         } else {
             CHUNK_VOLUME as u16
         };
+        self.revision = self.revision.wrapping_add(1);
         self.mark_dirty(dirty_flags::ALL);
+    }
+
+    /// Menaikkan nomor revisi secara manual (misal mutasi batch)
+    #[inline(always)]
+    pub fn bump_revision(&mut self) {
+        self.revision = self.revision.wrapping_add(1);
     }
 
     /// Mengecek apakah chunk kosong secara instan O(1)
@@ -121,6 +132,17 @@ impl Chunk {
     #[inline(always)]
     pub fn clear_dirty(&mut self, flags: u16) {
         self.dirty_flags &= !flags;
+    }
+
+    /// Membersihkan dirty flags hanya jika revisi chunk sama persis dengan saat operasi async dimulai
+    #[inline(always)]
+    pub fn clear_dirty_if_revision_matched(&mut self, flags: u16, expected_revision: u64) -> bool {
+        if self.revision == expected_revision {
+            self.dirty_flags &= !flags;
+            true
+        } else {
+            false
+        }
     }
 
     #[inline(always)]

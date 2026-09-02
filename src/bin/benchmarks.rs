@@ -13,12 +13,17 @@ use omnisia::modding::discovery::ModDiscovery;
 use omnisia::modding::resource_id::ResourceId;
 use omnisia::modding::runtime::ContentRuntime;
 use omnisia::storage::{decompress_and_deserialize_chunk, serialize_and_compress_chunk};
+use omnisia::streaming::generator::{ChunkGenerator, DemoChunkGenerator};
+use omnisia::streaming::jobs::{JobPriority, JobType};
+use omnisia::streaming::memory::MemoryBudget;
+use omnisia::streaming::scheduler::ChunkScheduler;
+use omnisia::streaming::store::ChunkStore;
 use omnisia::voxel::VoxelBlock;
 
 fn main() {
     println!("============================================================");
     println!("     OMNISIA ENGINE ARCHITECTURE BENCHMARK SUITE           ");
-    println!("     Phase 2.5: Core Boundary + Safe Override Layer        ");
+    println!("     Phase 3: Hierarchical World Streaming & Residency     ");
     println!("     Target Baseline: MacBook Pro 2018 (Intel x86_64)      ");
     println!("============================================================");
 
@@ -218,15 +223,16 @@ fn main() {
         );
     }
 
-    // 8 & 9 & 10. Chunk Serialization & Zstd Compression/Decompression
+    // 8 & 9 & 10. Chunk Palette Serialization & Zstd Compression/Decompression
     {
         let start_comp = Instant::now();
-        let compressed = serialize_and_compress_chunk(&terrain_chunk).expect("Kompresi Zstd gagal");
+        let compressed =
+            serialize_and_compress_chunk(&terrain_chunk, &registry).expect("Kompresi Zstd gagal");
         let comp_time = start_comp.elapsed();
 
         let start_decomp = Instant::now();
-        let decompressed =
-            decompress_and_deserialize_chunk(&compressed).expect("Dekompresi Zstd gagal");
+        let decompressed = decompress_and_deserialize_chunk(&compressed, &registry)
+            .expect("Dekompresi Zstd gagal");
         let decomp_time = start_decomp.elapsed();
 
         let raw_size = CHUNK_VOLUME * std::mem::size_of::<VoxelBlock>(); // 128 KiB
@@ -234,11 +240,11 @@ fn main() {
         let ratio = raw_size as f64 / comp_size as f64;
 
         println!(
-            "[BENCHMARK 8 & 9] Chunk Zstd Compress: {:?} | Raw: {} bytes -> Compressed: {} bytes ({:.1}x ratio)",
+            "[BENCHMARK 8 & 9] Chunk Palette Zstd Compress: {:?} | Raw: {} bytes -> Compressed: {} bytes ({:.1}x ratio)",
             comp_time, raw_size, comp_size, ratio
         );
         println!(
-            "[BENCHMARK 10] Chunk Zstd Decompress: {:?} (Valid non_air: {})",
+            "[BENCHMARK 10] Chunk Palette Zstd Decompress: {:?} (Valid non_air: {})",
             decomp_time, decompressed.non_air_count
         );
     }
@@ -303,13 +309,12 @@ fn main() {
         );
     }
 
-    // 13. Benchmark Registry Runtime Index O(1) vs ResourceId String Lookup
+    // 13. Benchmark Registry Voxel Hot Path Lookup
     {
         let iterations = 10_000_000;
         let res_id = ResourceId::parse("core:stone").unwrap();
         let mat_id = registry.resolve_material_id(&res_id).unwrap();
 
-        // A. Runtime Index O(1) Lookup (Voxel Hot Path)
         let start_index = Instant::now();
         let mut sum_density = 0.0f32;
         for _ in 0..iterations {
@@ -320,26 +325,59 @@ fn main() {
         let elapsed_index = start_index.elapsed();
         let ns_per_index_lookup = elapsed_index.as_nanos() as f64 / iterations as f64;
 
-        // B. Persistent ResourceId Hash Lookup (Load/Tooling Path)
-        let start_res = Instant::now();
-        let mut sum_density_res = 0.0f32;
-        for _ in 0..iterations {
-            if let Some(def) = registry.get_by_resource_id(&res_id) {
-                sum_density_res += def.density_kg_m3;
-            }
-        }
-        let elapsed_res = start_res.elapsed();
-        let ns_per_res_lookup = elapsed_res.as_nanos() as f64 / iterations as f64;
-
         println!(
             "[BENCHMARK 13] Registry Voxel Hot Path Lookup (MaterialId): {:.2} ns/op (Zero overhead, sum: {})",
             ns_per_index_lookup, sum_density as usize
         );
+    }
+
+    // 14. Benchmark Chunk Scheduler Priority Queue Throughput (10k requests)
+    {
+        let mut scheduler = ChunkScheduler::new(4);
+        let start = Instant::now();
+        let count = 10_000;
+        for i in 0..count {
+            let coord = IVec3::new(i % 100, 0, i / 100);
+            scheduler.request_job(
+                coord,
+                JobType::LoadChunk,
+                JobPriority::Normal,
+                0,
+                (i as f32) * 2.0,
+            );
+        }
+        let elapsed = start.elapsed();
+        let ns_per_request = elapsed.as_nanos() as f64 / count as f64;
         println!(
-            "  -> Comparison: ResourceId Hash Lookup: {:.2} ns/op ({:.1}x difference, sum: {})",
-            ns_per_res_lookup,
-            ns_per_res_lookup / ns_per_index_lookup.max(0.01),
-            sum_density_res as usize
+            "[BENCHMARK 14] Scheduler Queue Insertion (10,000 requests): {:.2} ns/req (Total: {:?})",
+            ns_per_request, elapsed
+        );
+    }
+
+    // 15. Benchmark Streaming Simulation (1,000 Chunks with Camera Movement & Memory Budget)
+    {
+        let mut store = ChunkStore::new();
+        let budget = MemoryBudget::with_chunk_limit(500);
+        let generator = DemoChunkGenerator::new(42);
+
+        let start = Instant::now();
+        for i in 0..1000 {
+            let coord = IVec3::new(i % 50, 0, i / 50);
+            let chunk = generator.generate_chunk(coord, &registry);
+            store.insert(chunk);
+
+            let mem = store.memory_usage(0);
+            if budget.is_over_budget(&mem) {
+                // Evict 1 clean chunk
+                let old_coord = IVec3::new((i - 500) % 50, 0, (i - 500) / 50);
+                store.remove(&old_coord);
+            }
+        }
+        let elapsed = start.elapsed();
+        println!(
+            "[BENCHMARK 15] Streaming Simulation (1,000 chunks inserted & memory managed): {:?} (Final Resident: {})",
+            elapsed,
+            store.resident_count()
         );
     }
 

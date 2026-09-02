@@ -223,15 +223,17 @@ fn test_greedy_mesher_optimization() {
 
 #[test]
 fn test_zstd_chunk_persistence_roundtrip() {
+    let registry = get_test_material_registry();
     let mut chunk = Chunk::new(IVec3::new(3, -2, 7));
     chunk.set_voxel(0, 0, 0, VoxelBlock::new(MaterialId::STONE));
     chunk.set_voxel(10, 15, 20, VoxelBlock::new(MaterialId::GOLD_ACCENT));
     chunk.set_voxel(31, 31, 31, VoxelBlock::new(MaterialId::AG_CORE_CASING));
 
-    let compressed = serialize_and_compress_chunk(&chunk).expect("Kompresi gagal");
+    let compressed = serialize_and_compress_chunk(&chunk, &registry).expect("Kompresi gagal");
     assert!(!compressed.is_empty());
 
-    let loaded_chunk = decompress_and_deserialize_chunk(&compressed).expect("Dekompresi gagal");
+    let loaded_chunk =
+        decompress_and_deserialize_chunk(&compressed, &registry).expect("Dekompresi gagal");
 
     assert_eq!(loaded_chunk.position, chunk.position);
     assert_eq!(loaded_chunk.non_air_count, chunk.non_air_count);

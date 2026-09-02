@@ -65,6 +65,11 @@ impl VoxelBlock {
     }
 
     #[inline(always)]
+    pub fn material(&self) -> MaterialId {
+        self.material
+    }
+
+    #[inline(always)]
     pub fn is_air(&self) -> bool {
         self.material == MaterialId::AIR
     }

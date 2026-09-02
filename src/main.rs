@@ -9,8 +9,6 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::{Window, WindowAttributes, WindowId};
 
 use omnisia::camera::Camera;
-use omnisia::mesh::generate_culled_mesh;
-use omnisia::mesh::types::MeshData;
 use omnisia::modding::validate_mods_directory;
 use omnisia::renderer::Renderer;
 use omnisia::world::World;
@@ -23,8 +21,6 @@ struct App {
     last_frame_time: Instant,
     fps_timer: Instant,
     frame_count: u32,
-    total_vertices: usize,
-    total_indices: usize,
 }
 
 impl Default for App {
@@ -37,8 +33,6 @@ impl Default for App {
         );
 
         let mut world = World::new();
-
-        // Bangun demo world
         world.generate_demo_world();
 
         Self {
@@ -49,8 +43,6 @@ impl Default for App {
             last_frame_time: Instant::now(),
             fps_timer: Instant::now(),
             frame_count: 0,
-            total_vertices: 0,
-            total_indices: 0,
         }
     }
 }
@@ -62,7 +54,9 @@ impl ApplicationHandler for App {
         }
 
         let window_attrs = WindowAttributes::default()
-            .with_title("Omnisia - Micro-Voxel Engine [Phase 2.5: Core Content Boundary Active]")
+            .with_title(
+                "Omnisia - Micro-Voxel Engine [Phase 3: Hierarchical World Streaming Active]",
+            )
             .with_inner_size(PhysicalSize::new(1280, 720));
 
         let window = Arc::new(
@@ -71,31 +65,8 @@ impl ApplicationHandler for App {
                 .expect("Gagal membuat window winit"),
         );
 
-        let mut renderer = pollster::block_on(Renderer::new(window.clone()))
+        let renderer = pollster::block_on(Renderer::new(window.clone()))
             .expect("Gagal menginisialisasi renderer wgpu");
-
-        // Generate mesh untuk semua chunk di demo world dan unggah ke GPU cache
-        let mut total_verts = 0;
-        let mut total_inds = 0;
-        let mut mesh_buffer = MeshData::new();
-
-        for (&coord, chunk) in &self.world.chunks {
-            generate_culled_mesh(chunk, &self.world.materials, &mut mesh_buffer);
-            total_verts += mesh_buffer.vertex_count();
-            total_inds += mesh_buffer.index_count();
-            renderer.upload_chunk_mesh(coord, &mesh_buffer);
-        }
-
-        self.total_vertices = total_verts;
-        self.total_indices = total_inds;
-
-        log::info!(
-            "Mesh diunggah ke GPU: {} Chunks, {} Vertices, {} Indices ({} Quads)",
-            self.world.chunks.len(),
-            self.total_vertices,
-            self.total_indices,
-            self.total_indices / 6
-        );
 
         self.window = Some(window);
         self.renderer = Some(renderer);
@@ -132,6 +103,10 @@ impl ApplicationHandler for App {
 
                 self.camera.update(dt);
 
+                // Update Streaming World & Integrasi Mesh GPU
+                self.world
+                    .update(self.camera.position, dt, self.renderer.as_mut());
+
                 if let (Some(renderer), Some(window)) = (&mut self.renderer, &self.window) {
                     let aspect = renderer.size.width as f32 / renderer.size.height.max(1) as f32;
                     let camera_uniform = self.camera.build_uniform(aspect);
@@ -151,18 +126,19 @@ impl ApplicationHandler for App {
                         }
                     }
 
-                    // FPS & Frame Timing Metrics
+                    // FPS & Streaming Metrics
                     self.frame_count += 1;
                     if self.fps_timer.elapsed().as_secs_f32() >= 1.0 {
                         let fps = self.frame_count as f32 / self.fps_timer.elapsed().as_secs_f32();
                         let frame_ms = 1000.0 / fps.max(1.0);
+                        let mem = self.world.store.memory_usage(0);
                         let title = format!(
-                            "Omnisia Micro-Voxel Engine | FPS: {:.1} ({:.2} ms) | Materials: {} | Blocks: {} | Verts: {}",
+                            "Omnisia Streaming Engine | FPS: {:.1} ({:.2} ms) | Chunks: {} | Pending: {} | Mem: {:.1} MB",
                             fps,
                             frame_ms,
-                            self.world.materials.len(),
-                            self.world.blocks.len(),
-                            self.total_vertices
+                            self.world.store.resident_count(),
+                            self.world.scheduler.pending_job_count(),
+                            mem.total_megabytes(),
                         );
                         window.set_title(&title);
                         self.frame_count = 0;
@@ -209,7 +185,7 @@ fn main() {
         return;
     }
 
-    log::info!("Memulai Omnisia Micro-Voxel Engine [Phase 2.5: Core Boundary Active]...");
+    log::info!("Memulai Omnisia Micro-Voxel Engine [Phase 3: Hierarchical World Streaming]...");
 
     let event_loop = EventLoop::new().expect("Gagal membuat winit EventLoop");
     event_loop.set_control_flow(ControlFlow::Poll);
