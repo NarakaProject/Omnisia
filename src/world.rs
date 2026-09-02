@@ -26,6 +26,21 @@ use crate::worldgen::config::WorldGenConfig;
 use crate::worldgen::pipeline::ProceduralWorldGenerator;
 use crate::worldgen::seed::WorldSeed;
 
+/// Laporan audit integritas kepemilikan voxel dunia lintas sistem (8C.5 & Section 39).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct OwnershipAuditReport {
+    /// Jumlah total voxel solid non-air di ChunkStore (dunia statis)
+    pub total_static_voxels: usize,
+    /// Jumlah total voxel solid yang dimiliki oleh seluruh DynamicBody di PhysicsRuntime
+    pub total_dynamic_voxels: usize,
+    /// Total keseluruhan voxel dalam simulasi dunia
+    pub total_world_voxels: usize,
+    /// Jumlah deteksi duplikasi kepemilikan voxel antar-sistem (HARUS 0)
+    pub duplicate_detections: usize,
+    /// Jumlah badan dinamis aktif di runtime fisika
+    pub active_bodies_count: usize,
+}
+
 /// Representasi dunia runtime sparse dengan streaming asynchronous, chunk scheduling, memory management, dan structural connectivity
 pub struct World {
     pub store: ChunkStore,
@@ -184,6 +199,42 @@ impl World {
         search_max_y: f32,
     ) -> bool {
         player.spawn_at_valid_ground(center_x, center_z, search_min_y, search_max_y, &self.store)
+    }
+
+    /// Mengaudit integritas dan konsistensi kepemilikan voxel di seluruh dunia (8C.5 & Section 39).
+    /// Memastikan prinsip invarian bahwa setiap voxel hanya dimiliki oleh tepat 1 otoritas:
+    /// ChunkStore ATAU DynamicBody, tidak pernah keduanya, tidak pernah duplikat, dan tidak ada voxel yang hilang.
+    pub fn audit_world_ownership(&self) -> OwnershipAuditReport {
+        let mut total_static: usize = 0;
+        for chunk in self.store.resident_chunks() {
+            total_static += chunk.non_air_count as usize;
+        }
+
+        let mut total_dynamic = 0;
+        let mut duplicate_detections = 0;
+        let mut occupied_dynamic_coords = std::collections::HashSet::new();
+
+        for body in self.physics.bodies.values() {
+            total_dynamic += body.voxel_count();
+            for (world_coord, _) in body.iter_world_voxels() {
+                // 1. Cek duplikasi dengan ChunkStore statis
+                if !self.store.get_voxel_world(world_coord).is_air() {
+                    duplicate_detections += 1;
+                }
+                // 2. Cek duplikasi antar DynamicBody
+                if !occupied_dynamic_coords.insert(world_coord) {
+                    duplicate_detections += 1;
+                }
+            }
+        }
+
+        OwnershipAuditReport {
+            total_static_voxels: total_static,
+            total_dynamic_voxels: total_dynamic,
+            total_world_voxels: total_static + total_dynamic,
+            duplicate_detections,
+            active_bodies_count: self.physics.active_body_count(),
+        }
     }
 
     /// Jumlah mesh yang menunggu dalam antrean upload GPU

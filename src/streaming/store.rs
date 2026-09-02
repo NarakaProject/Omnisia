@@ -88,6 +88,11 @@ impl ChunkStore {
         self.resident.len()
     }
 
+    /// Iterasi seluruh chunk yang sedang berstatus resident (termuat di memori)
+    pub fn resident_chunks(&self) -> impl Iterator<Item = &Chunk> {
+        self.resident.values()
+    }
+
     pub fn memory_usage(&self, cpu_mesh_bytes: usize) -> MemoryUsage {
         MemoryUsage::new(self.resident.len(), cpu_mesh_bytes)
     }

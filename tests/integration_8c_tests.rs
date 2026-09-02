@@ -1068,3 +1068,238 @@ fn test_8c4_breaking_terrain_beneath_sleeping_body_wakes_it() {
         body_after.position.y
     );
 }
+
+// ============================================================================
+// PHASE 8C.5: OWNERSHIP CONSISTENCY INTEGRATION TESTS
+// ============================================================================
+
+#[test]
+fn test_8c5_ownership_conservation_across_full_lifecycle() {
+    let mut world = World::with_seed(WorldSeed(123));
+
+    let mut chunk = Chunk::new(IVec3::ZERO);
+    for vx in 0..16 {
+        for vz in 0..16 {
+            chunk.set_voxel(vx, 0, vz, VoxelBlock::new(MaterialId::STONE));
+        }
+    }
+    // Pilar 1-voxel di (5, 1, 5)
+    chunk.set_voxel(5, 1, 5, VoxelBlock::new(MaterialId::STONE));
+    // Overhang 3-voxel di (5, 2, 5), (6, 2, 5), (7, 2, 5)
+    chunk.set_voxel(5, 2, 5, VoxelBlock::new(MaterialId::STONE));
+    chunk.set_voxel(6, 2, 5, VoxelBlock::new(MaterialId::STONE));
+    chunk.set_voxel(7, 2, 5, VoxelBlock::new(MaterialId::STONE));
+    world.store.insert(chunk);
+
+    // 1. Audit kondisi awal
+    let audit_0 = world.audit_world_ownership();
+    assert_eq!(audit_0.duplicate_detections, 0);
+    assert_eq!(audit_0.total_dynamic_voxels, 0);
+    let initial_total = audit_0.total_world_voxels;
+
+    // 2. Hancurkan pilar dasar di (5, 1, 5) -> menghilangkan tepat 1 voxel
+    let detached = world.set_voxel_world(IVec3::new(5, 1, 5), VoxelBlock::AIR);
+    assert!(!detached.is_empty());
+
+    let audit_1 = world.audit_world_ownership();
+    // INVARIAN 8C.5 & HUKUM KEKEKALAN MASSA:
+    // Total voxel dunia harus berkurang tepat 1 voxel (yang dihancurkan)
+    assert_eq!(
+        audit_1.total_world_voxels,
+        initial_total - 1,
+        "Total voxel dunia harus terkonservasi sempurna!"
+    );
+    assert_eq!(
+        audit_1.duplicate_detections, 0,
+        "Tidak boleh ada duplikasi kepemilikan voxel!"
+    );
+    assert_eq!(
+        audit_1.total_dynamic_voxels, 3,
+        "Aggregate lepas harus memiliki tepat 3 voxel!"
+    );
+    assert_eq!(
+        audit_1.total_static_voxels,
+        initial_total - 4,
+        "ChunkStore harus melepaskan kepemilikan 3 voxel overhang + 1 voxel yang dihancurkan!"
+    );
+
+    // 3. Simulasikan hingga mendarat, settled, dan reintegrasi otomatis
+    for _ in 0..60 {
+        world.physics.update(1.0 / 30.0, &world.store);
+        let _ = world
+            .physics
+            .process_settled_reintegration(&mut world.store);
+    }
+
+    let audit_2 = world.audit_world_ownership();
+    // Setelah reintegrasi:
+    assert_eq!(
+        audit_2.total_dynamic_voxels, 0,
+        "Badan dinamis harus telah reintegrasi!"
+    );
+    assert_eq!(
+        audit_2.total_world_voxels,
+        initial_total - 1,
+        "Total voxel setelah reintegrasi harus tetap kekal sempurna!"
+    );
+    assert_eq!(
+        audit_2.duplicate_detections, 0,
+        "Zero duplicate ownership setelah reintegrasi!"
+    );
+}
+
+#[test]
+fn test_8c5_negative_coordinate_ownership_consistency() {
+    let mut world = World::with_seed(WorldSeed(123));
+
+    // Chunk di koordinat negatif (-1, 0, -1)
+    let mut neg_chunk = Chunk::new(IVec3::new(-1, 0, -1));
+    for vx in 0..10 {
+        for vz in 0..10 {
+            neg_chunk.set_voxel(vx, 0, vz, VoxelBlock::new(MaterialId::STONE));
+        }
+    }
+    // Pilar di koordinat negatif (-1 chunk, local 5) => world x = -32 + 5 = -27
+    neg_chunk.set_voxel(5, 1, 5, VoxelBlock::new(MaterialId::STONE));
+    neg_chunk.set_voxel(5, 2, 5, VoxelBlock::new(MaterialId::STONE));
+    world.store.insert(neg_chunk);
+
+    let audit_before = world.audit_world_ownership();
+    assert_eq!(audit_before.duplicate_detections, 0);
+
+    // Hancurkan pilar dasar
+    let world_voxel = IVec3::new(-27, 1, -27);
+    let detached = world.set_voxel_world(world_voxel, VoxelBlock::AIR);
+    assert!(!detached.is_empty());
+
+    let audit_after = world.audit_world_ownership();
+    assert_eq!(
+        audit_after.total_world_voxels,
+        audit_before.total_world_voxels - 1
+    );
+    assert_eq!(audit_after.duplicate_detections, 0);
+}
+
+#[test]
+fn test_8c5_material_and_resource_identity_preservation() {
+    let mut world = World::with_seed(WorldSeed(123));
+
+    let mut chunk = Chunk::new(IVec3::ZERO);
+    for vx in 0..16 {
+        for vz in 0..16 {
+            chunk.set_voxel(vx, 0, vz, VoxelBlock::new(MaterialId::STONE));
+        }
+    }
+    // Struktur multi-material:
+    // Penopang: STONE
+    chunk.set_voxel(4, 1, 4, VoxelBlock::new(MaterialId::STONE));
+    // Badan: OAK_WOOD, METAL_FRAME, GOLD_ACCENT
+    chunk.set_voxel(4, 2, 4, VoxelBlock::new(MaterialId::OAK_WOOD));
+    chunk.set_voxel(4, 3, 4, VoxelBlock::new(MaterialId::METAL_FRAME));
+    chunk.set_voxel(4, 4, 4, VoxelBlock::new(MaterialId::GOLD_ACCENT));
+    world.store.insert(chunk);
+
+    // Hancurkan penopang
+    let detached = world.set_voxel_world(IVec3::new(4, 1, 4), VoxelBlock::AIR);
+    assert!(!detached.is_empty());
+
+    // Periksa bahwa DynamicBody yang tercipta menyimpan identitas material sejati
+    let body = world.physics.bodies.values().next().unwrap();
+    let mat_ids: Vec<MaterialId> = body
+        .aggregate
+        .voxels
+        .iter()
+        .map(|v| v.block.material)
+        .collect();
+    assert!(mat_ids.contains(&MaterialId::OAK_WOOD));
+    assert!(mat_ids.contains(&MaterialId::METAL_FRAME));
+    assert!(mat_ids.contains(&MaterialId::GOLD_ACCENT));
+
+    // Simulasikan hingga reintegrasi
+    for _ in 0..60 {
+        world.update(Vec3::ZERO, 1.0 / 30.0, None);
+    }
+
+    // Periksa bahwa voxel yang reintegrasi ke ChunkStore mempertahankan identitas material aslinya!
+    let mut found_wood = false;
+    let mut found_metal = false;
+    let mut found_gold = false;
+
+    for vy in 1..=4 {
+        let block = world.store.get_voxel_world(IVec3::new(4, vy, 4));
+        if block.material == MaterialId::OAK_WOOD {
+            found_wood = true;
+        }
+        if block.material == MaterialId::METAL_FRAME {
+            found_metal = true;
+        }
+        if block.material == MaterialId::GOLD_ACCENT {
+            found_gold = true;
+        }
+    }
+
+    assert!(
+        found_wood,
+        "OAK_WOOD harus tetap dipertahankan setelah reintegrasi!"
+    );
+    assert!(
+        found_metal,
+        "METAL_FRAME harus tetap dipertahankan setelah reintegrasi!"
+    );
+    assert!(
+        found_gold,
+        "GOLD_ACCENT harus tetap dipertahankan setelah reintegrasi!"
+    );
+}
+
+#[test]
+fn test_8c5_player_and_camera_contact_does_not_mutate_ownership() {
+    let mut world = World::with_seed(WorldSeed(123));
+
+    let mut chunk = Chunk::new(IVec3::ZERO);
+    for vx in 0..16 {
+        for vz in 0..16 {
+            chunk.set_voxel(vx, 0, vz, VoxelBlock::new(MaterialId::STONE));
+        }
+    }
+    world.store.insert(chunk);
+
+    let mut player = PlayerController::new(Vec3::new(2.0, 0.5, 2.0));
+    player.state.grounded = true;
+
+    let audit_before = world.audit_world_ownership();
+
+    // Pemain berjalan, melompat, dan berjongkok
+    player.set_input(PlayerInput::from_raw(
+        true, false, false, false, true, false, true,
+    ));
+    for _ in 0..30 {
+        world.update_player(&mut player, 1.0 / 30.0, 0.0);
+    }
+
+    let audit_after = world.audit_world_ownership();
+    // INVARIAN 8C.5: Interaksi pemain tidak boleh memutasi kepemilikan voxel
+    assert_eq!(audit_before, audit_after);
+}
+
+#[test]
+fn test_8c5_streaming_unload_does_not_evict_or_corrupt_active_dynamic_body() {
+    use omnisia::structure::aggregate::DetachedAggregate;
+
+    let mut world = World::with_seed(WorldSeed(123));
+
+    let chunk = Chunk::new(IVec3::new(5, 5, 5));
+    world.store.insert(chunk);
+
+    let voxels = vec![(IVec3::new(10, 10, 10), VoxelBlock::new(MaterialId::STONE))];
+    let agg = DetachedAggregate::from_world_voxels(14, &voxels).unwrap();
+    let body_id = world.physics.spawn_from_detached_aggregate(agg);
+
+    // Eviksi chunk yang jauh
+    world.store.remove(&IVec3::new(5, 5, 5));
+
+    // DynamicBody tetap utuh dengan voxel miliknya
+    let body = world.physics.get_body(body_id).unwrap();
+    assert_eq!(body.voxel_count(), 1);
+    assert_eq!(body.state, omnisia::physics::DynamicBodyState::Active);
+}
