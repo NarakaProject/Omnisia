@@ -65,6 +65,9 @@ pub struct PlayerController {
     /// Akumulator waktu untuk simulasi fixed-timestep 30 Hz
     pub time_accumulator: f32,
 
+    /// State tombol lompat pada frame sebelumnya untuk deteksi rising edge (edge-triggered)
+    pub prev_input_jump: bool,
+
     // Metrik telemetri runtime
     pub collision_queries_total: u64,
     pub collision_hits_total: u64,
@@ -85,6 +88,7 @@ impl PlayerController {
             config: PlayerConfig::default(),
             input: PlayerInput::default(),
             time_accumulator: 0.0,
+            prev_input_jump: false,
             collision_queries_total: 0,
             collision_hits_total: 0,
             unknown_blocked_total: 0,
@@ -98,6 +102,7 @@ impl PlayerController {
             config,
             input: PlayerInput::default(),
             time_accumulator: 0.0,
+            prev_input_jump: false,
             collision_queries_total: 0,
             collision_hits_total: 0,
             unknown_blocked_total: 0,
@@ -124,10 +129,11 @@ impl PlayerController {
 
     /// Menerima sampel input baru dari loop window/render
     pub fn set_input(&mut self, input: PlayerInput) {
-        // Jika input meminta lompat, catat permintaan (edge-triggered)
-        if input.jump {
+        // Edge-triggered: hanya mencatat permintaan jika transisi dari false -> true (rising edge)!
+        if input.jump && !self.prev_input_jump {
             self.state.jump_requested = true;
         }
+        self.prev_input_jump = input.jump;
         self.input = input;
     }
 
@@ -217,5 +223,27 @@ impl PlayerController {
                 self.state.forced_crouch = true;
             }
         }
+    }
+
+    /// Mengeksekusi permintaan lompat jika memenuhi syarat grounded (8B.6).
+    ///
+    /// INVARIANTS:
+    /// - Lompat hanya diizinkan jika dan hanya jika `grounded == true`.
+    /// - Single-consumption: `jump_requested` langsung dikonsumsi (reset ke false).
+    /// - Menahan tombol spasi tidak akan memicu lompatan berulang saat mendarat.
+    /// - Memberikan kecepatan vertikal ke atas: `velocity.y = config.jump_velocity` (6.0 m/s).
+    /// - Seketika mengubah status menjadi lepas landas: `grounded = false`.
+    pub fn try_execute_jump(&mut self) -> bool {
+        if self.state.jump_requested {
+            // Konsumsi permintaan lompat (single-consumption)
+            self.state.jump_requested = false;
+
+            if self.state.grounded {
+                self.state.velocity.y = self.config.jump_velocity;
+                self.state.grounded = false;
+                return true;
+            }
+        }
+        false
     }
 }

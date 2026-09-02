@@ -569,3 +569,117 @@ fn test_crouch_stand_clearance_success_after_clear() {
     assert_eq!(controller.current_capsule().height, 1.8);
     assert_eq!(controller.state.position, feet_pos);
 }
+
+// ============================================================================
+// 8B.6 JUMP CONTROLLER & SINGLE-CONSUMPTION EDGE TRIGGER
+// ============================================================================
+
+#[test]
+fn test_grounded_jump_success_and_consumption() {
+    use omnisia::player::{PlayerController, PlayerInput};
+
+    let mut controller = PlayerController::new(Vec3::new(0.0, 1.0, 0.0));
+    // Simulasikan pemain sedang grounded
+    controller.state.grounded = true;
+
+    // Input menekan Space (jump = true)
+    controller.set_input(PlayerInput::from_raw(
+        false, false, false, false, false, false, true,
+    ));
+    assert!(controller.state.jump_requested);
+
+    // Eksekusi lompatan
+    let jumped = controller.try_execute_jump();
+
+    // INVARIAN KANONIKAL: Lompatan sukses dan jump_requested langsung dikonsumsi!
+    assert!(jumped, "Lompatan saat grounded harus berhasil!");
+    assert_eq!(controller.state.velocity.y, 6.0);
+    assert!(
+        !controller.state.grounded,
+        "Pemain seketika lepas landas (grounded = false)!"
+    );
+    assert!(
+        !controller.state.jump_requested,
+        "jump_requested harus segera dikonsumsi menjadi false!"
+    );
+}
+
+#[test]
+fn test_airborne_jump_rejected() {
+    use omnisia::player::{PlayerController, PlayerInput};
+
+    let mut controller = PlayerController::new(Vec3::new(0.0, 10.0, 0.0));
+    // Pemain di udara bebas (grounded = false)
+    controller.state.grounded = false;
+    controller.state.velocity.y = -2.0;
+
+    // Coba tekan Space di udara (jump = true)
+    controller.set_input(PlayerInput::from_raw(
+        false, false, false, false, false, false, true,
+    ));
+
+    // Eksekusi lompatan
+    let jumped = controller.try_execute_jump();
+
+    // INVARIAN KANONIKAL: Airborne jump ditolak (tidak ada double jump)!
+    assert!(!jumped, "Lompat saat di udara harus ditolak!");
+    assert_eq!(
+        controller.state.velocity.y, -2.0,
+        "Kecepatan vertikal tidak boleh berubah!"
+    );
+    assert!(!controller.state.jump_requested);
+}
+
+#[test]
+fn test_jump_holding_space_no_repeated_jumps() {
+    use omnisia::player::{PlayerController, PlayerInput};
+
+    let mut controller = PlayerController::new(Vec3::ZERO);
+    controller.state.grounded = true;
+
+    // Frame 1: Tombol Space ditekan (rising edge false -> true)
+    controller.set_input(PlayerInput::from_raw(
+        false, false, false, false, false, false, true,
+    ));
+    assert!(controller.try_execute_jump());
+    assert_eq!(controller.state.velocity.y, 6.0);
+    assert!(!controller.state.grounded);
+
+    // Frame 2..10: Tombol Space TERUS DITAHAN (held: true -> true)
+    // Pemain berada di udara
+    controller.set_input(PlayerInput::from_raw(
+        false, false, false, false, false, false, true,
+    ));
+    assert!(!controller.state.jump_requested);
+
+    // Frame 11: Pemain mendarat kembali di tanah (grounded = true), namun Space MASIH DITAHAN
+    controller.state.grounded = true;
+    controller.set_input(PlayerInput::from_raw(
+        false, false, false, false, false, false, true,
+    ));
+
+    // Eksekusi jump tick
+    let repeat_jump = controller.try_execute_jump();
+
+    // INVARIAN KANONIKAL: Menahan Space TIDAK BOLEH memicu lompatan berulang!
+    assert!(
+        !repeat_jump,
+        "Menahan tombol Space tidak boleh memicu repeated jumps saat mendarat!"
+    );
+    assert!(controller.state.grounded);
+
+    // Frame 12: Tombol Space dilepas (true -> false)
+    controller.set_input(PlayerInput::from_raw(
+        false, false, false, false, false, false, false,
+    ));
+
+    // Frame 13: Tombol Space ditekan KEMBALI (false -> true)
+    controller.set_input(PlayerInput::from_raw(
+        false, false, false, false, false, false, true,
+    ));
+    let new_jump = controller.try_execute_jump();
+    assert!(
+        new_jump,
+        "Setelah dilepas dan ditekan kembali, lompat harus berhasil!"
+    );
+}
