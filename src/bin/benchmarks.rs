@@ -520,6 +520,106 @@ fn main() {
         );
     }
 
+    // ========================================================================
+    // BENCHMARK 22: DynamicBody 30 Hz Physics Tick Throughput
+    // ========================================================================
+    {
+        use omnisia::physics::PhysicsRuntime;
+        use omnisia::streaming::store::ChunkStore;
+        use omnisia::structure::aggregate::DetachedAggregate;
+
+        let mut store = ChunkStore::new();
+        // Muat chunk 3x3 horizontal
+        for cz in -1..=1 {
+            for cx in -1..=1 {
+                let mut chunk = Chunk::new(IVec3::new(cx, 0, cz));
+                for x in 0..32 {
+                    for z in 0..32 {
+                        chunk.set_voxel(x, 0, z, VoxelBlock::new(MaterialId::STONE));
+                    }
+                }
+                store.insert(chunk);
+            }
+        }
+
+        let mut runtime = PhysicsRuntime::default();
+        let body_count = 100;
+
+        // Buat 100 DynamicBody dengan aggregate 8 voxel (2x2x2)
+        for i in 0..body_count {
+            let mut voxels = Vec::new();
+            let bx = (i % 10) * 3 - 15;
+            let bz = (i / 10) * 3 - 15;
+            for dy in 0..2 {
+                for dz in 0..2 {
+                    for dx in 0..2 {
+                        voxels.push((
+                            IVec3::new(bx + dx, 15 + dy, bz + dz),
+                            VoxelBlock::new(MaterialId::DIRT),
+                        ));
+                    }
+                }
+            }
+            let agg = DetachedAggregate::from_world_voxels(i as u64, &voxels).unwrap();
+            runtime.spawn_from_detached_aggregate(agg);
+        }
+
+        let ticks = 500;
+        let start = Instant::now();
+        for _ in 0..ticks {
+            runtime.tick(1.0 / 30.0, &store);
+        }
+        let elapsed = start.elapsed();
+        let us_per_tick = elapsed.as_micros() as f64 / ticks as f64;
+        let us_per_body_step = us_per_tick / body_count as f64;
+
+        println!(
+            "[BENCHMARK 22] DynamicBody 30 Hz Physics Tick (100 bodies): {:.2} µs/tick ({:.2} µs/body-step, {:.1} ticks/sec)",
+            us_per_tick, us_per_body_step, 1_000_000.0 / us_per_tick
+        );
+    }
+
+    // ========================================================================
+    // BENCHMARK 23: Two-Phase Reintegration Throughput
+    // ========================================================================
+    {
+        use omnisia::physics::{DynamicBodyState, PhysicsRuntime};
+        use omnisia::streaming::store::ChunkStore;
+        use omnisia::structure::aggregate::DetachedAggregate;
+
+        let iterations = 10_000;
+        let start = Instant::now();
+
+        for i in 0..iterations {
+            let mut store = ChunkStore::new();
+            store.insert(Chunk::new(IVec3::ZERO));
+            // Dasar lantai
+            store.set_voxel_world(IVec3::new(10, 0, 10), VoxelBlock::new(MaterialId::STONE));
+
+            let mut runtime = PhysicsRuntime::default();
+            let voxels = vec![
+                (IVec3::new(10, 1, 10), VoxelBlock::new(MaterialId::DIRT)),
+                (IVec3::new(10, 2, 10), VoxelBlock::new(MaterialId::DIRT)),
+            ];
+            let agg = DetachedAggregate::from_world_voxels(i as u64, &voxels).unwrap();
+            let body_id = runtime.spawn_from_detached_aggregate(agg);
+            runtime
+                .get_body_mut(body_id)
+                .unwrap()
+                .set_state(DynamicBodyState::Settled);
+
+            let reintegrated = runtime.process_settled_reintegration(&mut store);
+            std::hint::black_box(reintegrated);
+        }
+
+        let elapsed = start.elapsed();
+        let us_per_reintegration = elapsed.as_micros() as f64 / iterations as f64;
+        println!(
+            "[BENCHMARK 23] Two-Phase Dynamic Reintegration (Prepare+Commit): {:.2} µs/op ({:.1} ops/sec)",
+            us_per_reintegration, 1_000_000.0 / us_per_reintegration
+        );
+    }
+
     println!("============================================================");
     println!("             BENCHMARK SUITE COMPLETE                       ");
     println!("============================================================");

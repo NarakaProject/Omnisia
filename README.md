@@ -120,30 +120,71 @@ Engine mengintegrasikan sistem topologi struktural berbasis event (*event-driven
 8. **Scale Ruler & Referensi Manusia:** Penggaris metrik standar ($1\text{m}, 2\text{m}, 5\text{m}, 10\text{m}, 25\text{m}, 50\text{m}, 100\text{m}$) dan referensi manusia $\approx 1.8\text{m}$ ($3.6\text{ voxel}$) untuk memverifikasi dimensi fisik vegetasi dan kontur medan.
 9. **Audit Streaming & Validasi Multi-Kilometer:** Traversal multi-kilometer ($100\text{m}, 250\text{m}, 500\text{m}, 1\text{km}$, koordinat negatif, dan kembali ke origin) membuktikan stabilitas FPS ($109\text{–}195\text{ FPS}$) dan konsumsi memori stabil ($\le 85\text{ MB}$).
 
+## ⚡ Arsitektur Dynamic Aggregate Runtime & AntiGravity (Phase 8A)
+
+Engine mengintegrasikan runtime simulasi dinamis untuk gugusan voxel yang terlepas (*detached aggregates*) dengan model kepemilikan tunggal yang otoritatif (*single authoritative owner*):
+
+```text
+┌───────────────────────────────────────┐
+│              STATIC WORLD             │
+│        (ChunkStore / Near World)      │
+└───────────────────┬───────────────────┘
+                    │
+                    │ 1. Structural Break
+                    ▼
+┌───────────────────────────────────────┐
+│           DetachedAggregate           │
+│        (Topology + Voxel Move)        │
+└───────────────────┬───────────────────┘
+                    │
+                    │ 2. Atomic Ownership Transfer (Prepare -> Commit)
+                    ▼
+┌───────────────────────────────────────┐
+│              DynamicBody              │
+│  - BTreeMap deterministik             │
+│  - 30 Hz Fixed-Timestep Accumulator   │
+│  - Gravity / AntiGravity (scale = 0)  │
+│  - Swept Vertical Collision Guard     │
+│  - Unloaded Chunk Barrier (Unknown!=0)│
+│  - Grid Integer Voxel Snapping        │
+└───────────────────┬───────────────────┘
+                    │
+                    │ 3. Two-Phase Reintegration (Prepare -> Validate -> Commit)
+                    ▼
+┌───────────────────────────────────────┐
+│              STATIC WORLD             │
+│   - Restored at Exact Integer Lattice │
+│   - MESH_DIRTY & SAVE_DIRTY Marked    │
+│   - Dynamic Body Released (Zero Leak) │
+└───────────────────┬───────────────────┘
+```
+
 ---
 
-## 📊 Hasil Benchmark (MacBook Pro 2018 Reference)
+## 📊 Hasil Benchmark Resmi Engine (Phase 8A)
 
-Dijalankan pada arsitektur Intel Core i7 x86_64 dengan backend Metal dalam mode `release`:
+Benchmark dijalankan secara presisi pada perangkat target **MacBook Pro 2018 (Intel Core i7 x86_64, macOS Metal)**:
 
-| No | Pengujian Benchmark | Metrik Pengukuran | Keterangan & Analisis |
+| # | Skenario Benchmark | Hasil / Throughput | Catatan Arsitektur |
 |:---|:---|:---|:---|
-| 1 | **Chunk Indexing** | **0.24 ns / op** | Inlined $O(1)$ canonical index |
-| 2 | **Chunk Fill (32k voxels)** | **3.73 µs / chunk** | 128 KiB memory throughput |
-| 3 | **Culled Meshing 32³** | **0.373 ms / chunk** | 16,896 Vertices, 4,224 Quads per chunk |
-| 4 | **Greedy Meshing 32³** | **0.694 ms / chunk** | 580 Vertices, 145 Quads (**29.13x Quad Reduction**) |
-| 5 | **AO Calculation** | **13.97 ns / face** | 500,000 sampling sudut AO |
-| 6 | **100 Chunks Procedural Meshing** | **128.02 ms** | Mengolah 100 chunk prosedural dengan Rayon |
-| 7 | **Chunk Palette Zstd Compress** | **1.54 ms** | 131,072 bytes $\to$ 1,307 bytes (**100.3x rasio kompresi**) |
-| 8 | **Chunk Palette Zstd Decompress** | **753.39 µs** | Rekonstruksi chunk 32k voxel sempurna (< 1 ms) |
-| 9 | **Noise 3D fBm Sampling** | **143.05 ns / sample** | $10^6$ sampling volumetrik 3D bebas alokasi |
-| 10 | **3D Cave & Worm Tunnel Sampling** | **268.89 ns / point** | 100,000 titik evaluasi rongga gua 3D |
-| 11 | **3D Overhang & Feature Eval** | **45.13 ns / point** | 100,000 titik evaluasi densitas tebing |
-| 12 | **Phase 6 Procedural Chunk Gen** | **7.275 ms / chunk** | Generasi 32³ micro-voxels dengan 3D caves & vegetasi kanonikal |
-| 13 | **100 Chunks Parallel Gen (Rayon)** | **107.77 ms total** | **~1.07 ms/chunk amortized** |
-| 14 | **Frustum Culling Intersection** | **4.94 ns / chunk** | **> 200M tests/sec, 0 alokasi heap** |
-| 15 | **Localized Structural Connectivity** | **9.95 µs / check** | **Rata-rata 15.0 voxel terpindai, early-exit anchor** |
-| 16 | **Detached Aggregate Extraction** | **0.21 µs / op** | **4.73M extractions/sec (125 voxels)** |
+| 1 | **Chunk Indexing** | **0.26 ns / op** | Inlined $O(1)$ canonical index |
+| 2 | **Chunk Fill (32k voxels)** | **3.37 µs / chunk** | 128 KiB memory throughput |
+| 3 | **Culled Meshing 32³** | **0.334 ms / chunk** | 16,896 Vertices, 4,224 Quads per chunk |
+| 4 | **Greedy Meshing 32³** | **0.819 ms / chunk** | 580 Vertices, 145 Quads (**29.13x Quad Reduction**) |
+| 5 | **AO Calculation** | **12.97 ns / face** | 500,000 sampling sudut AO |
+| 6 | **100 Chunks Procedural Meshing** | **114.30 ms** | Mengolah 100 chunk prosedural dengan Rayon |
+| 7 | **Chunk Palette Zstd Compress** | **2.07 ms** | 131,072 bytes $\to$ 1,307 bytes (**100.3x rasio kompresi**) |
+| 8 | **Chunk Palette Zstd Decompress** | **899.78 µs** | Rekonstruksi chunk 32k voxel sempurna (< 1 ms) |
+| 9 | **Noise 3D fBm Sampling** | **125.97 ns / sample** | $10^6$ sampling volumetrik 3D bebas alokasi |
+| 10 | **3D Cave & Worm Tunnel Sampling** | **218.30 ns / point** | 100,000 titik evaluasi rongga gua 3D |
+| 11 | **3D Overhang & Feature Eval** | **37.97 ns / point** | 100,000 titik evaluasi densitas tebing |
+| 12 | **Phase 6 Procedural Chunk Gen** | **7.237 ms / chunk** | Generasi 32³ micro-voxels dengan 3D caves & vegetasi kanonikal |
+| 13 | **100 Chunks Parallel Gen (Rayon)** | **100.55 ms total** | **~1.00 ms/chunk amortized** |
+| 14 | **Frustum Culling Intersection** | **10.54 ns / chunk** | **> 94M tests/sec, 0 alokasi heap** |
+| 15 | **Localized Structural Connectivity** | **10.69 µs / check** | **Rata-rata 15.0 voxel terpindai, early-exit anchor** |
+| 16 | **Detached Aggregate Extraction** | **0.26 µs / op** | **3.82M extractions/sec (125 voxels)** |
+| 17 | **DynamicBody 30 Hz Physics Tick** | **10.09 µs / tick** | **99,088 ticks/sec (100 badan dinamis, swept collision)** |
+| 18 | **Two-Phase Dynamic Reintegration** | **4.70 µs / op** | **212,557 ops/sec (Prepare + Validate + Commit)** |
 
 ---
 
@@ -176,12 +217,17 @@ cargo run --release -- --validate-mods
 cargo run --release --bin traversal_validation
 ```
 
-### 5. Menjalankan Benchmark Suite Lengkap
+### 5. Menjalankan Dynamic Aggregate Runtime Validation (Phase 8A)
+```bash
+cargo run --release --bin physics_validation
+```
+
+### 6. Menjalankan Benchmark Suite Lengkap
 ```bash
 cargo run --release --bin benchmarks
 ```
 
-### 6. Menjalankan Seluruh Unit Test Suite (79 Tests)
+### 7. Menjalankan Seluruh Unit Test Suite (102 Tests)
 ```bash
 cargo test
 ```
