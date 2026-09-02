@@ -156,6 +156,20 @@ impl DynamicBody {
             .map(move |v| (base_voxel + v.relative_coord, v.block))
     }
 
+    /// Menghitung percepatan gravitasi efektif yang bekerja pada badan ini
+    #[inline(always)]
+    pub fn effective_gravity(&self, world_gravity: Vec3) -> Vec3 {
+        world_gravity * self.gravity_scale
+    }
+
+    /// Menerapkan percepatan gravitasi terhadap kecepatan linier selama durasi `dt` detik
+    pub fn apply_gravity(&mut self, world_gravity: Vec3, dt: f32) {
+        if self.state == DynamicBodyState::Active && !self.is_grounded {
+            let accel = self.effective_gravity(world_gravity);
+            self.velocity += accel * dt;
+        }
+    }
+
     /// Mengubah status siklus hidup
     pub fn set_state(&mut self, new_state: DynamicBodyState) {
         self.state = new_state;

@@ -243,3 +243,75 @@ fn test_atomic_ownership_transfer_empty_component_does_not_mutate_store() {
         "ChunkStore harus mempertahankan voxel secara otoritatif jika aggregate tidak valid!"
     );
 }
+
+// ============================================================================
+// 8A.4 GRAVITY / ANTIGRAVITY MODEL
+// ============================================================================
+
+#[test]
+fn test_gravity_normal_acceleration() {
+    let voxels = vec![(IVec3::ZERO, VoxelBlock::new(MaterialId::STONE))];
+    let agg = DetachedAggregate::from_world_voxels(1, &voxels).unwrap();
+    let mut body =
+        DynamicBody::from_detached_aggregate(DynamicBodyId(1), agg).with_gravity_scale(1.0);
+
+    let gravity = Vec3::new(0.0, -9.81, 0.0);
+    let dt = 1.0 / 30.0; // Fixed timestep 30 Hz
+
+    // Terapkan gravitasi selama 30 ticks (tepat 1.0 detik)
+    for _ in 0..30 {
+        body.apply_gravity(gravity, dt);
+    }
+
+    // Kecepatan setelah 1 detik: v = a * t = -9.81 m/s
+    let vy = body.velocity.y;
+    assert!(
+        (vy - (-9.81)).abs() < 1e-4,
+        "Kecepatan setelah 1 detik gravitasi normal harus -9.81 m/s! Actual: {}",
+        vy
+    );
+    assert_eq!(body.velocity.x, 0.0);
+    assert_eq!(body.velocity.z, 0.0);
+}
+
+#[test]
+fn test_antigravity_zero_acceleration() {
+    let voxels = vec![(IVec3::ZERO, VoxelBlock::new(MaterialId::STONE))];
+    let agg = DetachedAggregate::from_world_voxels(2, &voxels).unwrap();
+    let mut body =
+        DynamicBody::from_detached_aggregate(DynamicBodyId(2), agg).with_gravity_scale(0.0); // AntiGravity mode
+
+    let gravity = Vec3::new(0.0, -9.81, 0.0);
+    let dt = 1.0 / 30.0;
+
+    // Terapkan gravitasi selama 30 ticks
+    for _ in 0..30 {
+        body.apply_gravity(gravity, dt);
+    }
+
+    // Pada AntiGravity, kecepatan linier tetap nol mutlak!
+    assert_eq!(body.velocity, Vec3::ZERO);
+}
+
+#[test]
+fn test_inverted_gravity_acceleration() {
+    let voxels = vec![(IVec3::ZERO, VoxelBlock::new(MaterialId::STONE))];
+    let agg = DetachedAggregate::from_world_voxels(3, &voxels).unwrap();
+    let mut body =
+        DynamicBody::from_detached_aggregate(DynamicBodyId(3), agg).with_gravity_scale(-1.0); // Inverted gravity
+
+    let gravity = Vec3::new(0.0, -9.81, 0.0);
+    let dt = 1.0 / 30.0;
+
+    for _ in 0..30 {
+        body.apply_gravity(gravity, dt);
+    }
+
+    // Kecepatan setelah 1 detik gravitasi terbalik: v = +9.81 m/s
+    let vy = body.velocity.y;
+    assert!(
+        (vy - 9.81).abs() < 1e-4,
+        "Kecepatan setelah 1 detik gravitasi terbalik harus +9.81 m/s! Actual: {}",
+        vy
+    );
+}
