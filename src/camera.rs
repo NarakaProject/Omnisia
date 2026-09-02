@@ -53,7 +53,7 @@ impl Camera {
             fov_y_rad: 60.0f32.to_radians(),
             z_near: 0.1,
             z_far: 1000.0,
-            speed: 18.0,        // 18 m/s
+            speed: 18.0,       // 18 m/s
             sensitivity: 0.15, // Derajat per piksel gerak mouse
             is_forward: false,
             is_backward: false,

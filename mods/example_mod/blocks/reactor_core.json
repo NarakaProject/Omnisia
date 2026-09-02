@@ -1,0 +1,17 @@
+{
+  "id": "example_mod:reactor_core",
+  "material": "example_mod:steel",
+  "hardness": 75.0,
+  "components": {
+    "lift_capacity": {
+      "capacity_kg": 2500000.0,
+      "radius_m": 48.0,
+      "power_consumption_w": 50000.0
+    }
+  },
+  "tags": [
+    "machine",
+    "power",
+    "anti_gravity"
+  ]
+}

@@ -259,7 +259,10 @@ impl Renderer {
         })
     }
 
-    fn create_depth_view(device: &wgpu::Device, config: &wgpu::SurfaceConfiguration) -> wgpu::TextureView {
+    fn create_depth_view(
+        device: &wgpu::Device,
+        config: &wgpu::SurfaceConfiguration,
+    ) -> wgpu::TextureView {
         let depth_texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("Depth Texture"),
             size: wgpu::Extent3d {
@@ -311,17 +314,21 @@ impl Renderer {
             return;
         }
 
-        let vertex_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some(&format!("Chunk {:?} Vertex Buffer", chunk_coord)),
-            contents: bytemuck::cast_slice(&mesh_data.vertices),
-            usage: wgpu::BufferUsages::VERTEX,
-        });
+        let vertex_buffer = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some(&format!("Chunk {:?} Vertex Buffer", chunk_coord)),
+                contents: bytemuck::cast_slice(&mesh_data.vertices),
+                usage: wgpu::BufferUsages::VERTEX,
+            });
 
-        let index_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some(&format!("Chunk {:?} Index Buffer", chunk_coord)),
-            contents: bytemuck::cast_slice(&mesh_data.indices),
-            usage: wgpu::BufferUsages::INDEX,
-        });
+        let index_buffer = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some(&format!("Chunk {:?} Index Buffer", chunk_coord)),
+                contents: bytemuck::cast_slice(&mesh_data.indices),
+                usage: wgpu::BufferUsages::INDEX,
+            });
 
         self.chunk_meshes.insert(
             chunk_coord,
@@ -340,11 +347,15 @@ impl Renderer {
     /// Melakukan render frame lengkap
     pub fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
         let output = self.surface.get_current_texture()?;
-        let view = output.texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let view = output
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
 
-        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("Primary Render Encoder"),
-        });
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Primary Render Encoder"),
+            });
 
         {
             // Warna langit pastel lembut untuk background clear
@@ -381,7 +392,10 @@ impl Renderer {
             for gpu_mesh in self.chunk_meshes.values() {
                 if gpu_mesh.index_count > 0 {
                     render_pass.set_vertex_buffer(0, gpu_mesh.vertex_buffer.slice(..));
-                    render_pass.set_index_buffer(gpu_mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+                    render_pass.set_index_buffer(
+                        gpu_mesh.index_buffer.slice(..),
+                        wgpu::IndexFormat::Uint32,
+                    );
                     render_pass.draw_indexed(0..gpu_mesh.index_count, 0, 0..1);
                 }
             }

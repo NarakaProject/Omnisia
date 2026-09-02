@@ -220,10 +220,7 @@ fn test_zstd_chunk_persistence_roundtrip() {
 
     assert_eq!(loaded_chunk.position, chunk.position);
     assert_eq!(loaded_chunk.non_air_count, chunk.non_air_count);
-    assert_eq!(
-        loaded_chunk.get_voxel(0, 0, 0),
-        chunk.get_voxel(0, 0, 0)
-    );
+    assert_eq!(loaded_chunk.get_voxel(0, 0, 0), chunk.get_voxel(0, 0, 0));
     assert_eq!(
         loaded_chunk.get_voxel(10, 15, 20),
         chunk.get_voxel(10, 15, 20)

@@ -1,0 +1,9 @@
+{
+  "id": "example_mod:steel",
+  "name": "Refined Steel",
+  "density": 7850.0,
+  "shear_strength": 250.0,
+  "color": [0.38, 0.42, 0.48],
+  "solid": true,
+  "transparent": false
+}

@@ -8,11 +8,7 @@ use crate::mesh::types::{FaceDirection, MeshData, VoxelVertex};
 use crate::voxel::VOXEL_SIZE;
 
 /// Menghasilkan mesh 3D menggunakan algoritma Culled Face Meshing dengan kalkulasi AO.
-pub fn generate_culled_mesh(
-    chunk: &Chunk,
-    materials: &MaterialRegistry,
-    output: &mut MeshData,
-) {
+pub fn generate_culled_mesh(chunk: &Chunk, materials: &MaterialRegistry, output: &mut MeshData) {
     output.clear();
 
     if chunk.is_empty() {
@@ -34,11 +30,12 @@ pub fn generate_culled_mesh(
                 }
 
                 let color = materials.get_color(block.material);
-                let voxel_pos = chunk_origin + Vec3::new(
-                    x as f32 * VOXEL_SIZE,
-                    y as f32 * VOXEL_SIZE,
-                    z as f32 * VOXEL_SIZE,
-                );
+                let voxel_pos = chunk_origin
+                    + Vec3::new(
+                        x as f32 * VOXEL_SIZE,
+                        y as f32 * VOXEL_SIZE,
+                        z as f32 * VOXEL_SIZE,
+                    );
 
                 for &dir in &FaceDirection::ALL {
                     let (dx, dy, dz) = dir.offset();
@@ -73,42 +70,12 @@ fn emit_quad(
     let s = VOXEL_SIZE;
 
     let corners: [[f32; 3]; 4] = match direction {
-        FaceDirection::PosY => [
-            [0.0, s, 0.0],
-            [s, s, 0.0],
-            [s, s, s],
-            [0.0, s, s],
-        ],
-        FaceDirection::NegY => [
-            [0.0, 0.0, s],
-            [s, 0.0, s],
-            [s, 0.0, 0.0],
-            [0.0, 0.0, 0.0],
-        ],
-        FaceDirection::PosZ => [
-            [0.0, 0.0, s],
-            [s, 0.0, s],
-            [s, s, s],
-            [0.0, s, s],
-        ],
-        FaceDirection::NegZ => [
-            [s, 0.0, 0.0],
-            [0.0, 0.0, 0.0],
-            [0.0, s, 0.0],
-            [s, s, 0.0],
-        ],
-        FaceDirection::PosX => [
-            [s, 0.0, s],
-            [s, 0.0, 0.0],
-            [s, s, 0.0],
-            [s, s, s],
-        ],
-        FaceDirection::NegX => [
-            [0.0, 0.0, 0.0],
-            [0.0, 0.0, s],
-            [0.0, s, s],
-            [0.0, s, 0.0],
-        ],
+        FaceDirection::PosY => [[0.0, s, 0.0], [s, s, 0.0], [s, s, s], [0.0, s, s]],
+        FaceDirection::NegY => [[0.0, 0.0, s], [s, 0.0, s], [s, 0.0, 0.0], [0.0, 0.0, 0.0]],
+        FaceDirection::PosZ => [[0.0, 0.0, s], [s, 0.0, s], [s, s, s], [0.0, s, s]],
+        FaceDirection::NegZ => [[s, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, s, 0.0], [s, s, 0.0]],
+        FaceDirection::PosX => [[s, 0.0, s], [s, 0.0, 0.0], [s, s, 0.0], [s, s, s]],
+        FaceDirection::NegX => [[0.0, 0.0, 0.0], [0.0, 0.0, s], [0.0, s, s], [0.0, s, 0.0]],
     };
 
     let base_idx = mesh.vertices.len() as u32;
@@ -119,7 +86,8 @@ fn emit_quad(
             origin.y + corners[i][1],
             origin.z + corners[i][2],
         ];
-        mesh.vertices.push(VoxelVertex::new(pos, normal, color, ao[i]));
+        mesh.vertices
+            .push(VoxelVertex::new(pos, normal, color, ao[i]));
     }
 
     if ao[0] + ao[2] > ao[1] + ao[3] {

@@ -30,11 +30,7 @@ pub struct GreedyQuadParams {
 /// Menggabungkan quad coplanar yang bersebelahan dengan material identik
 /// menjadi poligon persegi panjang yang lebih besar, secara drastis
 /// menurunkan jumlah vertex/index pada GPU (mereduksi draw call & bandwidth).
-pub fn generate_greedy_mesh(
-    chunk: &Chunk,
-    materials: &MaterialRegistry,
-    output: &mut MeshData,
-) {
+pub fn generate_greedy_mesh(chunk: &Chunk, materials: &MaterialRegistry, output: &mut MeshData) {
     output.clear();
 
     if chunk.is_empty() {
@@ -75,7 +71,11 @@ pub fn generate_greedy_mesh(
                     };
 
                     let block_b = if x[d] < CHUNK_SIZE - 1 {
-                        chunk.get_voxel((x[0] + q[0]) as usize, (x[1] + q[1]) as usize, (x[2] + q[2]) as usize)
+                        chunk.get_voxel(
+                            (x[0] + q[0]) as usize,
+                            (x[1] + q[1]) as usize,
+                            (x[2] + q[2]) as usize,
+                        )
                     } else {
                         &crate::voxel::VoxelBlock::AIR
                     };
@@ -211,10 +211,14 @@ fn emit_greedy_quad(mesh: &mut MeshData, params: GreedyQuadParams) {
         params.origin.z + ((params.pos[2] + params.dv[2]) as f32) * s,
     ];
 
-    mesh.vertices.push(VoxelVertex::new(p0, params.normal, params.color, 1.0));
-    mesh.vertices.push(VoxelVertex::new(p1, params.normal, params.color, 1.0));
-    mesh.vertices.push(VoxelVertex::new(p2, params.normal, params.color, 1.0));
-    mesh.vertices.push(VoxelVertex::new(p3, params.normal, params.color, 1.0));
+    mesh.vertices
+        .push(VoxelVertex::new(p0, params.normal, params.color, 1.0));
+    mesh.vertices
+        .push(VoxelVertex::new(p1, params.normal, params.color, 1.0));
+    mesh.vertices
+        .push(VoxelVertex::new(p2, params.normal, params.color, 1.0));
+    mesh.vertices
+        .push(VoxelVertex::new(p3, params.normal, params.color, 1.0));
 
     if params.is_positive_facing {
         mesh.indices.push(base_idx);

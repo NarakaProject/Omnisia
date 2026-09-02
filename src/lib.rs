@@ -3,6 +3,7 @@ pub mod chunk;
 pub mod coord;
 pub mod material;
 pub mod mesh;
+pub mod modding;
 pub mod renderer;
 pub mod storage;
 pub mod voxel;

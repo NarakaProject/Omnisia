@@ -9,12 +9,15 @@ use omnisia::mesh::ao::calculate_face_ao;
 use omnisia::mesh::culled::generate_culled_mesh;
 use omnisia::mesh::greedy::generate_greedy_mesh;
 use omnisia::mesh::types::{FaceDirection, MeshData};
+use omnisia::modding::discovery::ModDiscovery;
+use omnisia::modding::resource_id::ResourceId;
 use omnisia::storage::{decompress_and_deserialize_chunk, serialize_and_compress_chunk};
 use omnisia::voxel::VoxelBlock;
 
 fn main() {
     println!("============================================================");
     println!("     OMNISIA ENGINE ARCHITECTURE BENCHMARK SUITE           ");
+    println!("     Phase 2: Core Foundation + Modding Layer              ");
     println!("     Target Baseline: MacBook Pro 2018 (Intel x86_64)      ");
     println!("============================================================");
 
@@ -219,7 +222,8 @@ fn main() {
         let comp_time = start_comp.elapsed();
 
         let start_decomp = Instant::now();
-        let decompressed = decompress_and_deserialize_chunk(&compressed).expect("Dekompresi Zstd gagal");
+        let decompressed =
+            decompress_and_deserialize_chunk(&compressed).expect("Dekompresi Zstd gagal");
         let decomp_time = start_decomp.elapsed();
 
         let raw_size = CHUNK_VOLUME * std::mem::size_of::<VoxelBlock>(); // 128 KiB
@@ -276,6 +280,63 @@ fn main() {
         println!(
             "[BENCHMARK 11] Localized Connectivity BFS ({} voxels traversed): {:?}",
             count, elapsed
+        );
+    }
+
+    // 12. Benchmark Mod Discovery & Manifest Parsing
+    {
+        let start = Instant::now();
+        let iterations = 1_000;
+        let mut discovered_count = 0;
+        for _ in 0..iterations {
+            let (discovered, _) = ModDiscovery::discover_from_dir("mods");
+            discovered_count = discovered.len();
+        }
+        let elapsed = start.elapsed();
+        let us_per_discovery = elapsed.as_micros() as f64 / iterations as f64;
+        println!(
+            "[BENCHMARK 12] Mod Discovery & Manifest Parsing: {:.2} µs/run (Mods found: {}, Total: {:?})",
+            us_per_discovery, discovered_count, elapsed
+        );
+    }
+
+    // 13. Benchmark Registry Runtime Index O(1) vs ResourceId String Lookup
+    {
+        let iterations = 10_000_000;
+        let res_id = ResourceId::parse("core:stone").unwrap();
+        let mat_id = registry.resolve_material_id(&res_id).unwrap();
+
+        // A. Runtime Index O(1) Lookup (Voxel Hot Path)
+        let start_index = Instant::now();
+        let mut sum_density = 0.0f32;
+        for _ in 0..iterations {
+            if let Some(def) = registry.get(mat_id) {
+                sum_density += def.density_kg_m3;
+            }
+        }
+        let elapsed_index = start_index.elapsed();
+        let ns_per_index_lookup = elapsed_index.as_nanos() as f64 / iterations as f64;
+
+        // B. Persistent ResourceId Hash Lookup (Load/Tooling Path)
+        let start_res = Instant::now();
+        let mut sum_density_res = 0.0f32;
+        for _ in 0..iterations {
+            if let Some(def) = registry.get_by_resource_id(&res_id) {
+                sum_density_res += def.density_kg_m3;
+            }
+        }
+        let elapsed_res = start_res.elapsed();
+        let ns_per_res_lookup = elapsed_res.as_nanos() as f64 / iterations as f64;
+
+        println!(
+            "[BENCHMARK 13] Registry Voxel Hot Path Lookup (MaterialId): {:.2} ns/op (Zero overhead, sum: {})",
+            ns_per_index_lookup, sum_density as usize
+        );
+        println!(
+            "  -> Comparison: ResourceId Hash Lookup: {:.2} ns/op ({:.1}x difference, sum: {})",
+            ns_per_res_lookup,
+            ns_per_res_lookup / ns_per_index_lookup.max(0.01),
+            sum_density_res as usize
         );
     }
 

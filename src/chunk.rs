@@ -81,7 +81,12 @@ impl Chunk {
         }
 
         self.voxels[idx] = new_block;
-        self.mark_dirty(dirty_flags::VOXEL_DIRTY | dirty_flags::MESH_DIRTY | dirty_flags::SAVE_DIRTY | dirty_flags::STRUCTURAL_DIRTY);
+        self.mark_dirty(
+            dirty_flags::VOXEL_DIRTY
+                | dirty_flags::MESH_DIRTY
+                | dirty_flags::SAVE_DIRTY
+                | dirty_flags::STRUCTURAL_DIRTY,
+        );
     }
 
     /// Mengisi seluruh chunk dengan satu material homogen
@@ -142,6 +147,11 @@ impl Chunk {
             self.position.y as f32 * CHUNK_WORLD_SIZE,
             self.position.z as f32 * CHUNK_WORLD_SIZE,
         );
-        origin + Vec3::new(lx as f32 * VOXEL_SIZE, ly as f32 * VOXEL_SIZE, lz as f32 * VOXEL_SIZE)
+        origin
+            + Vec3::new(
+                lx as f32 * VOXEL_SIZE,
+                ly as f32 * VOXEL_SIZE,
+                lz as f32 * VOXEL_SIZE,
+            )
     }
 }

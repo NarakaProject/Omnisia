@@ -31,7 +31,8 @@ pub fn ao_to_float(ao: u8) -> f32 {
 /// Helper untuk memeriksa apakah voxel pada koordinat (x, y, z) solid dalam chunk
 #[inline(always)]
 pub fn is_voxel_solid(chunk: &Chunk, x: i32, y: i32, z: i32) -> bool {
-    if (0..CHUNK_SIZE).contains(&x) && (0..CHUNK_SIZE).contains(&y) && (0..CHUNK_SIZE).contains(&z) {
+    if (0..CHUNK_SIZE).contains(&x) && (0..CHUNK_SIZE).contains(&y) && (0..CHUNK_SIZE).contains(&z)
+    {
         !chunk.get_voxel(x as usize, y as usize, z as usize).is_air()
     } else {
         false // Di luar chunk diasumsikan terbuka (dapat disampling via neighbor chunks)

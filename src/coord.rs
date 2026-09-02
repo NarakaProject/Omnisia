@@ -1,5 +1,5 @@
-use glam::{IVec3, Vec3};
 use crate::voxel::VOXEL_SIZE;
+use glam::{IVec3, Vec3};
 
 pub const CHUNK_SIZE: i32 = 32;
 pub const CHUNK_SIZE_USIZE: usize = 32;
@@ -59,7 +59,10 @@ pub fn world_voxel_to_world_pos(world_voxel: IVec3) -> Vec3 {
 /// `index = x + (y * 32) + (z * 1024)`
 #[inline(always)]
 pub fn canonical_linear_index(x: usize, y: usize, z: usize) -> usize {
-    debug_assert!(x < CHUNK_SIZE_USIZE && y < CHUNK_SIZE_USIZE && z < CHUNK_SIZE_USIZE, "Indeks lokal melebihi batas chunk 32x32x32");
+    debug_assert!(
+        x < CHUNK_SIZE_USIZE && y < CHUNK_SIZE_USIZE && z < CHUNK_SIZE_USIZE,
+        "Indeks lokal melebihi batas chunk 32x32x32"
+    );
     x + (y * CHUNK_SIZE_USIZE) + (z * CHUNK_SIZE_USIZE * CHUNK_SIZE_USIZE)
 }
 

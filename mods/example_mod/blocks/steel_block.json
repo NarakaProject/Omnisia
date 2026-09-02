@@ -1,0 +1,15 @@
+{
+  "id": "example_mod:steel_block",
+  "material": "example_mod:steel",
+  "hardness": 30.0,
+  "components": {
+    "structural_anchor": {
+      "is_anchor": false
+    }
+  },
+  "tags": [
+    "metal",
+    "structural",
+    "heavy"
+  ]
+}

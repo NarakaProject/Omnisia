@@ -11,6 +11,7 @@ use winit::window::{Window, WindowAttributes, WindowId};
 use omnisia::camera::Camera;
 use omnisia::mesh::generate_culled_mesh;
 use omnisia::mesh::types::MeshData;
+use omnisia::modding::validate_mods_directory;
 use omnisia::renderer::Renderer;
 use omnisia::world::World;
 
@@ -28,7 +29,7 @@ struct App {
 
 impl Default for App {
     fn default() -> Self {
-        // Posisi kamera awal menghadap bukit dan pulau melayang
+        // Posisi kamera awal menghadap bukit dan struktur melayang
         let camera = Camera::new(
             Vec3::new(16.0, 18.0, 38.0),
             -90.0, // Yaw menghadap sumbu -Z
@@ -36,6 +37,11 @@ impl Default for App {
         );
 
         let mut world = World::new();
+
+        // Muat seluruh mod data-driven dari direktori "mods/"
+        world.load_mods_from_dir("mods");
+
+        // Bangun demo world
         world.generate_demo_world();
 
         Self {
@@ -59,7 +65,7 @@ impl ApplicationHandler for App {
         }
 
         let window_attrs = WindowAttributes::default()
-            .with_title("Omnisia - Micro-Voxel Engine [MacBook Pro 2018 Target]")
+            .with_title("Omnisia - Micro-Voxel Engine [Phase 2: Modding Layer Active]")
             .with_inner_size(PhysicalSize::new(1280, 720));
 
         let window = Arc::new(
@@ -100,7 +106,12 @@ impl ApplicationHandler for App {
         self.fps_timer = Instant::now();
     }
 
-    fn window_event(&mut self, event_loop: &ActiveEventLoop, _window_id: WindowId, event: WindowEvent) {
+    fn window_event(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        _window_id: WindowId,
+        event: WindowEvent,
+    ) {
         match event {
             WindowEvent::CloseRequested => {
                 log::info!("Menutup aplikasi Omnisia.");
@@ -122,7 +133,6 @@ impl ApplicationHandler for App {
                 let dt = (now - self.last_frame_time).as_secs_f32().min(0.1);
                 self.last_frame_time = now;
 
-                // Update posisi kamera
                 self.camera.update(dt);
 
                 if let (Some(renderer), Some(window)) = (&mut self.renderer, &self.window) {
@@ -150,12 +160,12 @@ impl ApplicationHandler for App {
                         let fps = self.frame_count as f32 / self.fps_timer.elapsed().as_secs_f32();
                         let frame_ms = 1000.0 / fps.max(1.0);
                         let title = format!(
-                            "Omnisia Micro-Voxel Engine | FPS: {:.1} ({:.2} ms) | Chunks: {} | Verts: {} | Quads: {}",
+                            "Omnisia Micro-Voxel Engine | FPS: {:.1} ({:.2} ms) | Materials: {} | Blocks: {} | Verts: {}",
                             fps,
                             frame_ms,
-                            self.world.chunks.len(),
-                            self.total_vertices,
-                            self.total_indices / 6
+                            self.world.materials.len(),
+                            self.world.blocks.len(),
+                            self.total_vertices
                         );
                         window.set_title(&title);
                         self.frame_count = 0;
@@ -167,7 +177,12 @@ impl ApplicationHandler for App {
         }
     }
 
-    fn device_event(&mut self, _event_loop: &ActiveEventLoop, _device_id: DeviceId, event: DeviceEvent) {
+    fn device_event(
+        &mut self,
+        _event_loop: &ActiveEventLoop,
+        _device_id: DeviceId,
+        event: DeviceEvent,
+    ) {
         if let DeviceEvent::MouseMotion { delta } = event {
             self.camera.handle_mouse_motion(delta.0, delta.1);
         }
@@ -182,11 +197,28 @@ impl ApplicationHandler for App {
 
 fn main() {
     env_logger::init_from_env(env_logger::Env::default().default_filter_or("info"));
-    log::info!("Memulai Omnisia Micro-Voxel Engine...");
+
+    let args: Vec<String> = std::env::args().collect();
+    if args
+        .iter()
+        .any(|arg| arg == "--validate-mods" || arg == "-v")
+    {
+        log::info!("Menjalankan validasi mod Omnisia...");
+        let report = validate_mods_directory("mods");
+        report.print_summary();
+        if !report.is_all_ok() {
+            std::process::exit(1);
+        }
+        return;
+    }
+
+    log::info!("Memulai Omnisia Micro-Voxel Engine [Phase 2: Modding Layer Active]...");
 
     let event_loop = EventLoop::new().expect("Gagal membuat winit EventLoop");
     event_loop.set_control_flow(ControlFlow::Poll);
 
     let mut app = App::default();
-    event_loop.run_app(&mut app).expect("Terjadi error pada EventLoop");
+    event_loop
+        .run_app(&mut app)
+        .expect("Terjadi error pada EventLoop");
 }

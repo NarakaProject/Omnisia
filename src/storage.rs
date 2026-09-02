@@ -1,6 +1,6 @@
-use std::io::{Read, Write};
 use glam::IVec3;
 use serde::{Deserialize, Serialize};
+use std::io::{Read, Write};
 
 use crate::chunk::Chunk;
 use crate::coord::CHUNK_VOLUME;
@@ -50,14 +50,20 @@ pub fn decompress_and_deserialize_chunk(compressed_data: &[u8]) -> Result<Chunk,
         ));
     }
 
-    let voxels_box: Box<[VoxelBlock; CHUNK_VOLUME]> = payload
-        .voxels
-        .into_boxed_slice()
-        .try_into()
-        .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidData, "Gagal konversi ke Box array"))?;
+    let voxels_box: Box<[VoxelBlock; CHUNK_VOLUME]> =
+        payload.voxels.into_boxed_slice().try_into().map_err(|_| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Gagal konversi ke Box array",
+            )
+        })?;
 
     Ok(Chunk {
-        position: IVec3::new(payload.position[0], payload.position[1], payload.position[2]),
+        position: IVec3::new(
+            payload.position[0],
+            payload.position[1],
+            payload.position[2],
+        ),
         voxels: voxels_box,
         non_air_count: payload.non_air_count,
         dirty_flags: crate::chunk::dirty_flags::ALL,

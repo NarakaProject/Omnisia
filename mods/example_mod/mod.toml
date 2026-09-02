@@ -1,0 +1,12 @@
+id = "example_mod"
+name = "Example Mod"
+version = "0.1.0"
+engine_api = "0.2"
+description = "Contoh mod resmi untuk demonstrasi pembuatan material dan blok data-driven di Omnisia"
+
+[author]
+name = "Omnisia Community"
+contact = "community@omnisia.org"
+
+[dependencies]
+core = "0.2"
