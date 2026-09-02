@@ -170,6 +170,13 @@ impl DynamicBody {
         }
     }
 
+    /// Mengintegrasikan perpindahan translasi posisi linier: p += v * dt
+    pub fn integrate_motion(&mut self, dt: f32) {
+        if self.state == DynamicBodyState::Active && !self.is_grounded {
+            self.position += self.velocity * dt;
+        }
+    }
+
     /// Mengubah status siklus hidup
     pub fn set_state(&mut self, new_state: DynamicBodyState) {
         self.state = new_state;

@@ -315,3 +315,78 @@ fn test_inverted_gravity_acceleration() {
         vy
     );
 }
+
+// ============================================================================
+// 8A.5 FIXED-TIMESTEP FALLING INTEGRATION (30 HZ)
+// ============================================================================
+
+#[test]
+fn test_fixed_timestep_frame_rate_invariance() {
+    use omnisia::physics::PhysicsRuntime;
+
+    // Uji simulasi jatuh bebas selama 1.0 detik di bawah 3 variasi frame rate:
+    // 1. 30 FPS  (30 frames, dt = 1/30s)
+    // 2. 60 FPS  (60 frames, dt = 1/60s)
+    // 3. 120 FPS (120 frames, dt = 1/120s)
+
+    let run_simulation = |frames: usize, render_dt: f32| -> (Vec3, Vec3) {
+        let mut runtime = PhysicsRuntime::default();
+        let voxels = vec![(IVec3::ZERO, VoxelBlock::new(MaterialId::STONE))];
+        let agg = DetachedAggregate::from_world_voxels(1, &voxels).unwrap();
+        let body_id = runtime.spawn_from_detached_aggregate(agg);
+
+        for _ in 0..frames {
+            runtime.update(render_dt);
+        }
+
+        let body = runtime.get_body(body_id).unwrap();
+        (body.position, body.velocity)
+    };
+
+    let (pos_30, vel_30) = run_simulation(30, 1.0 / 30.0);
+    let (pos_60, vel_60) = run_simulation(60, 1.0 / 60.0);
+    let (pos_120, vel_120) = run_simulation(120, 1.0 / 120.0);
+
+    // Kecepatan dan posisi harus identik secara deterministik pada seluruh framerate normal
+    assert!(
+        (vel_30 - vel_60).length() < 1e-4,
+        "Kecepatan 30 FPS vs 60 FPS harus identik! Diff: {:?}",
+        vel_30 - vel_60
+    );
+    assert!(
+        (vel_60 - vel_120).length() < 1e-4,
+        "Kecepatan 60 FPS vs 120 FPS harus identik! Diff: {:?}",
+        vel_60 - vel_120
+    );
+    assert!(
+        (pos_30 - pos_60).length() < 1e-4,
+        "Posisi 30 FPS vs 60 FPS harus identik! Diff: {:?}",
+        pos_30 - pos_60
+    );
+    assert!(
+        (pos_60 - pos_120).length() < 1e-4,
+        "Posisi 60 FPS vs 120 FPS harus identik! Diff: {:?}",
+        pos_60 - pos_120
+    );
+}
+
+#[test]
+fn test_pathological_stall_bounded_catchup() {
+    use omnisia::physics::PhysicsRuntime;
+
+    let mut runtime = PhysicsRuntime::default();
+    let voxels = vec![(IVec3::ZERO, VoxelBlock::new(MaterialId::STONE))];
+    let agg = DetachedAggregate::from_world_voxels(1, &voxels).unwrap();
+    runtime.spawn_from_detached_aggregate(agg);
+
+    // Simulasikan frame drop parah (lag 1.0 detik dalam satu frame render)
+    let ticks = runtime.update(1.0);
+
+    // Harus dibatasi maksimum 5 ticks per frame (Amendment 2 guardrail)
+    assert_eq!(
+        ticks, 5,
+        "Catch-up harus dibatasi tepat max_substeps_per_frame = 5!"
+    );
+    // Akumulator harus di-reset ke 0 untuk mencegah spiral of death
+    assert_eq!(runtime.accumulator, 0.0);
+}

@@ -175,12 +175,7 @@ impl World {
     }
 
     /// Update per frame: mengelola streaming radius, integrasi hasil worker, eviksi, upload GPU, dan pending structural checks
-    pub fn update(
-        &mut self,
-        camera_world_pos: Vec3,
-        _dt: f32,
-        mut renderer: Option<&mut Renderer>,
-    ) {
+    pub fn update(&mut self, camera_world_pos: Vec3, dt: f32, mut renderer: Option<&mut Renderer>) {
         // 1. Integrasi hasil worker dari scheduler
         self.scheduler.update(&mut self.store, &self.materials);
 
@@ -189,6 +184,9 @@ impl World {
         for agg in newly_detached {
             self.physics.spawn_from_detached_aggregate(agg);
         }
+
+        // 3. Perbarui simulasi fisika DynamicBody (fixed-timestep 30 Hz)
+        self.physics.update(dt);
 
         // 3. Masukkan mesh baru yang siap dari scheduler ke upload_queue
         for (coord, mesh) in self.scheduler.ready_meshes.drain(..) {
