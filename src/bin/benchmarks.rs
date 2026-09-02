@@ -697,6 +697,163 @@ fn main() {
         );
     }
 
+    // ========================================================================
+    // BENCHMARK 26: Player Update in Populated DynamicBody Scene (8C.2 & 8C.4)
+    // ========================================================================
+    {
+        use omnisia::player::PlayerController;
+        use omnisia::structure::aggregate::DetachedAggregate;
+        use omnisia::world::World;
+
+        let mut world = World::with_seed(WorldSeed(42));
+        let mut chunk = Chunk::new(IVec3::ZERO);
+        for vx in 0..32 {
+            for vz in 0..32 {
+                chunk.set_voxel(vx, 0, vz, VoxelBlock::new(MaterialId::STONE));
+            }
+        }
+        world.store.insert(chunk);
+
+        // Spawn 50 dynamic bodies in the vicinity
+        for i in 0..50 {
+            let voxels = vec![(
+                IVec3::new((i % 16) * 2, 2 + (i / 16), 4),
+                VoxelBlock::new(MaterialId::STONE),
+            )];
+            let agg = DetachedAggregate::from_world_voxels(100 + i as u64, &voxels).unwrap();
+            world.physics.spawn_from_detached_aggregate(agg);
+        }
+
+        let mut player = PlayerController::new(Vec3::new(4.0, 0.5, 4.0));
+        let iterations = 10_000;
+        let start = Instant::now();
+
+        for _ in 0..iterations {
+            world.update_player(&mut player, 1.0 / 30.0, 0.0);
+            std::hint::black_box(&player.state);
+        }
+
+        let elapsed = start.elapsed();
+        let us_per_tick = elapsed.as_micros() as f64 / iterations as f64;
+        println!(
+            "[BENCHMARK 26] Player Update with 50 DynamicBodies: {:.3} µs/tick ({:.1} ticks/sec)",
+            us_per_tick,
+            1_000_000.0 / us_per_tick
+        );
+    }
+
+    // ========================================================================
+    // BENCHMARK 27: Structural Mutation Event Dispatch Under Active Simulation (8C.4)
+    // ========================================================================
+    {
+        use omnisia::world::World;
+
+        let mut world = World::with_seed(WorldSeed(42));
+        let mut chunk = Chunk::new(IVec3::ZERO);
+        for vx in 0..16 {
+            for vz in 0..16 {
+                chunk.set_voxel(vx, 0, vz, VoxelBlock::new(MaterialId::STONE));
+            }
+        }
+        world.store.insert(chunk);
+
+        let iterations = 2_000;
+        let start = Instant::now();
+
+        for i in 0..iterations {
+            // Tempatkan lalu hancurkan balok
+            let pos = IVec3::new(5, 1, 5);
+            world.set_voxel_world(pos, VoxelBlock::new(MaterialId::STONE));
+            let detached = world.set_voxel_world(pos, VoxelBlock::AIR);
+            std::hint::black_box(detached);
+            std::hint::black_box(i);
+        }
+
+        let elapsed = start.elapsed();
+        let us_per_mutation = elapsed.as_micros() as f64 / (iterations * 2) as f64;
+        println!(
+            "[BENCHMARK 27] Structural Mutation Event Dispatch: {:.3} µs/mutation ({:.1} mutations/sec)",
+            us_per_mutation,
+            1_000_000.0 / us_per_mutation
+        );
+    }
+
+    // ========================================================================
+    // BENCHMARK 28: Settled DynamicBody Two-Phase Reintegration (8C.6)
+    // ========================================================================
+    {
+        use omnisia::structure::aggregate::DetachedAggregate;
+        use omnisia::world::World;
+
+        let mut world = World::with_seed(WorldSeed(42));
+        let chunk = Chunk::new(IVec3::ZERO);
+        world.store.insert(chunk);
+
+        let iterations = 10_000;
+        let start = Instant::now();
+
+        for i in 0..iterations {
+            let voxels = vec![(IVec3::new(4, 5, 4), VoxelBlock::new(MaterialId::STONE))];
+            let agg = DetachedAggregate::from_world_voxels(1000 + i as u64, &voxels).unwrap();
+            let body_id = world.physics.spawn_from_detached_aggregate(agg);
+            world.physics.get_body_mut(body_id).unwrap().state =
+                omnisia::physics::DynamicBodyState::Settled;
+
+            let res = world
+                .physics
+                .process_settled_reintegration(&mut world.store);
+            std::hint::black_box(res);
+            // Bersihkan kembali untuk iterasi berikutnya
+            world
+                .store
+                .set_voxel_world(IVec3::new(4, 5, 4), VoxelBlock::AIR);
+        }
+
+        let elapsed = start.elapsed();
+        let us_per_reintegration = elapsed.as_micros() as f64 / iterations as f64;
+        println!(
+            "[BENCHMARK 28] Two-Phase Reintegration Commit: {:.3} µs/op ({:.1} ops/sec)",
+            us_per_reintegration,
+            1_000_000.0 / us_per_reintegration
+        );
+    }
+
+    // ========================================================================
+    // BENCHMARK 29: World Ownership Audit Routine (8C.5)
+    // ========================================================================
+    {
+        use omnisia::world::World;
+
+        let mut world = World::with_seed(WorldSeed(42));
+        for cx in 0..3 {
+            for cz in 0..3 {
+                let mut chunk = Chunk::new(IVec3::new(cx, 0, cz));
+                for vx in 0..32 {
+                    for vz in 0..32 {
+                        chunk.set_voxel(vx, 0, vz, VoxelBlock::new(MaterialId::STONE));
+                    }
+                }
+                world.store.insert(chunk);
+            }
+        }
+
+        let iterations = 5_000;
+        let start = Instant::now();
+
+        for _ in 0..iterations {
+            let report = world.audit_world_ownership();
+            std::hint::black_box(report);
+        }
+
+        let elapsed = start.elapsed();
+        let us_per_audit = elapsed.as_micros() as f64 / iterations as f64;
+        println!(
+            "[BENCHMARK 29] World Ownership Audit: {:.3} µs/audit ({:.1} audits/sec)",
+            us_per_audit,
+            1_000_000.0 / us_per_audit
+        );
+    }
+
     println!("============================================================");
     println!("             BENCHMARK SUITE COMPLETE                       ");
     println!("============================================================");
