@@ -246,4 +246,87 @@ impl PlayerController {
         }
         false
     }
+
+    /// Menjalankan satu langkah simulasi fisika kinematik berwaktu tetap (30 Hz substep).
+    pub fn step_simulation(
+        &mut self,
+        fixed_dt: f32,
+        store: &crate::streaming::store::ChunkStore,
+        camera_yaw_deg: f32,
+    ) {
+        // 1. Evaluasi transisi jongkok dan clearance
+        self.update_crouch_state(store);
+
+        // 2. Evaluasi status sprinting
+        self.update_movement_states();
+
+        // 3. Eksekusi lompat jika ada permintaan dan sedang grounded
+        self.try_execute_jump();
+
+        // 4. Hitung niat gerak horizontal di bidang XZ
+        let move_intent = self.compute_horizontal_intent(camera_yaw_deg);
+        let target_speed = self.current_target_speed();
+
+        self.state.velocity.x = move_intent.x * target_speed;
+        self.state.velocity.z = move_intent.z * target_speed;
+
+        // 5. Integrasi gravitasi kinematik jika di udara (airborne)
+        if !self.state.grounded {
+            self.state.velocity.y += self.config.gravity * fixed_dt;
+        }
+
+        // 6. Integrasi posisi
+        self.state.position += self.state.velocity * fixed_dt;
+
+        // 7. Evaluasi tumpuan tanah (Ground Detection)
+        let ground = super::collision::check_ground_support(
+            self.state.position,
+            self.config.capsule_radius,
+            self.config.ground_contact_epsilon,
+            store,
+        );
+
+        if ground.grounded && self.state.velocity.y <= 0.0 {
+            self.state.grounded = true;
+            self.state.ground_normal = ground.ground_normal;
+            self.state.ground_distance = ground.ground_distance;
+            self.state.velocity.y = 0.0;
+            if let Some(surf_y) = ground.ground_y_surface {
+                self.state.position.y = surf_y;
+            }
+        } else {
+            self.state.grounded = false;
+            self.state.ground_distance = ground.ground_distance;
+        }
+    }
+
+    /// Memperbarui simulasi pemain dengan akumulator fixed-timestep 30 Hz (8B.7).
+    ///
+    /// INVARIANTS:
+    /// - Simulasi selalu dieksekusi dengan langkah fixed_timestep (1/30 detik).
+    /// - Deterministik dan frame-rate independent di bawah cadence normal (30, 60, 120 FPS).
+    /// - Memiliki batas kompensasi substep per frame (bounded catch-up) untuk mencegah spiral of death.
+    pub fn update_fixed_time(
+        &mut self,
+        delta_seconds: f32,
+        store: &crate::streaming::store::ChunkStore,
+        camera_yaw_deg: f32,
+    ) {
+        let clamped_dt = delta_seconds.min(self.config.max_dt_clamp);
+        self.time_accumulator += clamped_dt;
+
+        let fixed_dt = self.config.fixed_timestep;
+        let mut substeps = 0;
+
+        while self.time_accumulator >= fixed_dt && substeps < self.config.max_substeps_per_frame {
+            self.step_simulation(fixed_dt, store, camera_yaw_deg);
+            self.time_accumulator -= fixed_dt;
+            substeps += 1;
+        }
+
+        // Bounded catch-up: cegah akumulasi tak berbatas jika frame stall ekstrim
+        if self.time_accumulator >= fixed_dt {
+            self.time_accumulator = 0.0;
+        }
+    }
 }

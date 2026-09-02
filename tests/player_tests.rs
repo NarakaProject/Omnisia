@@ -683,3 +683,109 @@ fn test_jump_holding_space_no_repeated_jumps() {
         "Setelah dilepas dan ditekan kembali, lompat harus berhasil!"
     );
 }
+
+// ============================================================================
+// 8B.7 PLAYER GRAVITY & FIXED TIMESTEP SIMULATION LOOP
+// ============================================================================
+
+#[test]
+fn test_player_gravity_airborne_acceleration() {
+    use omnisia::player::PlayerController;
+    use omnisia::streaming::store::ChunkStore;
+
+    let store = ChunkStore::new();
+    let spawn_pos = Vec3::new(0.0, 50.0, 0.0);
+    let mut controller = PlayerController::new(spawn_pos);
+    controller.state.grounded = false;
+
+    // Simulasikan 30 ticks (tepat 1.0 detik) jatuh bebas
+    for _ in 0..30 {
+        controller.step_simulation(1.0 / 30.0, &store, 0.0);
+    }
+
+    // Kecepatan vertikal setelah 1 detik: v = g * t = -9.81 * 1.0 = -9.81 m/s
+    assert!(
+        (controller.state.velocity.y - (-9.81)).abs() < 1e-4,
+        "Kecepatan akhir jatuh bebas harus mendekati -9.81 m/s, terukur: {}",
+        controller.state.velocity.y
+    );
+    // Ketinggian harus berkurang secara signifikan dari posisi awal (50.0m)
+    assert!(controller.state.position.y < 50.0);
+    assert!(!controller.state.grounded);
+}
+
+#[test]
+fn test_fixed_timestep_frame_rate_invariance_30_60_120_fps() {
+    use omnisia::player::{PlayerController, PlayerInput};
+    use omnisia::streaming::store::ChunkStore;
+
+    let store = ChunkStore::new();
+    let initial_pos = Vec3::new(0.0, 100.0, 0.0);
+
+    // Setup input konstan: berjalan maju W (yaw = 0 deg -> arah +X)
+    let forward_input = PlayerInput::from_raw(true, false, false, false, false, false, false);
+
+    // 1. Jalankan selama 1.0 detik pada 30 FPS (30 frame, masing-masing dt = 1/30 detik)
+    let mut controller_30fps = PlayerController::new(initial_pos);
+    controller_30fps.set_input(forward_input);
+    for _ in 0..30 {
+        controller_30fps.update_fixed_time(1.0 / 30.0, &store, 0.0);
+    }
+
+    // 2. Jalankan selama 1.0 detik pada 60 FPS (60 frame, masing-masing dt = 1/60 detik)
+    let mut controller_60fps = PlayerController::new(initial_pos);
+    controller_60fps.set_input(forward_input);
+    for _ in 0..60 {
+        controller_60fps.update_fixed_time(1.0 / 60.0, &store, 0.0);
+    }
+
+    // 3. Jalankan selama 1.0 detik pada 120 FPS (120 frame, masing-masing dt = 1/120 detik)
+    let mut controller_120fps = PlayerController::new(initial_pos);
+    controller_120fps.set_input(forward_input);
+    for _ in 0..120 {
+        controller_120fps.update_fixed_time(1.0 / 120.0, &store, 0.0);
+    }
+
+    // INVARIAN KANONIKAL: Ketiga cadence render harus menghasilkan trajektori identik!
+    let dist_30_60 = controller_30fps
+        .state
+        .position
+        .distance(controller_60fps.state.position);
+    let dist_60_120 = controller_60fps
+        .state
+        .position
+        .distance(controller_120fps.state.position);
+
+    assert!(
+        dist_30_60 < 1e-4,
+        "Trajektori 30 FPS vs 60 FPS harus identik! Selisih jarak: {}",
+        dist_30_60
+    );
+    assert!(
+        dist_60_120 < 1e-4,
+        "Trajektori 60 FPS vs 120 FPS harus identik! Selisih jarak: {}",
+        dist_60_120
+    );
+
+    // Kecepatan linier juga harus identik
+    assert!((controller_30fps.state.velocity.x - controller_60fps.state.velocity.x).abs() < 1e-4);
+    assert!((controller_30fps.state.velocity.y - controller_60fps.state.velocity.y).abs() < 1e-4);
+}
+
+#[test]
+fn test_pathological_frame_stall_bounded_catchup() {
+    use omnisia::player::PlayerController;
+    use omnisia::streaming::store::ChunkStore;
+
+    let store = ChunkStore::new();
+    let mut controller = PlayerController::new(Vec3::ZERO);
+
+    // Kirim stall besar 2.0 detik (seperti saat garbage collection atau window resize)
+    controller.update_fixed_time(2.0, &store, 0.0);
+
+    // INVARIAN KANONIKAL: Akumulator harus dibuang / tidak boleh memicu spiral of death
+    assert!(
+        controller.time_accumulator < controller.config.fixed_timestep,
+        "Akumulator harus di-clamp dan tidak boleh menumpuk substep tak terhingga!"
+    );
+}
