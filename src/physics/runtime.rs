@@ -186,4 +186,70 @@ impl PhysicsRuntime {
     pub fn total_dynamic_voxels(&self) -> usize {
         self.bodies.values().map(|b| b.voxel_count()).sum()
     }
+
+    /// Fase 2: COMMIT Reintegration (Amendment 7)
+    /// Menulis seluruh voxel secara atomik ke ChunkStore, menandai MESH_DIRTY & SAVE_DIRTY,
+    /// dan menghapus DynamicBody dari runtime dinamis.
+    pub fn commit_reintegration(
+        &mut self,
+        plan: super::reintegrate::ReintegrationPlan,
+        store: &mut crate::streaming::store::ChunkStore,
+    ) {
+        use crate::chunk::dirty_flags;
+
+        // 1. Tulis voxel ke ChunkStore
+        for (pos, block) in plan.voxels {
+            store.set_voxel_world(pos, block);
+        }
+
+        // 2. Tandai chunk yang terdampak kotor
+        for chunk_coord in plan.affected_chunks {
+            store.mark_dirty(
+                &chunk_coord,
+                dirty_flags::MESH_DIRTY | dirty_flags::SAVE_DIRTY,
+            );
+        }
+
+        // 3. Rilis kepemilikan DynamicBody (sekarang 100% dimiliki secara statis oleh ChunkStore)
+        self.bodies.remove(&plan.body_id);
+        self.total_reintegrated += 1;
+    }
+
+    /// Memproses reintegrasi untuk seluruh badan dinamis yang berstatus Settled.
+    /// Melakukan validasi dua fase (Prepare -> Validate -> Commit).
+    pub fn process_settled_reintegration(
+        &mut self,
+        store: &mut crate::streaming::store::ChunkStore,
+    ) -> Vec<DynamicBodyId> {
+        let settled_ids: Vec<DynamicBodyId> = self
+            .bodies
+            .iter()
+            .filter(|(_, b)| b.state == DynamicBodyState::Settled)
+            .map(|(&id, _)| id)
+            .collect();
+
+        let mut reintegrated = Vec::new();
+
+        for id in settled_ids {
+            let plan_res = {
+                let body = match self.bodies.get(&id) {
+                    Some(b) => b,
+                    None => continue,
+                };
+                body.prepare_reintegration(store)
+            };
+
+            match plan_res {
+                Ok(plan) => {
+                    self.commit_reintegration(plan, store);
+                    reintegrated.push(id);
+                }
+                Err(_err) => {
+                    // Konflik atau chunk belum resident: tunda reintegrasi, DynamicBody tetap otoritatif
+                }
+            }
+        }
+
+        reintegrated
+    }
 }

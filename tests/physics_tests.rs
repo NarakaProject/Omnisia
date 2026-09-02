@@ -613,3 +613,217 @@ fn test_sleep_wake_up_on_velocity_increase() {
     );
     assert_eq!(body.ticks_stationary, 0);
 }
+
+// ============================================================================
+// 8A.8 TWO-PHASE DYNAMIC -> STATIC REINTEGRATION & FULL LIFECYCLE
+// ============================================================================
+
+#[test]
+fn test_reintegration_two_phase_success() {
+    use omnisia::chunk::{dirty_flags, Chunk};
+    use omnisia::physics::PhysicsRuntime;
+    use omnisia::streaming::store::ChunkStore;
+
+    let mut store = ChunkStore::new();
+    store.insert(Chunk::new(IVec3::ZERO));
+    store.set_voxel_world(IVec3::new(10, 0, 10), VoxelBlock::new(MaterialId::STONE));
+
+    let mut runtime = PhysicsRuntime::default();
+    // Badan dinamis tepat di atas tanah (y=1)
+    let voxels = vec![(IVec3::new(10, 1, 10), VoxelBlock::new(MaterialId::DIRT))];
+    let agg = DetachedAggregate::from_world_voxels(1, &voxels).unwrap();
+    let body_id = runtime.spawn_from_detached_aggregate(agg);
+
+    // Tandai body sebagai Settled
+    runtime
+        .get_body_mut(body_id)
+        .unwrap()
+        .set_state(DynamicBodyState::Settled);
+
+    // Proses reintegrasi dua fase
+    let reintegrated = runtime.process_settled_reintegration(&mut store);
+
+    assert_eq!(reintegrated, vec![body_id]);
+    assert_eq!(runtime.body_count(), 0);
+    assert_eq!(runtime.total_reintegrated, 1);
+
+    // Voxel sekarang dimiliki secara statis oleh ChunkStore
+    let block = store.get_voxel_world(IVec3::new(10, 1, 10));
+    assert_eq!(block.material(), MaterialId::DIRT);
+
+    // Chunk ditandai dirty untuk remeshing dan penyimpanan disk
+    let chunk = store.get(&IVec3::ZERO).unwrap();
+    assert!(chunk.is_dirty(dirty_flags::MESH_DIRTY));
+    assert!(chunk.is_dirty(dirty_flags::SAVE_DIRTY));
+}
+
+#[test]
+fn test_reintegration_rejected_on_destination_conflict() {
+    use omnisia::chunk::Chunk;
+    use omnisia::physics::{PhysicsRuntime, ReintegrationError};
+    use omnisia::streaming::store::ChunkStore;
+
+    let mut store = ChunkStore::new();
+    store.insert(Chunk::new(IVec3::ZERO));
+
+    // Tempat tujuan (10, 1, 10) SUDAH TERISI oleh balok batu solid
+    store.set_voxel_world(IVec3::new(10, 1, 10), VoxelBlock::new(MaterialId::STONE));
+
+    let mut runtime = PhysicsRuntime::default();
+    let voxels = vec![(IVec3::new(10, 1, 10), VoxelBlock::new(MaterialId::DIRT))];
+    let agg = DetachedAggregate::from_world_voxels(1, &voxels).unwrap();
+    let body_id = runtime.spawn_from_detached_aggregate(agg);
+    runtime
+        .get_body_mut(body_id)
+        .unwrap()
+        .set_state(DynamicBodyState::Settled);
+
+    // Uji Prepare phase secara eksplisit (Amendment 7 & 8)
+    let body = runtime.get_body(body_id).unwrap();
+    let plan_res = body.prepare_reintegration(&store);
+
+    match plan_res {
+        Err(ReintegrationError::DestinationOccupied {
+            pos,
+            existing_block,
+        }) => {
+            assert_eq!(pos, IVec3::new(10, 1, 10));
+            assert_eq!(existing_block.material(), MaterialId::STONE);
+        }
+        other => panic!("Diharapkan DestinationOccupied, namun: {:?}", other),
+    }
+
+    // Jalankan process_settled_reintegration: harus menolak commit!
+    let reintegrated = runtime.process_settled_reintegration(&mut store);
+    assert!(reintegrated.is_empty());
+
+    // Buktikan: Balok batu asli TIDAK ditimpa!
+    assert_eq!(
+        store.get_voxel_world(IVec3::new(10, 1, 10)).material(),
+        MaterialId::STONE
+    );
+
+    // Buktikan: DynamicBody tetap ada dan mempertahankan kepemilikan otoritatif
+    assert_eq!(runtime.body_count(), 1);
+    assert_eq!(runtime.total_dynamic_voxels(), 1);
+}
+
+#[test]
+fn test_reintegration_rejected_on_unloaded_destination() {
+    use omnisia::physics::{PhysicsRuntime, ReintegrationError};
+    use omnisia::streaming::store::ChunkStore;
+
+    let mut store = ChunkStore::new();
+    // Chunk tidak dimuat sama sekali
+
+    let mut runtime = PhysicsRuntime::default();
+    let voxels = vec![(IVec3::new(10, 1, 10), VoxelBlock::new(MaterialId::DIRT))];
+    let agg = DetachedAggregate::from_world_voxels(1, &voxels).unwrap();
+    let body_id = runtime.spawn_from_detached_aggregate(agg);
+    runtime
+        .get_body_mut(body_id)
+        .unwrap()
+        .set_state(DynamicBodyState::Settled);
+
+    let body = runtime.get_body(body_id).unwrap();
+    let plan_res = body.prepare_reintegration(&store);
+
+    match plan_res {
+        Err(ReintegrationError::ChunkNotResident(chunk_coord)) => {
+            assert_eq!(chunk_coord, IVec3::ZERO);
+        }
+        other => panic!("Diharapkan ChunkNotResident, namun: {:?}", other),
+    }
+
+    let reintegrated = runtime.process_settled_reintegration(&mut store);
+    assert!(reintegrated.is_empty());
+    assert_eq!(runtime.body_count(), 1);
+}
+
+#[test]
+fn test_end_to_end_full_lifecycle_ownership() {
+    use omnisia::chunk::Chunk;
+    use omnisia::modding::resource_id::ResourceId;
+    use omnisia::world::World;
+    use omnisia::worldgen::seed::WorldSeed;
+
+    let mut world = World::with_seed(WorldSeed(12345));
+    world.store.insert(Chunk::new(IVec3::ZERO));
+
+    let stone_id = world
+        .materials
+        .resolve_material_id(&ResourceId::core("stone").unwrap())
+        .unwrap();
+    let wood_id = world
+        .materials
+        .resolve_material_id(&ResourceId::core("wood_oak").unwrap())
+        .unwrap();
+
+    // 1. TAHAP STATIS: Buat fondasi tanah dan tiang anchor di (10, y, 10)
+    // Lantai solid di y=0..2
+    for y in 0..=2 {
+        world
+            .store
+            .set_voxel_world(IVec3::new(10, y, 10), VoxelBlock::new(stone_id));
+    }
+    // Tiang penghubung di y=3..5
+    for y in 3..=5 {
+        world
+            .store
+            .set_voxel_world(IVec3::new(10, y, 10), VoxelBlock::new(stone_id));
+    }
+    // Balok kayu di puncak tiang (y=6)
+    world
+        .store
+        .set_voxel_world(IVec3::new(10, 6, 10), VoxelBlock::new(wood_id));
+
+    // Verifikasi kepemilikan awal statis 100%
+    assert!(!world.store.get_voxel_world(IVec3::new(10, 6, 10)).is_air());
+    assert_eq!(world.physics.body_count(), 0);
+    assert_eq!(world.physics.total_dynamic_voxels(), 0);
+
+    // 2. TAHAP PEMUTUSAN STRUKTURAL: Hancurkan batu di y=5
+    let detached = world.set_voxel_world(IVec3::new(10, 5, 10), VoxelBlock::AIR);
+    assert_eq!(detached.len(), 1);
+
+    // Buktikan kepemilikan beralih atomik ke dinamis:
+    // ChunkStore y=6 sekarang AIR (tidak ada double ownership)
+    assert!(world.store.get_voxel_world(IVec3::new(10, 6, 10)).is_air());
+    // DynamicBody memegang 100% kepemilikan
+    assert_eq!(world.physics.body_count(), 1);
+    assert_eq!(world.physics.total_dynamic_voxels(), 1);
+
+    let body_id = *world.physics.bodies.keys().next().unwrap();
+    let initial_y = world.physics.get_body(body_id).unwrap().position.y;
+    assert_eq!(initial_y, 3.0); // 6 * 0.5m = 3.0m
+
+    // 3. TAHAP JATUH & TABRAKAN (FALLING & SWEPT COLLISION):
+    // Balok kayu y=6 akan jatuh ke lantai batu di y=4 (karena y=5 dihancurkan, tapi y=4 tetap ada)
+    // Lantai teratas adalah y=4 (tinggi meter 2.0m..2.5m).
+    // Balok kayu harus bertumpu tepat di y=5 (posisi meter = 2.5m).
+    // Jalankan beberapa tick sampai menyentuh tanah dan settled (>= 20 ticks)
+    for _ in 0..25 {
+        world.update(Vec3::ZERO, 1.0 / 30.0, None);
+    }
+
+    // 4. TAHAP REINTEGRASI OTOMATIS:
+    // Setelah settled di atas lantai y=4, World::update otomatis mereintegrasikannya ke ChunkStore!
+    assert_eq!(
+        world.physics.body_count(),
+        0,
+        "DynamicBody harus sudah direintegrasi ke dunia statis!"
+    );
+    assert_eq!(world.physics.total_reintegrated, 1);
+
+    // 5. TAHAP VERIFIKASI AKHIR KEPEMILIKAN STATIS:
+    // Balok kayu sekarang kembali berstatus statis di ChunkStore tepat di posisi istirahatnya (10, 5, 10)
+    let rest_block = world.store.get_voxel_world(IVec3::new(10, 5, 10));
+    assert_eq!(
+        rest_block.material(),
+        wood_id,
+        "Material kayu harus kekal 100% pada posisi akhir istirahat!"
+    );
+
+    // Total voxel statis dan dinamis kekal sempurna sepanjang seluruh siklus hidup!
+    assert_eq!(world.physics.total_dynamic_voxels(), 0);
+}

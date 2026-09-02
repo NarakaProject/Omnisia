@@ -188,7 +188,10 @@ impl World {
         // 3. Perbarui simulasi fisika DynamicBody (fixed-timestep 30 Hz dengan deteksi tabrakan)
         self.physics.update(dt, &self.store);
 
-        // 3. Masukkan mesh baru yang siap dari scheduler ke upload_queue
+        // 4. Reintegrasi dua fase untuk badan dinamis yang telah Settled (Amendment 7 & 8)
+        let _ = self.physics.process_settled_reintegration(&mut self.store);
+
+        // 5. Masukkan mesh baru yang siap dari scheduler ke upload_queue
         for (coord, mesh) in self.scheduler.ready_meshes.drain(..) {
             // Hindari duplikasi jika koordinat sama sudah ada di antrean
             self.upload_queue.retain(|(c, _)| *c != coord);
