@@ -142,3 +142,115 @@ fn test_player_state_defaults() {
     assert_eq!(state.speed(), 0.0);
     assert_eq!(state.horizontal_speed(), 0.0);
 }
+
+// ============================================================================
+// 8B.2 GROUND DETECTION & SURFACE SUPPORT
+// ============================================================================
+
+#[test]
+fn test_ground_detection_standing_on_solid_ground() {
+    use glam::IVec3;
+    use omnisia::chunk::Chunk;
+    use omnisia::material::MaterialId;
+    use omnisia::player::check_ground_support;
+    use omnisia::streaming::store::ChunkStore;
+    use omnisia::voxel::VoxelBlock;
+
+    let mut store = ChunkStore::new();
+    let mut chunk = Chunk::new(IVec3::ZERO);
+    // Letakkan balok solid di (10, 2, 10) -> permukaan atas y = (2 + 1) * 0.5 = 1.5m
+    chunk.set_voxel(10, 2, 10, VoxelBlock::new(MaterialId::STONE));
+    store.insert(chunk);
+
+    // Pemain berdiri tepat di permukaan y = 1.5m
+    let feet_pos = Vec3::new(5.25, 1.50, 5.25);
+    let result = check_ground_support(feet_pos, 0.30, 0.05, &store);
+
+    assert!(
+        result.grounded,
+        "Pemain harus terdeteksi grounded di atas balok solid!"
+    );
+    assert_eq!(result.ground_normal, Vec3::Y);
+    assert!((result.ground_distance - 0.0).abs() < 1e-5);
+    assert_eq!(result.support_voxel, Some(IVec3::new(10, 2, 10)));
+    assert_eq!(result.ground_y_surface, Some(1.5));
+
+    // Berdiri sedikit di atas lantai (toleransi 0.03m <= epsilon 0.05m)
+    let feet_pos_slight_gap = Vec3::new(5.25, 1.53, 5.25);
+    let result_gap = check_ground_support(feet_pos_slight_gap, 0.30, 0.05, &store);
+    assert!(result_gap.grounded);
+    assert!((result_gap.ground_distance - 0.03).abs() < 1e-4);
+}
+
+#[test]
+fn test_ground_detection_airborne_even_if_velocity_is_zero() {
+    use glam::IVec3;
+    use omnisia::chunk::Chunk;
+    use omnisia::material::MaterialId;
+    use omnisia::player::check_ground_support;
+    use omnisia::streaming::store::ChunkStore;
+    use omnisia::voxel::VoxelBlock;
+
+    let mut store = ChunkStore::new();
+    let mut chunk = Chunk::new(IVec3::ZERO);
+    // Lantai di y = 0 -> permukaan y = 0.5m
+    chunk.set_voxel(10, 0, 10, VoxelBlock::new(MaterialId::STONE));
+    store.insert(chunk);
+
+    // Pemain berada di udara y = 5.0m (4.5m di atas tanah)
+    // Section 6: Grounded BUKAN velocity.y == 0!
+    let feet_airborne = Vec3::new(5.25, 5.0, 5.25);
+    let result = check_ground_support(feet_airborne, 0.30, 0.05, &store);
+
+    assert!(
+        !result.grounded,
+        "Pemain di udara bebas tidak boleh dianggap grounded meskipun kecepatan vertikal nol!"
+    );
+    assert_eq!(result.support_voxel, None);
+}
+
+#[test]
+fn test_ground_detection_chunk_boundary_and_negative_coordinates() {
+    use glam::IVec3;
+    use omnisia::chunk::Chunk;
+    use omnisia::material::MaterialId;
+    use omnisia::player::check_ground_support;
+    use omnisia::streaming::store::ChunkStore;
+    use omnisia::voxel::VoxelBlock;
+
+    let mut store = ChunkStore::new();
+    // Chunk negatif (-1, 0, -1)
+    let mut neg_chunk = Chunk::new(IVec3::new(-1, 0, -1));
+    // Voxel lokal 31, 2, 31 => koordinat dunia: -1 * 32 + 31 = -1
+    // Permukaan atas y = (2 + 1) * 0.5 = 1.5m
+    neg_chunk.set_voxel(31, 2, 31, VoxelBlock::new(MaterialId::STONE));
+    store.insert(neg_chunk);
+
+    // Posisi telapak kaki di koordinat negatif: x = -0.25m (voxel x = -1), z = -0.25m, y = 1.50m
+    let feet_neg = Vec3::new(-0.25, 1.50, -0.25);
+    let result = check_ground_support(feet_neg, 0.30, 0.05, &store);
+
+    assert!(
+        result.grounded,
+        "Ground detection harus bekerja presisi di koordinat negatif!"
+    );
+    assert_eq!(result.support_voxel, Some(IVec3::new(-1, 2, -1)));
+    assert_eq!(result.ground_y_surface, Some(1.5));
+}
+
+#[test]
+fn test_ground_detection_unloaded_chunk_is_not_falsely_grounded() {
+    use omnisia::player::check_ground_support;
+    use omnisia::streaming::store::ChunkStore;
+
+    // ChunkStore kosong (semua chunk unloaded / unknown)
+    let store = ChunkStore::new();
+    let feet_pos = Vec3::new(10.0, 2.0, 10.0);
+    let result = check_ground_support(feet_pos, 0.30, 0.05, &store);
+
+    // Unknown chunk tidak boleh dipalsukan menjadi tumpuan solid
+    assert!(
+        !result.grounded,
+        "Chunk yang belum dimuat tidak boleh menghasilkan status grounded!"
+    );
+}
