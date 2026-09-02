@@ -1303,3 +1303,166 @@ fn test_8c5_streaming_unload_does_not_evict_or_corrupt_active_dynamic_body() {
     assert_eq!(body.voxel_count(), 1);
     assert_eq!(body.state, omnisia::physics::DynamicBodyState::Active);
 }
+
+// ============================================================================
+// PHASE 8C.6: PERSISTENCE / REINTEGRATION INTEGRATION TESTS
+// ============================================================================
+
+#[test]
+fn test_8c6_reintegration_marks_affected_and_boundary_neighbor_chunks_dirty() {
+    use omnisia::chunk::dirty_flags;
+    use omnisia::structure::aggregate::DetachedAggregate;
+
+    let mut world = World::with_seed(WorldSeed(123));
+
+    // Chunk (0,0,0) di mana voxel akan mendarat
+    let mut chunk_main = Chunk::new(IVec3::ZERO);
+    chunk_main.dirty_flags = 0;
+    world.store.insert(chunk_main);
+
+    // Chunk tetangga di (-1, 0, 0)
+    let mut chunk_neighbor = Chunk::new(IVec3::new(-1, 0, 0));
+    chunk_neighbor.dirty_flags = 0;
+    world.store.insert(chunk_neighbor);
+
+    // Dynamic body tepat di perbatasan x = 0 (local_x = 0)
+    let voxels = vec![(IVec3::new(0, 5, 5), VoxelBlock::new(MaterialId::STONE))];
+    let agg = DetachedAggregate::from_world_voxels(15, &voxels).unwrap();
+    let body_id = world.physics.spawn_from_detached_aggregate(agg);
+    let body_mut = world.physics.get_body_mut(body_id).unwrap();
+    body_mut.state = omnisia::physics::DynamicBodyState::Settled;
+
+    // Jalankan proses reintegrasi
+    let reintegrated = world
+        .physics
+        .process_settled_reintegration(&mut world.store);
+    assert_eq!(reintegrated.len(), 1);
+    assert_eq!(reintegrated[0], body_id);
+
+    // INVARIAN 8C.6 & Section 29:
+    // 1. Chunk utama memiliki VOXEL_DIRTY, MESH_DIRTY, dan SAVE_DIRTY
+    let main_c = world.store.get(&IVec3::ZERO).unwrap();
+    assert!(main_c.dirty_flags & dirty_flags::VOXEL_DIRTY != 0);
+    assert!(main_c.dirty_flags & dirty_flags::MESH_DIRTY != 0);
+    assert!(main_c.dirty_flags & dirty_flags::SAVE_DIRTY != 0);
+
+    // 2. Chunk tetangga pada perbatasan x = 0 dipropagasi dengan MESH_DIRTY
+    let neighbor_c = world.store.get(&IVec3::new(-1, 0, 0)).unwrap();
+    assert!(
+        neighbor_c.dirty_flags & dirty_flags::MESH_DIRTY != 0,
+        "Chunk tetangga harus ditandai MESH_DIRTY karena mutasi berada di batas x = 0!"
+    );
+}
+
+#[test]
+fn test_8c6_reintegration_failure_injection_unloaded_chunk() {
+    use omnisia::structure::aggregate::DetachedAggregate;
+
+    let mut world = World::with_seed(WorldSeed(123));
+    // Jangan muat chunk (2, 2, 2)
+
+    let voxels = vec![(IVec3::new(64, 64, 64), VoxelBlock::new(MaterialId::STONE))];
+    let agg = DetachedAggregate::from_world_voxels(16, &voxels).unwrap();
+    let body_id = world.physics.spawn_from_detached_aggregate(agg);
+    let body_mut = world.physics.get_body_mut(body_id).unwrap();
+    body_mut.state = omnisia::physics::DynamicBodyState::Settled;
+
+    let initial_voxels = world.physics.total_dynamic_voxels();
+
+    // Reintegrasi harus ditolak
+    let reintegrated = world
+        .physics
+        .process_settled_reintegration(&mut world.store);
+    assert!(
+        reintegrated.is_empty(),
+        "Reintegrasi ke chunk belum termuat harus ditolak!"
+    );
+
+    // INVARIAN 8C.6 & Failure Injection C:
+    // Badan dinamis tidak boleh dihapus, 0 voxel hilang
+    assert!(world.physics.contains_body(body_id));
+    assert_eq!(world.physics.total_dynamic_voxels(), initial_voxels);
+}
+
+#[test]
+fn test_8c6_reintegration_failure_injection_occupied_destination() {
+    use omnisia::structure::aggregate::DetachedAggregate;
+
+    let mut world = World::with_seed(WorldSeed(123));
+
+    let mut chunk = Chunk::new(IVec3::ZERO);
+    // Isi koordinat (5, 5, 5) dengan batu statis
+    chunk.set_voxel(5, 5, 5, VoxelBlock::new(MaterialId::STONE));
+    world.store.insert(chunk);
+
+    // Badan dinamis yang mencoba reintegrasi ke lokasi yang sama (5, 5, 5)
+    let voxels = vec![(IVec3::new(5, 5, 5), VoxelBlock::new(MaterialId::OAK_WOOD))];
+    let agg = DetachedAggregate::from_world_voxels(17, &voxels).unwrap();
+    let body_id = world.physics.spawn_from_detached_aggregate(agg);
+    let body_mut = world.physics.get_body_mut(body_id).unwrap();
+    body_mut.state = omnisia::physics::DynamicBodyState::Settled;
+
+    // Reintegrasi harus ditolak karena lokasi telah terisi
+    let reintegrated = world
+        .physics
+        .process_settled_reintegration(&mut world.store);
+    assert!(
+        reintegrated.is_empty(),
+        "Reintegrasi ke lokasi yang telah terisi harus ditolak!"
+    );
+
+    // INVARIAN 8C.6 & Failure Injection C:
+    // 1. Badan dinamis tetap ada
+    assert!(world.physics.contains_body(body_id));
+    // 2. Voxel statis asli tidak tertimpa
+    let existing = world.store.get_voxel_world(IVec3::new(5, 5, 5));
+    assert_eq!(existing.material, MaterialId::STONE);
+}
+
+#[test]
+fn test_8c6_save_load_roundtrip_preserves_reintegrated_aggregates_and_palette() {
+    use omnisia::storage::{MemoryCompressedRegionStore, RegionStore};
+    use omnisia::structure::aggregate::DetachedAggregate;
+
+    let mut world = World::with_seed(WorldSeed(123));
+
+    let chunk = Chunk::new(IVec3::ZERO);
+    world.store.insert(chunk);
+
+    // Buat badan dinamis dengan material berbeda
+    let voxels = vec![
+        (IVec3::new(2, 2, 2), VoxelBlock::new(MaterialId::OAK_WOOD)),
+        (
+            IVec3::new(2, 3, 2),
+            VoxelBlock::new(MaterialId::METAL_FRAME),
+        ),
+    ];
+    let agg = DetachedAggregate::from_world_voxels(18, &voxels).unwrap();
+    let body_id = world.physics.spawn_from_detached_aggregate(agg);
+    let body_mut = world.physics.get_body_mut(body_id).unwrap();
+    body_mut.state = omnisia::physics::DynamicBodyState::Settled;
+
+    // Reintegrasikan ke ChunkStore
+    let reintegrated = world
+        .physics
+        .process_settled_reintegration(&mut world.store);
+    assert_eq!(reintegrated.len(), 1);
+
+    // Simpan chunk ke storage dengan palette material
+    let storage = MemoryCompressedRegionStore::new();
+    let chunk_ref = world.store.get(&IVec3::ZERO).unwrap();
+    storage.save_chunk(chunk_ref, &world.materials).unwrap();
+
+    // Muat kembali chunk dari storage ke chunk baru dengan palette material
+    let loaded_chunk = storage
+        .load_chunk(IVec3::ZERO, &world.materials)
+        .unwrap()
+        .unwrap();
+
+    // INVARIAN 8C.6 & Section 28:
+    // Voxel yang direintegrasi tersimpan dan termuat kembali dengan integritas material 100%
+    let v1 = loaded_chunk.get_voxel(2, 2, 2);
+    let v2 = loaded_chunk.get_voxel(2, 3, 2);
+    assert_eq!(v1.material, MaterialId::OAK_WOOD);
+    assert_eq!(v2.material, MaterialId::METAL_FRAME);
+}

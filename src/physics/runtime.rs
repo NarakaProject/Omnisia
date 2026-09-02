@@ -1,3 +1,4 @@
+use glam::IVec3;
 use std::collections::BTreeMap;
 
 use super::body::{DynamicBody, DynamicBodyId, DynamicBodyState};
@@ -232,16 +233,51 @@ impl PhysicsRuntime {
     ) {
         use crate::chunk::dirty_flags;
 
-        // 1. Tulis voxel ke ChunkStore
-        for (pos, block) in plan.voxels {
+        // 1. Tulis voxel ke ChunkStore dan propagasikan dirty flag ke tetangga perbatasan (Section 29)
+        for &(pos, block) in &plan.voxels {
             store.set_voxel_world(pos, block);
+
+            let (chunk_coord, local) = crate::coord::world_voxel_to_chunk_and_local(pos);
+            if local.x == 0 {
+                store.mark_dirty(
+                    &(chunk_coord + IVec3::new(-1, 0, 0)),
+                    dirty_flags::MESH_DIRTY,
+                );
+            } else if local.x == 31 {
+                store.mark_dirty(
+                    &(chunk_coord + IVec3::new(1, 0, 0)),
+                    dirty_flags::MESH_DIRTY,
+                );
+            }
+            if local.y == 0 {
+                store.mark_dirty(
+                    &(chunk_coord + IVec3::new(0, -1, 0)),
+                    dirty_flags::MESH_DIRTY,
+                );
+            } else if local.y == 31 {
+                store.mark_dirty(
+                    &(chunk_coord + IVec3::new(0, 1, 0)),
+                    dirty_flags::MESH_DIRTY,
+                );
+            }
+            if local.z == 0 {
+                store.mark_dirty(
+                    &(chunk_coord + IVec3::new(0, 0, -1)),
+                    dirty_flags::MESH_DIRTY,
+                );
+            } else if local.z == 31 {
+                store.mark_dirty(
+                    &(chunk_coord + IVec3::new(0, 0, 1)),
+                    dirty_flags::MESH_DIRTY,
+                );
+            }
         }
 
-        // 2. Tandai chunk yang terdampak kotor
+        // 2. Tandai seluruh chunk penerima kotor untuk voxel, mesh, dan persistence
         for chunk_coord in plan.affected_chunks {
             store.mark_dirty(
                 &chunk_coord,
-                dirty_flags::MESH_DIRTY | dirty_flags::SAVE_DIRTY,
+                dirty_flags::VOXEL_DIRTY | dirty_flags::MESH_DIRTY | dirty_flags::SAVE_DIRTY,
             );
         }
 
