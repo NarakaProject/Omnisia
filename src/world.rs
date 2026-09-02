@@ -220,6 +220,9 @@ impl World {
                     break;
                 }
             }
+        } else {
+            // Dalam mode headless / tanpa renderer GPU aktif, kosongkan antrean upload agar tidak terjadi akumulasi memori tak terpakai
+            self.upload_queue.clear();
         }
         self.last_uploads_count = uploaded_count;
 
@@ -245,7 +248,9 @@ impl World {
                         );
                         let dist_sq = camera_world_pos.distance_squared(chunk_center);
 
-                        let priority = if dx.abs() <= 1 && dz.abs() <= 1 {
+                        let priority = if dx.abs() <= self.simulation_radius
+                            && dz.abs() <= self.simulation_radius
+                        {
                             JobPriority::High
                         } else {
                             JobPriority::Normal

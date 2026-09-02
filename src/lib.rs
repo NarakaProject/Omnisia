@@ -6,6 +6,7 @@ pub mod material;
 pub mod mesh;
 pub mod modding;
 pub mod renderer;
+pub mod scale;
 pub mod storage;
 pub mod streaming;
 pub mod structure;

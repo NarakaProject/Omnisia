@@ -3,7 +3,7 @@ use std::time::Instant;
 
 use glam::IVec3;
 use omnisia::camera::Camera;
-use omnisia::coord::{world_pos_to_world_voxel, CHUNK_SIZE};
+use omnisia::coord::{world_pos_to_world_voxel, world_voxel_to_chunk_and_local, CHUNK_SIZE};
 use omnisia::modding::runtime::ContentRuntime;
 use omnisia::renderer::{LightUniform, Renderer};
 use omnisia::world::World;
@@ -129,9 +129,23 @@ impl ApplicationHandler for AppState {
                                 metrics.frame_time_ms = frame_ms;
                                 metrics.fps = fps;
 
+                                let (chunk_coord, local_voxel) =
+                                    world_voxel_to_chunk_and_local(camera_voxel);
                                 let mem = self.world.store.memory_usage(0);
+
                                 let title = format!(
-                                    "Omnisia [Phase 6] | FPS: {:.1} ({:.2}ms) | CPU Resident: {} | GPU: {} | Vis: {}/{} | Culled: {} | Indices: {} | Uploads: +{}/backlog:{} | Mem: {:.1}MB",
+                                    "Omnisia [Phase 7] | Pos: ({:.1}, {:.1}, {:.1})m | Chunk: ({}, {}, {}) | Vox: ({}, {}, {}) | Speed: {:.0}m/s [{}] | FPS: {:.1} ({:.2}ms) | CPU: {} | GPU: {} | Vis: {}/{} | Culled: {} | Struct[Evt:{}, Pend:{}, Agg:{}] | Mem: {:.1}MB",
+                                    self.camera.position.x,
+                                    self.camera.position.y,
+                                    self.camera.position.z,
+                                    chunk_coord.x,
+                                    chunk_coord.y,
+                                    chunk_coord.z,
+                                    local_voxel.x,
+                                    local_voxel.y,
+                                    local_voxel.z,
+                                    self.camera.speed,
+                                    self.camera.active_preset.name(),
                                     fps,
                                     frame_ms,
                                     metrics.cpu_resident_chunks,
@@ -139,12 +153,32 @@ impl ApplicationHandler for AppState {
                                     metrics.frustum_visible_chunks,
                                     metrics.render_eligible_chunks,
                                     metrics.frustum_culled_chunks,
-                                    metrics.submitted_indices,
-                                    metrics.uploads_this_frame,
-                                    metrics.upload_backlog,
+                                    self.world.structure.total_events_processed,
+                                    self.world.structure.pending_checks.len(),
+                                    self.world.structure.total_detached_extracted,
                                     mem.total_megabytes(),
                                 );
                                 window.set_title(&title);
+
+                                // Catat telemetri ke log setiap 2 detik
+                                if self.fps_timer.elapsed().as_secs_f32() >= 2.0 {
+                                    log::info!(
+                                        "[TELEMETRY] Pos: ({:.1}m, {:.1}m, {:.1}m) | Chunk: ({}, {}, {}) | Vox: ({}, {}, {}) | Speed: {:.0}m/s [{}] | FPS: {:.1} | CPU: {} | GPU: {} | Vis: {}/{} | Culled: {} | Struct: [Evt:{}, Pend:{}, Agg:{}] | Mem: {:.1}MB",
+                                        self.camera.position.x, self.camera.position.y, self.camera.position.z,
+                                        chunk_coord.x, chunk_coord.y, chunk_coord.z,
+                                        local_voxel.x, local_voxel.y, local_voxel.z,
+                                        self.camera.speed, self.camera.active_preset.name(),
+                                        fps,
+                                        metrics.cpu_resident_chunks, metrics.gpu_mesh_count,
+                                        metrics.frustum_visible_chunks, metrics.render_eligible_chunks,
+                                        metrics.frustum_culled_chunks,
+                                        self.world.structure.total_events_processed,
+                                        self.world.structure.pending_checks.len(),
+                                        self.world.structure.total_detached_extracted,
+                                        mem.total_megabytes(),
+                                    );
+                                }
+
                                 self.frame_count = 0;
                                 self.fps_timer = Instant::now();
                             }
@@ -224,7 +258,71 @@ fn main() {
         return;
     }
 
-    log::info!("Memulai engine Omnisia (Phase 6 - Vegetation & Performance)...");
+    if args.iter().any(|arg| arg == "--scale-validation") {
+        use omnisia::scale::{HumanScaleReference, ScaleRuler, VegetationDimensionReport};
+
+        println!("============================================================");
+        println!("         OMNISIA REAL-WORLD SCALE VALIDATION REPORT         ");
+        println!("============================================================");
+        println!("Physical Metric Scale Constants:");
+        println!("  1 Voxel = 0.50 meters");
+        println!("  1 Chunk = 32 voxels = 16.0 meters (Volume: 32³ = 32,768 voxels)");
+        println!("\nScale Ruler Standard Intervals:");
+        for interval in omnisia::scale::SCALE_RULER_INTERVALS_METERS {
+            let vx = ScaleRuler::meters_to_voxels(interval);
+            println!("  Ruler {:>5.1}m = {:>5.0} voxels", interval, vx);
+        }
+        let human = HumanScaleReference::default();
+        println!("\nHuman Scale Reference:");
+        println!(
+            "  Height: {:.2}m ({:.1} voxels)",
+            human.height_meters, human.height_voxels
+        );
+        println!(
+            "  Shoulder Width: {:.2}m ({:.1} voxels)",
+            human.width_meters, human.width_voxels
+        );
+
+        println!("\nVegetation Dimension Verification (Actual vs Ecological Range):");
+        let oak = VegetationDimensionReport::measure_oak(5, 2);
+        println!(
+            "  [{}] Trunk: {:.1}m, Canopy R: {:.1}m, Total H: {:.1}m (Expected: {}) -> Valid: {}",
+            oak.name,
+            oak.trunk_height_meters,
+            oak.canopy_radius_meters,
+            oak.total_height_meters,
+            oak.expected_range_meters,
+            oak.is_ecologically_valid
+        );
+        let pine = VegetationDimensionReport::measure_pine(7, 2);
+        println!(
+            "  [{}] Trunk: {:.1}m, Canopy R: {:.1}m, Total H: {:.1}m (Expected: {}) -> Valid: {}",
+            pine.name,
+            pine.trunk_height_meters,
+            pine.canopy_radius_meters,
+            pine.total_height_meters,
+            pine.expected_range_meters,
+            pine.is_ecologically_valid
+        );
+
+        println!("\nDeveloper Free-Flight Movement Presets:");
+        println!("  [1] Slow:    5.0 m/s  (Micro/Voxel inspection)");
+        println!("  [2] Normal: 20.0 m/s  (Running/exploration default)");
+        println!("  [3] Fast:  100.0 m/s  (Cross-biome traversal)");
+        println!("  [4] Extreme: 500.0 m/s (Large-scale streaming stress-test)");
+
+        println!("\nStreaming Semantics Audit:");
+        println!("  render_radius:     5 chunks (80.0m horizontal radius)");
+        println!("  simulation_radius: 3 chunks (48.0m active simulation / high priority)");
+        println!("  retain_radius:     7 chunks (112.0m memory retention buffer)");
+        println!("  vertical_radius:   dy in [-2..=2] (5 vertical layers = 80.0m column)");
+        println!("============================================================");
+        return;
+    }
+
+    log::info!("Memulai engine Omnisia (Phase 7 - Structural Connectivity & Scale Validation)...");
+    log::info!("{}", omnisia::scale::ScaleRuler::ruler_summary());
+    log::info!("Movement Presets: [1] 5 m/s, [2] 20 m/s, [3] 100 m/s, [4] 500 m/s");
 
     let event_loop = EventLoop::new().expect("Gagal menginisialisasi EventLoop winit");
     event_loop.set_control_flow(ControlFlow::Poll);

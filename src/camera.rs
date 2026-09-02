@@ -113,7 +113,41 @@ impl Frustum {
     }
 }
 
-/// Kamera 3D FPS / Orbital terisolasi dari renderer
+/// Preset kecepatan kamera developer dalam satuan fisik meter per detik (m/s)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CameraSpeedPreset {
+    /// 5 m/s - Inspeksi detail mikro/voxel
+    Slow,
+    /// 20 m/s - Penjelajahan standar lereng bukit dan hutan
+    #[default]
+    Normal,
+    /// 100 m/s - Penjelajahan cepat antar-bioma
+    Fast,
+    /// 500 m/s - Stress-test streaming skala besar (kilometer)
+    Extreme,
+}
+
+impl CameraSpeedPreset {
+    pub fn speed_m_s(&self) -> f32 {
+        match self {
+            Self::Slow => 5.0,
+            Self::Normal => 20.0,
+            Self::Fast => 100.0,
+            Self::Extreme => 500.0,
+        }
+    }
+
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::Slow => "Slow (5 m/s)",
+            Self::Normal => "Normal (20 m/s)",
+            Self::Fast => "Fast (100 m/s)",
+            Self::Extreme => "Extreme (500 m/s)",
+        }
+    }
+}
+
+/// Kamera 3D FPS / Orbital terisolasi dari renderer (Developer Free-Flight Camera)
 pub struct Camera {
     pub position: Vec3,
     pub yaw_deg: f32,
@@ -123,6 +157,7 @@ pub struct Camera {
     pub z_far: f32,
 
     pub speed: f32,
+    pub active_preset: CameraSpeedPreset,
     pub sensitivity: f32,
 
     // Input state tracking
@@ -137,6 +172,7 @@ pub struct Camera {
 
 impl Camera {
     pub fn new(position: Vec3, yaw_deg: f32, pitch_deg: f32) -> Self {
+        let default_preset = CameraSpeedPreset::Normal;
         Self {
             position,
             yaw_deg,
@@ -144,7 +180,8 @@ impl Camera {
             fov_y_rad: 60.0f32.to_radians(),
             z_near: 0.1,
             z_far: 1000.0,
-            speed: 18.0,       // 18 m/s
+            speed: default_preset.speed_m_s(), // 20.0 m/s
+            active_preset: default_preset,
             sensitivity: 0.15, // Derajat per piksel gerak mouse
             is_forward: false,
             is_backward: false,
@@ -154,6 +191,12 @@ impl Camera {
             is_down: false,
             is_mouse_dragging: false,
         }
+    }
+
+    /// Menetapkan preset kecepatan developer dalam meter/detik
+    pub fn set_speed_preset(&mut self, preset: CameraSpeedPreset) {
+        self.active_preset = preset;
+        self.speed = preset.speed_m_s();
     }
 
     /// Menghitung vektor arah hadap (forward vector)
@@ -225,6 +268,30 @@ impl Camera {
                 }
                 KeyCode::ShiftLeft | KeyCode::ShiftRight => {
                     self.is_down = pressed;
+                    true
+                }
+                KeyCode::Digit1 => {
+                    if pressed {
+                        self.set_speed_preset(CameraSpeedPreset::Slow);
+                    }
+                    true
+                }
+                KeyCode::Digit2 => {
+                    if pressed {
+                        self.set_speed_preset(CameraSpeedPreset::Normal);
+                    }
+                    true
+                }
+                KeyCode::Digit3 => {
+                    if pressed {
+                        self.set_speed_preset(CameraSpeedPreset::Fast);
+                    }
+                    true
+                }
+                KeyCode::Digit4 => {
+                    if pressed {
+                        self.set_speed_preset(CameraSpeedPreset::Extreme);
+                    }
                     true
                 }
                 _ => false,

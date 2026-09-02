@@ -143,9 +143,11 @@ impl ChunkScheduler {
         self.queue.push(req);
     }
 
-    /// Membatalkan request dalam antrean yang berada di luar batas radius tertentu
+    /// Membatalkan request dalam antrean yang berada di luar batas radius tertentu dan membersihkan antrean
     pub fn cancel_outside_radius(&mut self, center_world: Vec3, retain_radius_chunks: i32) {
         let max_dist_sq = (retain_radius_chunks as f32 * CHUNK_WORLD_SIZE).powi(2);
+        let mut has_cancelled = false;
+
         for req in self.queue.iter() {
             let chunk_center = Vec3::new(
                 (req.coord.x as f32 + 0.5) * CHUNK_WORLD_SIZE,
@@ -154,7 +156,23 @@ impl ChunkScheduler {
             );
             if center_world.distance_squared(chunk_center) > max_dist_sq {
                 req.cancel();
+                has_cancelled = true;
             }
+        }
+
+        // Jika ada job yang dibatalkan, langsung pangkas heap dan hash map agar tidak membebani worker
+        if has_cancelled {
+            let active: Vec<ChunkJobRequest> =
+                self.queue.drain().filter(|r| !r.is_cancelled()).collect();
+            self.queued_jobs.retain(|(coord, _), _| {
+                let chunk_center = Vec3::new(
+                    (coord.x as f32 + 0.5) * CHUNK_WORLD_SIZE,
+                    (coord.y as f32 + 0.5) * CHUNK_WORLD_SIZE,
+                    (coord.z as f32 + 0.5) * CHUNK_WORLD_SIZE,
+                );
+                center_world.distance_squared(chunk_center) <= max_dist_sq
+            });
+            self.queue = active.into();
         }
     }
 

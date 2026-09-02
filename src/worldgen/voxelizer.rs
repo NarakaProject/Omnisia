@@ -122,8 +122,7 @@ impl ChunkVoxelizer {
                 caves,
                 materials,
             );
-            chunk.recount_non_air();
-            chunk.dirty_flags = dirty_flags::ALL;
+            chunk.dirty_flags = dirty_flags::MESH_DIRTY | dirty_flags::LIGHTING_DIRTY;
             return chunk;
         }
 
@@ -224,7 +223,7 @@ impl ChunkVoxelizer {
         vegetation.stamp_vegetation_to_chunk(chunk_coord, &mut chunk, profiler, caves, materials);
         chunk.recount_non_air();
 
-        chunk.dirty_flags = dirty_flags::ALL;
+        chunk.dirty_flags = dirty_flags::MESH_DIRTY | dirty_flags::LIGHTING_DIRTY;
         chunk
     }
 }
