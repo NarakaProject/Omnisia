@@ -435,6 +435,91 @@ fn main() {
         );
     }
 
+    // 20. Benchmark Event-Driven Localized Structural Connectivity (Gate A)
+    {
+        use omnisia::streaming::store::ChunkStore;
+        use omnisia::structure::anchor::AnchorPolicy;
+        use omnisia::structure::connectivity::{check_structural_connectivity, ConnectivityConfig};
+
+        let anchor_policy = AnchorPolicy::from_registries(&registry, &resolved.blocks);
+        let mut store = ChunkStore::new();
+        let mut chunk = Chunk::new(IVec3::ZERO);
+        let stone_id = registry
+            .resolve_material_id(&omnisia::modding::resource_id::ResourceId::core("stone").unwrap())
+            .unwrap();
+        let wood_id = registry
+            .resolve_material_id(
+                &omnisia::modding::resource_id::ResourceId::core("wood_oak").unwrap(),
+            )
+            .unwrap();
+
+        // Fondasi stone anchor di dasar (y = 0)
+        for z in 0..32 {
+            for x in 0..32 {
+                chunk.set_voxel(x, 0, z, VoxelBlock::new(stone_id));
+            }
+        }
+        // Tiang kayu 15 voxel ke atas
+        for y in 1..=15 {
+            chunk.set_voxel(16, y, 16, VoxelBlock::new(wood_id));
+        }
+        store.insert(chunk);
+
+        let config = ConnectivityConfig::default();
+        let iterations = 10_000;
+        let mut inspected_total = 0;
+        let start = Instant::now();
+        for _ in 0..iterations {
+            let _ = check_structural_connectivity(
+                IVec3::new(16, 15, 16),
+                &store,
+                &anchor_policy,
+                &config,
+                Some(&mut inspected_total),
+            );
+        }
+        let elapsed = start.elapsed();
+        let us_per_check = elapsed.as_micros() as f64 / iterations as f64;
+        let avg_voxels = inspected_total as f64 / iterations as f64;
+        println!(
+            "[BENCHMARK 20] Localized Structural Connectivity: {:.2} µs/check (Avg voxels scanned: {:.1}, Total: {:?})",
+            us_per_check, avg_voxels, elapsed
+        );
+    }
+
+    // 21. Benchmark Detached Aggregate Extraction Throughput (Gate A)
+    {
+        use omnisia::structure::aggregate::DetachedAggregate;
+
+        let wood_id = registry
+            .resolve_material_id(
+                &omnisia::modding::resource_id::ResourceId::core("wood_oak").unwrap(),
+            )
+            .unwrap();
+        // Buat komponen 125 voxel (5x5x5)
+        let mut voxels = Vec::new();
+        for z in 0..5 {
+            for y in 0..5 {
+                for x in 0..5 {
+                    voxels.push((IVec3::new(x, y, z), VoxelBlock::new(wood_id)));
+                }
+            }
+        }
+
+        let iterations = 20_000;
+        let start = Instant::now();
+        for i in 0..iterations {
+            let agg = DetachedAggregate::from_world_voxels(i as u64, &voxels).unwrap();
+            std::hint::black_box(agg);
+        }
+        let elapsed = start.elapsed();
+        let us_per_extraction = elapsed.as_micros() as f64 / iterations as f64;
+        println!(
+            "[BENCHMARK 21] Detached Aggregate Extraction (125 voxels): {:.2} µs/op ({:.1} extractions/sec)",
+            us_per_extraction, 1_000_000.0 / us_per_extraction
+        );
+    }
+
     println!("============================================================");
     println!("             BENCHMARK SUITE COMPLETE                       ");
     println!("============================================================");

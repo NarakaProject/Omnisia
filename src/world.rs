@@ -15,12 +15,16 @@ use crate::streaming::jobs::{JobPriority, JobType};
 use crate::streaming::memory::MemoryBudget;
 use crate::streaming::scheduler::ChunkScheduler;
 use crate::streaming::store::ChunkStore;
+use crate::structure::aggregate::DetachedAggregate;
+use crate::structure::anchor::AnchorPolicy;
+use crate::structure::events::{StructuralEvent, StructuralMutationType};
+use crate::structure::manager::StructuralSystem;
 use crate::voxel::VoxelBlock;
 use crate::worldgen::config::WorldGenConfig;
 use crate::worldgen::pipeline::ProceduralWorldGenerator;
 use crate::worldgen::seed::WorldSeed;
 
-/// Representasi dunia runtime sparse dengan streaming asynchronous, chunk scheduling, dan memory management
+/// Representasi dunia runtime sparse dengan streaming asynchronous, chunk scheduling, memory management, dan structural connectivity
 pub struct World {
     pub store: ChunkStore,
     pub materials: MaterialRegistry,
@@ -29,6 +33,7 @@ pub struct World {
     pub generator: Arc<dyn ChunkGenerator>,
     pub scheduler: ChunkScheduler,
     pub budget: MemoryBudget,
+    pub structure: StructuralSystem,
 
     pub simulation_radius: i32,
     pub render_radius: i32,
@@ -80,6 +85,9 @@ impl World {
             .unwrap_or(4)
             .clamp(2, 8);
 
+        let anchor_policy = AnchorPolicy::from_registries(&materials, &blocks);
+        let structure = StructuralSystem::new(anchor_policy);
+
         Self {
             store: ChunkStore::new(),
             materials,
@@ -88,6 +96,7 @@ impl World {
             generator: Arc::new(ProceduralWorldGenerator::new(config)),
             scheduler: ChunkScheduler::new(num_cpus),
             budget: MemoryBudget::default(),
+            structure,
             simulation_radius: 3,
             render_radius: 5,
             retain_radius: 7,
@@ -107,9 +116,37 @@ impl World {
         self.store.get_mut(coord)
     }
 
-    /// Menetapkan voxel pada koordinat global dunia (world voxel)
-    pub fn set_voxel_world(&mut self, world_voxel: IVec3, block: VoxelBlock) {
+    /// Menetapkan voxel pada koordinat global dunia (world voxel), memancarkan StructuralEvent,
+    /// dan mengekstrak gugusan yang terlepas secara langsung.
+    ///
+    /// GUARDRAIL 1: StructuralEvent terintegrasi langsung di production pipeline.
+    pub fn set_voxel_world(
+        &mut self,
+        world_voxel: IVec3,
+        block: VoxelBlock,
+    ) -> Vec<DetachedAggregate> {
+        let previous_block = self.store.get_voxel_world(world_voxel);
+        if previous_block == block {
+            return Vec::new();
+        }
+
+        // Mutasi otoritatif pada ChunkStore
         self.store.set_voxel_world(world_voxel, block);
+
+        // Pancarkan StructuralEvent
+        let mutation = if previous_block.is_air() && !block.is_air() {
+            StructuralMutationType::VoxelPlaced { new_block: block }
+        } else if !previous_block.is_air() && block.is_air() {
+            StructuralMutationType::VoxelRemoved { previous_block }
+        } else {
+            StructuralMutationType::VoxelReplaced {
+                previous_block,
+                new_block: block,
+            }
+        };
+
+        let event = StructuralEvent::new(world_voxel, mutation);
+        self.structure.process_event(&event, &mut self.store)
     }
 
     /// Mengambil voxel pada koordinat global dunia
@@ -127,7 +164,7 @@ impl World {
         self.scheduler.pending_jobs_count()
     }
 
-    /// Update per frame: mengelola streaming radius, integrasi hasil worker, eviksi, dan upload GPU
+    /// Update per frame: mengelola streaming radius, integrasi hasil worker, eviksi, upload GPU, dan pending structural checks
     pub fn update(
         &mut self,
         camera_world_pos: Vec3,
@@ -137,14 +174,17 @@ impl World {
         // 1. Integrasi hasil worker dari scheduler
         self.scheduler.update(&mut self.store, &self.materials);
 
-        // 2. Masukkan mesh baru yang siap dari scheduler ke upload_queue
+        // 2. Proses antrean pending structural connectivity checks saat chunk baru telah selesai dimuat
+        let _ = self.structure.process_pending_checks(&mut self.store);
+
+        // 3. Masukkan mesh baru yang siap dari scheduler ke upload_queue
         for (coord, mesh) in self.scheduler.ready_meshes.drain(..) {
             // Hindari duplikasi jika koordinat sama sudah ada di antrean
             self.upload_queue.retain(|(c, _)| *c != coord);
             self.upload_queue.push_back((coord, mesh));
         }
 
-        // 3. Prioritaskan upload berdasarkan jarak terdekat ke kamera
+        // 4. Prioritaskan upload berdasarkan jarak terdekat ke kamera
         if self.upload_queue.len() > 1 {
             let cam_pos = camera_world_pos;
             let mut items: Vec<(IVec3, MeshData)> = self.upload_queue.drain(..).collect();
@@ -166,7 +206,7 @@ impl World {
             self.upload_queue = items.into();
         }
 
-        // 4. Upload dengan batas kuota per frame (GPU Upload Budget)
+        // 5. Upload dengan batas kuota per frame (GPU Upload Budget)
         let mut uploaded_count = 0;
         if let Some(ref mut rend) = renderer {
             while uploaded_count < self.max_uploads_per_frame {
@@ -183,7 +223,7 @@ impl World {
         }
         self.last_uploads_count = uploaded_count;
 
-        // 5. Streaming Radius: Permintaan chunk di sekitar posisi kamera
+        // 6. Streaming Radius: Permintaan chunk di sekitar posisi kamera
         let camera_voxel = world_pos_to_world_voxel(camera_world_pos);
         let center_chunk = IVec3::new(
             camera_voxel.x.div_euclid(CHUNK_SIZE),
@@ -225,11 +265,11 @@ impl World {
             }
         }
 
-        // 6. Pembatalan kooperatif untuk request yang berada jauh di luar retain radius
+        // 7. Pembatalan kooperatif untuk request yang berada jauh di luar retain radius
         self.scheduler
             .cancel_outside_radius(camera_world_pos, self.retain_radius);
 
-        // 7. Evaluasi Eviksi jika melebihi batas retain radius atau memory budget
+        // 8. Evaluasi Eviksi jika melebihi batas retain radius atau memory budget
         let retain_radius_sq = (self.retain_radius as f32 * CHUNK_WORLD_SIZE).powi(2);
         let mut to_evict_clean = Vec::new();
 
@@ -275,7 +315,7 @@ impl World {
             rend.retain_only(&active_set);
         }
 
-        // 8. Dispatch pending jobs ke Worker Pool
+        // 9. Dispatch pending jobs ke Worker Pool
         self.scheduler.dispatch_pending_jobs(
             &mut self.store,
             &self.materials,

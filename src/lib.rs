@@ -8,6 +8,7 @@ pub mod modding;
 pub mod renderer;
 pub mod storage;
 pub mod streaming;
+pub mod structure;
 pub mod voxel;
 pub mod world;
 pub mod worldgen;

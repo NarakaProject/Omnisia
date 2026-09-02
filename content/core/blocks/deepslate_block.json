@@ -2,7 +2,11 @@
   "id": "core:deepslate_block",
   "material": "core:deepslate",
   "hardness": 6.5,
-  "components": {},
+  "components": {
+    "structural_anchor": {
+      "is_anchor": true
+    }
+  },
   "tags": [
     "natural",
     "solid",
