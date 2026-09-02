@@ -358,3 +358,80 @@ fn test_camera_pitch_does_not_cause_vertical_movement() {
         "Niat gerak horizontal pemain tidak boleh mengandung komponen vertikal!"
     );
 }
+
+// ============================================================================
+// 8B.4 SPRINT MOVEMENT & STATE PRECEDENCE (CROUCHING > SPRINTING)
+// ============================================================================
+
+#[test]
+fn test_sprint_speed_and_activation() {
+    use omnisia::player::{PlayerController, PlayerInput};
+
+    let mut controller = PlayerController::new(Vec3::ZERO);
+
+    // 1. Shift + W -> Sprint aktif (9.0 m/s)
+    controller.set_input(PlayerInput::from_raw(
+        true, false, false, false, true, false, false,
+    ));
+    controller.update_movement_states();
+    assert!(
+        controller.state.sprinting,
+        "Shift + W harus mengaktifkan sprint!"
+    );
+    assert_eq!(controller.current_target_speed(), 9.0);
+
+    // 2. Shift saja tanpa WASD -> TIDAK boleh sprint (Section 13: Shift alone does not move)
+    controller.set_input(PlayerInput::from_raw(
+        false, false, false, false, true, false, false,
+    ));
+    controller.update_movement_states();
+    assert!(
+        !controller.state.sprinting,
+        "Shift tanpa input gerak tidak boleh mengaktifkan sprint!"
+    );
+    assert_eq!(controller.current_target_speed(), 5.0);
+    assert_eq!(controller.compute_horizontal_intent(0.0), Vec3::ZERO);
+}
+
+#[test]
+fn test_crouching_suppresses_sprint_precedence() {
+    use omnisia::player::{PlayerController, PlayerInput};
+
+    let mut controller = PlayerController::new(Vec3::ZERO);
+
+    // Input menekan W + Shift (sprint) + C (crouch)
+    controller.set_input(PlayerInput::from_raw(
+        true, false, false, false, true, true, false,
+    ));
+    // Aktifkan status jongkok
+    controller.state.crouching = true;
+    controller.update_movement_states();
+
+    // INVARIAN KANONIKAL: Crouching > Sprinting!
+    assert!(
+        !controller.state.sprinting,
+        "Status jongkok harus menonaktifkan status sprint!"
+    );
+    assert_eq!(
+        controller.current_target_speed(),
+        2.5,
+        "Kecepatan target saat jongkok harus crouch_speed (2.5 m/s), bukan sprint!"
+    );
+}
+
+#[test]
+fn test_sprint_does_not_alter_capsule_dimensions() {
+    use omnisia::player::{PlayerController, PlayerInput};
+
+    let mut controller = PlayerController::new(Vec3::new(10.0, 5.0, 10.0));
+    controller.set_input(PlayerInput::from_raw(
+        true, false, false, false, true, false, false,
+    ));
+    controller.update_movement_states();
+
+    let capsule = controller.current_capsule();
+    // Sprint tidak boleh mengubah collider
+    assert_eq!(capsule.height, 1.8);
+    assert_eq!(capsule.radius, 0.30);
+    assert_eq!(capsule.base, Vec3::new(10.0, 5.0, 10.0));
+}

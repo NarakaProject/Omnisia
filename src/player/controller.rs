@@ -175,4 +175,17 @@ impl PlayerController {
     pub fn input_has_movement(&self) -> bool {
         (self.input.move_forward.abs() > 0.01) || (self.input.move_right.abs() > 0.01)
     }
+
+    /// Memperbarui state sprinting berdasarkan input dan prioritas (8B.4).
+    ///
+    /// INVARIANTS:
+    /// - Crouching > Sprinting: jika sedang jongkok, sprint otomatis ditekan/dibatalkan.
+    /// - Sprint membutuhkan input pergerakan nyata (Shift saja tidak mengaktifkan sprint).
+    pub fn update_movement_states(&mut self) {
+        if self.state.crouching {
+            self.state.sprinting = false;
+        } else {
+            self.state.sprinting = self.input.sprint && self.input_has_movement();
+        }
+    }
 }
