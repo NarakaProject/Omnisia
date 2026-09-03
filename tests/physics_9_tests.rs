@@ -2,10 +2,10 @@ use glam::{IVec3, Mat3, Quat, Vec3};
 use omnisia::chunk::Chunk;
 use omnisia::material::MaterialId;
 use omnisia::physics::{
-    world_pos_to_cell, Aabb, AabbError, BodyType, BoxShape, BroadphaseError, BroadphasePair,
-    BroadphaseProxy, Capsule, CellCoord, Collider, ColliderId, MassProperties, PhysicsWorld,
-    PhysicsWorldConfig, RigidBody, RigidBodyError, RigidBodyId, Shape, ShapeError,
-    SpatialHashBroadphase, Sphere, StaticTerrainQuery, Transform,
+    collide, world_pos_to_cell, Aabb, AabbError, BodyType, BoxShape, BroadphaseError,
+    BroadphasePair, BroadphaseProxy, Capsule, CellCoord, Collider, ColliderId, Contact,
+    MassProperties, PhysicsWorld, PhysicsWorldConfig, RigidBody, RigidBodyError, RigidBodyId,
+    Shape, ShapeError, SpatialHashBroadphase, Sphere, StaticTerrainQuery, Transform,
 };
 use omnisia::streaming::store::ChunkStore;
 use omnisia::voxel::VoxelBlock;
@@ -1563,4 +1563,607 @@ fn test_9_3_rigid_body_removal_cleans_all_colliders() {
     // Seluruh collider milik body ini harus otomatis terhapus
     assert_eq!(world.collider_count(), 0);
     assert!(world.get_body_aabb(body_id).is_none());
+}
+
+// ============================================================================
+// 7. PHASE 9.4 — CONTACT GENERATION / NARROWPHASE TESTS
+// ============================================================================
+
+fn assert_contact_symmetry(contact_ab: &Option<Contact>, contact_ba: &Option<Contact>) {
+    match (contact_ab, contact_ba) {
+        (None, None) => {}
+        (Some(c_ab), Some(c_ba)) => {
+            assert!(
+                (c_ab.penetration - c_ba.penetration).abs() < 1e-4,
+                "Penetrasi simetris harus sama: {} vs {}",
+                c_ab.penetration,
+                c_ba.penetration
+            );
+            assert!(
+                (c_ab.point - c_ba.point).length() < 1e-4,
+                "Titik kontak simetris harus ekuivalen: {:?} vs {:?}",
+                c_ab.point,
+                c_ba.point
+            );
+            assert!(
+                (c_ab.normal + c_ba.normal).length() < 1e-4,
+                "Normal simetris harus berlawanan arah: {:?} vs {:?}",
+                c_ab.normal,
+                c_ba.normal
+            );
+            assert_eq!(c_ab.collider_a, c_ba.collider_b);
+            assert_eq!(c_ab.collider_b, c_ba.collider_a);
+            assert_eq!(c_ab.body_a, c_ba.body_b);
+            assert_eq!(c_ab.body_b, c_ba.body_a);
+        }
+        _ => panic!(
+            "Ketidakcocokan simetri kueri: AB={:?}, BA={:?}",
+            contact_ab, contact_ba
+        ),
+    }
+}
+
+// --- A. SPHERE ↔ SPHERE ---
+
+#[test]
+fn test_9_4_sphere_sphere_separated() {
+    let col_a = Collider::new(
+        ColliderId(1),
+        RigidBodyId(1),
+        Shape::Sphere(Sphere::new(1.0).unwrap()),
+        Transform::IDENTITY,
+    );
+    let col_b = Collider::new(
+        ColliderId(2),
+        RigidBodyId(2),
+        Shape::Sphere(Sphere::new(1.0).unwrap()),
+        Transform::IDENTITY,
+    );
+
+    let t_a = Transform::from_translation(Vec3::ZERO).unwrap();
+    let t_b = Transform::from_translation(Vec3::new(3.0, 0.0, 0.0)).unwrap();
+
+    let res = collide(&col_a, &t_a, &col_b, &t_b).unwrap();
+    assert!(res.is_none());
+}
+
+#[test]
+fn test_9_4_sphere_sphere_touching_and_penetrating() {
+    let col_a = Collider::new(
+        ColliderId(1),
+        RigidBodyId(1),
+        Shape::Sphere(Sphere::new(1.0).unwrap()),
+        Transform::IDENTITY,
+    );
+    let col_b = Collider::new(
+        ColliderId(2),
+        RigidBodyId(2),
+        Shape::Sphere(Sphere::new(1.0).unwrap()),
+        Transform::IDENTITY,
+    );
+
+    // 1. Touching (jarak = 2.0 = r1 + r2)
+    let t_a = Transform::from_translation(Vec3::ZERO).unwrap();
+    let t_b = Transform::from_translation(Vec3::new(2.0, 0.0, 0.0)).unwrap();
+    let res = collide(&col_a, &t_a, &col_b, &t_b).unwrap().unwrap();
+    assert!(res.penetration < 1e-4);
+    assert_eq!(res.normal, Vec3::X);
+    assert!((res.point - Vec3::new(1.0, 0.0, 0.0)).length() < 1e-4);
+
+    // 2. Penetrating (jarak = 1.5, overlap = 0.5)
+    let t_b_pen = Transform::from_translation(Vec3::new(1.5, 0.0, 0.0)).unwrap();
+    let res_pen = collide(&col_a, &t_a, &col_b, &t_b_pen).unwrap().unwrap();
+    assert!((res_pen.penetration - 0.5).abs() < 1e-4);
+    assert_eq!(res_pen.normal, Vec3::X);
+    assert!((res_pen.point - Vec3::new(0.75, 0.0, 0.0)).length() < 1e-4);
+}
+
+#[test]
+fn test_9_4_sphere_sphere_coincident() {
+    let col_a = Collider::new(
+        ColliderId(1),
+        RigidBodyId(1),
+        Shape::Sphere(Sphere::new(1.0).unwrap()),
+        Transform::IDENTITY,
+    );
+    let col_b = Collider::new(
+        ColliderId(2),
+        RigidBodyId(2),
+        Shape::Sphere(Sphere::new(2.0).unwrap()),
+        Transform::IDENTITY,
+    );
+
+    let t_a = Transform::from_translation(Vec3::new(5.0, 5.0, 5.0)).unwrap();
+    let t_b = Transform::from_translation(Vec3::new(5.0, 5.0, 5.0)).unwrap();
+
+    let res = collide(&col_a, &t_a, &col_b, &t_b).unwrap().unwrap();
+    assert_eq!(res.normal, Vec3::X); // Fallback kanonikal deterministik
+    assert!((res.penetration - 3.0).abs() < 1e-4);
+    assert!((res.point - Vec3::new(5.0, 5.0, 5.0)).length() < 1e-4);
+}
+
+#[test]
+fn test_9_4_sphere_sphere_negative_coords_and_reverse_symmetry() {
+    let col_a = Collider::new(
+        ColliderId(1),
+        RigidBodyId(1),
+        Shape::Sphere(Sphere::new(1.5).unwrap()),
+        Transform::IDENTITY,
+    );
+    let col_b = Collider::new(
+        ColliderId(2),
+        RigidBodyId(2),
+        Shape::Sphere(Sphere::new(1.0).unwrap()),
+        Transform::IDENTITY,
+    );
+
+    let t_a = Transform::from_translation(Vec3::new(-100.0, -50.0, -25.0)).unwrap();
+    let t_b = Transform::from_translation(Vec3::new(-100.0, -48.0, -25.0)).unwrap();
+
+    let c_ab = collide(&col_a, &t_a, &col_b, &t_b).unwrap();
+    let c_ba = collide(&col_b, &t_b, &col_a, &t_a).unwrap();
+
+    assert!(c_ab.is_some());
+    assert_contact_symmetry(&c_ab, &c_ba);
+}
+
+// --- B. SPHERE ↔ BOX ---
+
+#[test]
+fn test_9_4_sphere_box_separated() {
+    let col_s = Collider::new(
+        ColliderId(1),
+        RigidBodyId(1),
+        Shape::Sphere(Sphere::new(1.0).unwrap()),
+        Transform::IDENTITY,
+    );
+    let col_b = Collider::new(
+        ColliderId(2),
+        RigidBodyId(2),
+        Shape::Box(BoxShape::new(Vec3::ONE).unwrap()),
+        Transform::IDENTITY,
+    );
+
+    let t_s = Transform::from_translation(Vec3::new(3.0, 0.0, 0.0)).unwrap();
+    let t_b = Transform::IDENTITY;
+
+    let res = collide(&col_s, &t_s, &col_b, &t_b).unwrap();
+    assert!(res.is_none());
+}
+
+#[test]
+fn test_9_4_sphere_box_face_edge_corner_penetration() {
+    let col_s = Collider::new(
+        ColliderId(1),
+        RigidBodyId(1),
+        Shape::Sphere(Sphere::new(1.0).unwrap()),
+        Transform::IDENTITY,
+    );
+    let col_b = Collider::new(
+        ColliderId(2),
+        RigidBodyId(2),
+        Shape::Box(BoxShape::new(Vec3::ONE).unwrap()),
+        Transform::IDENTITY,
+    );
+    let t_b = Transform::IDENTITY;
+
+    // 1. Muka +X: Bola di x = 1.8 (muka boks di x = 1.0, overlap = 0.2)
+    let t_face = Transform::from_translation(Vec3::new(1.8, 0.0, 0.0)).unwrap();
+    let c_face = collide(&col_s, &t_face, &col_b, &t_b).unwrap().unwrap();
+    assert!((c_face.penetration - 0.2).abs() < 1e-4);
+    assert!((c_face.normal - Vec3::NEG_X).length() < 1e-4); // Sphere -> Box
+
+    // 2. Tepi: Bola mendekati tepi (1, 1, 0)
+    let t_edge = Transform::from_translation(Vec3::new(1.5, 1.5, 0.0)).unwrap();
+    let c_edge = collide(&col_s, &t_edge, &col_b, &t_b).unwrap();
+    assert!(c_edge.is_some());
+
+    // 3. Sudut: Bola mendekati sudut (1, 1, 1)
+    let t_corner = Transform::from_translation(Vec3::new(1.4, 1.4, 1.4)).unwrap();
+    let c_corner = collide(&col_s, &t_corner, &col_b, &t_b).unwrap();
+    assert!(c_corner.is_some());
+}
+
+#[test]
+fn test_9_4_sphere_box_center_inside_determines_face() {
+    let col_s = Collider::new(
+        ColliderId(1),
+        RigidBodyId(1),
+        Shape::Sphere(Sphere::new(1.0).unwrap()),
+        Transform::IDENTITY,
+    );
+    let col_b = Collider::new(
+        ColliderId(2),
+        RigidBodyId(2),
+        Shape::Box(BoxShape::new(Vec3::splat(2.0)).unwrap()),
+        Transform::IDENTITY,
+    );
+
+    // Bola berpusat di (1.5, 0, 0) di dalam boks [-2, 2]^3.
+    // Muka boks terdekat adalah +X pada x = 2.0. Jarak ke muka = 0.5.
+    // Penetrasi total = radius + jarak = 1.0 + 0.5 = 1.5.
+    // Normal Sphere -> Box adalah arah ke dalam boks (memisahkan A ke arah +X berarti normal A->B adalah -X).
+    let t_s = Transform::from_translation(Vec3::new(1.5, 0.0, 0.0)).unwrap();
+    let t_b = Transform::IDENTITY;
+
+    let c = collide(&col_s, &t_s, &col_b, &t_b).unwrap().unwrap();
+    assert!((c.penetration - 1.5).abs() < 1e-4);
+    assert!((c.normal - Vec3::NEG_X).length() < 1e-4);
+}
+
+#[test]
+fn test_9_4_sphere_box_reverse_symmetry_and_rotated() {
+    let col_s = Collider::new(
+        ColliderId(1),
+        RigidBodyId(1),
+        Shape::Sphere(Sphere::new(1.0).unwrap()),
+        Transform::IDENTITY,
+    );
+    let col_b = Collider::new(
+        ColliderId(2),
+        RigidBodyId(2),
+        Shape::Box(BoxShape::new(Vec3::new(2.0, 1.0, 0.5)).unwrap()),
+        Transform::IDENTITY,
+    );
+
+    let t_s = Transform::from_translation(Vec3::new(2.0, 0.0, 0.0)).unwrap();
+    let t_b = Transform::new(
+        Vec3::ZERO,
+        Quat::from_rotation_y(std::f32::consts::FRAC_PI_4),
+    )
+    .unwrap();
+
+    let c_sb = collide(&col_s, &t_s, &col_b, &t_b).unwrap();
+    let c_bs = collide(&col_b, &t_b, &col_s, &t_s).unwrap();
+
+    assert!(c_sb.is_some());
+    assert_contact_symmetry(&c_sb, &c_bs);
+}
+
+// --- C. SPHERE ↔ CAPSULE ---
+
+#[test]
+fn test_9_4_sphere_capsule_endpoint_and_side() {
+    // Kapsul vertikal: r = 0.5, half_height = 2.0 (segmen y = -2.0 s.d. +2.0)
+    let col_c = Collider::new(
+        ColliderId(1),
+        RigidBodyId(1),
+        Shape::Capsule(Capsule::new(0.5, 2.0).unwrap()),
+        Transform::IDENTITY,
+    );
+    let col_s = Collider::new(
+        ColliderId(2),
+        RigidBodyId(2),
+        Shape::Sphere(Sphere::new(0.5).unwrap()),
+        Transform::IDENTITY,
+    );
+    let t_c = Transform::IDENTITY;
+
+    // 1. Kontak samping (silinder): bola di (0.8, 0, 0)
+    let t_s_side = Transform::from_translation(Vec3::new(0.8, 0.0, 0.0)).unwrap();
+    let c_side = collide(&col_s, &t_s_side, &col_c, &t_c).unwrap().unwrap();
+    assert!((c_side.penetration - 0.2).abs() < 1e-4);
+    assert!((c_side.normal - Vec3::NEG_X).length() < 1e-4);
+
+    // 2. Kontak ujung (hemisfer atas di y = 2.0): bola di (0, 2.8, 0)
+    let t_s_top = Transform::from_translation(Vec3::new(0.0, 2.8, 0.0)).unwrap();
+    let c_top = collide(&col_s, &t_s_top, &col_c, &t_c).unwrap().unwrap();
+    assert!((c_top.penetration - 0.2).abs() < 1e-4);
+    assert!((c_top.normal - Vec3::NEG_Y).length() < 1e-4);
+}
+
+#[test]
+fn test_9_4_sphere_capsule_half_height_zero_and_symmetry() {
+    let col_c = Collider::new(
+        ColliderId(1),
+        RigidBodyId(1),
+        Shape::Capsule(Capsule::new(1.0, 0.0).unwrap()),
+        Transform::IDENTITY,
+    );
+    let col_s = Collider::new(
+        ColliderId(2),
+        RigidBodyId(2),
+        Shape::Sphere(Sphere::new(1.0).unwrap()),
+        Transform::IDENTITY,
+    );
+
+    let t_c = Transform::from_translation(Vec3::new(0.0, 1.5, 0.0)).unwrap();
+    let t_s = Transform::IDENTITY;
+
+    let c_cs = collide(&col_c, &t_c, &col_s, &t_s).unwrap();
+    let c_sc = collide(&col_s, &t_s, &col_c, &t_c).unwrap();
+
+    assert!(c_cs.is_some());
+    assert_contact_symmetry(&c_cs, &c_sc);
+}
+
+// --- D. CAPSULE ↔ CAPSULE ---
+
+#[test]
+fn test_9_4_capsule_capsule_parallel_and_crossing() {
+    let cap = Capsule::new(0.5, 1.0).unwrap();
+    let col_a = Collider::new(
+        ColliderId(1),
+        RigidBodyId(1),
+        Shape::Capsule(cap),
+        Transform::IDENTITY,
+    );
+    let col_b = Collider::new(
+        ColliderId(2),
+        RigidBodyId(2),
+        Shape::Capsule(cap),
+        Transform::IDENTITY,
+    );
+
+    // 1. Paralel: Kapsul A di (0, 0, 0), Kapsul B di (0.8, 0, 0). Overlap = 1.0 - 0.8 = 0.2
+    let t_a = Transform::IDENTITY;
+    let t_b = Transform::from_translation(Vec3::new(0.8, 0.0, 0.0)).unwrap();
+
+    let c_par = collide(&col_a, &t_a, &col_b, &t_b).unwrap().unwrap();
+    assert!((c_par.penetration - 0.2).abs() < 1e-4);
+    assert!((c_par.normal - Vec3::X).length() < 1e-4);
+
+    // 2. Menyilang tegak lurus (Crossing): Kapsul B diputar 90 derajat terhadap Z
+    let t_b_cross = Transform::new(
+        Vec3::new(0.0, 0.0, 0.8),
+        Quat::from_rotation_z(std::f32::consts::FRAC_PI_2),
+    )
+    .unwrap();
+    let c_cross = collide(&col_a, &t_a, &col_b, &t_b_cross).unwrap().unwrap();
+    assert!((c_cross.penetration - 0.2).abs() < 1e-4);
+    assert!((c_cross.normal - Vec3::Z).length() < 1e-4);
+}
+
+#[test]
+fn test_9_4_capsule_capsule_coincident_and_symmetry() {
+    let cap = Capsule::new(1.0, 2.0).unwrap();
+    let col_a = Collider::new(
+        ColliderId(1),
+        RigidBodyId(1),
+        Shape::Capsule(cap),
+        Transform::IDENTITY,
+    );
+    let col_b = Collider::new(
+        ColliderId(2),
+        RigidBodyId(2),
+        Shape::Capsule(cap),
+        Transform::IDENTITY,
+    );
+
+    let t = Transform::from_translation(Vec3::new(-10.0, 5.0, 20.0)).unwrap();
+    let c_ab = collide(&col_a, &t, &col_b, &t).unwrap();
+    let c_ba = collide(&col_b, &t, &col_a, &t).unwrap();
+
+    assert!(c_ab.is_some());
+    assert_contact_symmetry(&c_ab, &c_ba);
+}
+
+// --- E. BOX ↔ BOX ---
+
+#[test]
+fn test_9_4_box_box_separated_and_face_face() {
+    let b = BoxShape::new(Vec3::ONE).unwrap();
+    let col_a = Collider::new(
+        ColliderId(1),
+        RigidBodyId(1),
+        Shape::Box(b),
+        Transform::IDENTITY,
+    );
+    let col_b = Collider::new(
+        ColliderId(2),
+        RigidBodyId(2),
+        Shape::Box(b),
+        Transform::IDENTITY,
+    );
+
+    // Terpisah di x = 2.5 (overlap = -0.5)
+    let t_a = Transform::IDENTITY;
+    let t_b_sep = Transform::from_translation(Vec3::new(2.5, 0.0, 0.0)).unwrap();
+    assert!(collide(&col_a, &t_a, &col_b, &t_b_sep).unwrap().is_none());
+
+    // Bertumpukan muka-ke-muka di x = 1.8 (overlap = 0.2)
+    let t_b_face = Transform::from_translation(Vec3::new(1.8, 0.0, 0.0)).unwrap();
+    let c = collide(&col_a, &t_a, &col_b, &t_b_face).unwrap().unwrap();
+    assert!((c.penetration - 0.2).abs() < 1e-4);
+    assert!((c.normal - Vec3::X).length() < 1e-4);
+}
+
+#[test]
+fn test_9_4_box_box_rotated_45_and_symmetry() {
+    let b = BoxShape::new(Vec3::ONE).unwrap();
+    let col_a = Collider::new(
+        ColliderId(1),
+        RigidBodyId(1),
+        Shape::Box(b),
+        Transform::IDENTITY,
+    );
+    let col_b = Collider::new(
+        ColliderId(2),
+        RigidBodyId(2),
+        Shape::Box(b),
+        Transform::IDENTITY,
+    );
+
+    let t_a = Transform::IDENTITY;
+    let t_b = Transform::new(
+        Vec3::new(2.2, 0.0, 0.0),
+        Quat::from_rotation_y(std::f32::consts::FRAC_PI_4),
+    )
+    .unwrap();
+
+    let c_ab = collide(&col_a, &t_a, &col_b, &t_b).unwrap();
+    let c_ba = collide(&col_b, &t_b, &col_a, &t_a).unwrap();
+
+    assert!(c_ab.is_some());
+    assert_contact_symmetry(&c_ab, &c_ba);
+}
+
+// --- F. BOX ↔ CAPSULE (HARDENING SECTION 13) ---
+
+#[test]
+fn test_9_4_box_capsule_outside_and_face() {
+    let col_box = Collider::new(
+        ColliderId(1),
+        RigidBodyId(1),
+        Shape::Box(BoxShape::new(Vec3::ONE).unwrap()),
+        Transform::IDENTITY,
+    );
+    let col_cap = Collider::new(
+        ColliderId(2),
+        RigidBodyId(2),
+        Shape::Capsule(Capsule::new(0.5, 1.0).unwrap()),
+        Transform::IDENTITY,
+    );
+
+    // Kapsul di x = 2.0 (muka boks di 1.0, segmen kapsul di 2.0, radius 0.5 -> jarak segmen ke muka = 1.0 > 0.5 -> terpisah)
+    let t_box = Transform::IDENTITY;
+    let t_cap_sep = Transform::from_translation(Vec3::new(2.0, 0.0, 0.0)).unwrap();
+    assert!(collide(&col_box, &t_box, &col_cap, &t_cap_sep)
+        .unwrap()
+        .is_none());
+
+    // Kapsul di x = 1.3 (jarak segmen ke muka = 0.3, radius 0.5 -> penetrasi = 0.2)
+    let t_cap_pen = Transform::from_translation(Vec3::new(1.3, 0.0, 0.0)).unwrap();
+    let c = collide(&col_box, &t_box, &col_cap, &t_cap_pen)
+        .unwrap()
+        .unwrap();
+    assert!((c.penetration - 0.2).abs() < 1e-4);
+    assert!((c.normal - Vec3::X).length() < 1e-4);
+}
+
+#[test]
+fn test_9_4_box_capsule_deep_penetration_and_inside() {
+    let col_box = Collider::new(
+        ColliderId(1),
+        RigidBodyId(1),
+        Shape::Box(BoxShape::new(Vec3::splat(3.0)).unwrap()),
+        Transform::IDENTITY,
+    );
+    let col_cap = Collider::new(
+        ColliderId(2),
+        RigidBodyId(2),
+        Shape::Capsule(Capsule::new(0.5, 1.0).unwrap()),
+        Transform::IDENTITY,
+    );
+    let t_box = Transform::IDENTITY;
+
+    // Kapsul sepenuhnya berada di dalam boks di x = 2.0 (muka boks di 3.0).
+    // Jarak segmen ke muka +X adalah 3.0 - 2.0 = 1.0.
+    // Penetrasi total harus memperhitungkan kedalaman segmen ke muka + radius kapsul = 1.0 + 0.5 = 1.5!
+    // Ini menguji secara ketat persyaratan hardening Section 13 (BUKAN sekadar penetration = r_cap).
+    let t_cap_deep = Transform::from_translation(Vec3::new(2.0, 0.0, 0.0)).unwrap();
+    let c = collide(&col_box, &t_box, &col_cap, &t_cap_deep)
+        .unwrap()
+        .unwrap();
+    assert!(
+        (c.penetration - 1.5).abs() < 1e-4,
+        "Penetrasi mendalam harus 1.5, didapat: {}",
+        c.penetration
+    );
+    assert!((c.normal - Vec3::X).length() < 1e-4);
+}
+
+#[test]
+fn test_9_4_box_capsule_reverse_symmetry_and_negative_coords() {
+    let col_box = Collider::new(
+        ColliderId(1),
+        RigidBodyId(1),
+        Shape::Box(BoxShape::new(Vec3::ONE).unwrap()),
+        Transform::IDENTITY,
+    );
+    let col_cap = Collider::new(
+        ColliderId(2),
+        RigidBodyId(2),
+        Shape::Capsule(Capsule::new(0.4, 0.8).unwrap()),
+        Transform::IDENTITY,
+    );
+
+    let t_box = Transform::from_translation(Vec3::new(-50.0, -100.0, -200.0)).unwrap();
+    let t_cap = Transform::new(
+        Vec3::new(-48.8, -100.0, -200.0),
+        Quat::from_rotation_z(std::f32::consts::FRAC_PI_4),
+    )
+    .unwrap();
+
+    let c_bc = collide(&col_box, &t_box, &col_cap, &t_cap).unwrap();
+    let c_cb = collide(&col_cap, &t_cap, &col_box, &t_box).unwrap();
+
+    assert!(c_bc.is_some());
+    assert_contact_symmetry(&c_bc, &c_cb);
+}
+
+// --- G. MULTI-COLLIDER INTEGRATION IN PHYSICS WORLD ---
+
+#[test]
+fn test_9_4_physics_world_generate_contacts_multi_collider() {
+    let mut world = PhysicsWorld::default();
+
+    // Badan A di (0, 0, 0) dengan 2 collider bola (Kinematic agar kandidat pair broadphase dihasilkan)
+    let body_a_id = RigidBodyId(10);
+    let body_a = RigidBody::new_kinematic(
+        body_a_id,
+        Vec3::ZERO,
+        Quat::IDENTITY,
+        Vec3::ZERO,
+        Vec3::ZERO,
+    )
+    .unwrap();
+    world.add_rigid_body(body_a, None).unwrap();
+
+    let col_a1 = Collider::new(
+        ColliderId(101),
+        body_a_id,
+        Shape::Sphere(Sphere::new(1.0).unwrap()),
+        Transform::from_translation(Vec3::new(-2.0, 0.0, 0.0)).unwrap(),
+    );
+    let col_a2 = Collider::new(
+        ColliderId(102),
+        body_a_id,
+        Shape::Sphere(Sphere::new(1.0).unwrap()),
+        Transform::from_translation(Vec3::new(2.0, 0.0, 0.0)).unwrap(),
+    );
+    world.add_collider(col_a1).unwrap();
+    world.add_collider(col_a2).unwrap();
+
+    // Badan B di (0, 0, 0) dengan 2 collider bola yang overlap dengan A1 dan A2
+    let body_b_id = RigidBodyId(20);
+    let body_b = RigidBody::new_static(body_b_id, Vec3::ZERO, Quat::IDENTITY).unwrap();
+    world.add_rigid_body(body_b, None).unwrap();
+
+    let col_b1 = Collider::new(
+        ColliderId(201),
+        body_b_id,
+        Shape::Sphere(Sphere::new(1.0).unwrap()),
+        Transform::from_translation(Vec3::new(-2.5, 0.0, 0.0)).unwrap(),
+    );
+    let col_b2 = Collider::new(
+        ColliderId(202),
+        body_b_id,
+        Shape::Sphere(Sphere::new(1.0).unwrap()),
+        Transform::from_translation(Vec3::new(2.5, 0.0, 0.0)).unwrap(),
+    );
+    world.add_collider(col_b1).unwrap();
+    world.add_collider(col_b2).unwrap();
+
+    // Hasilkan kontak dari broadphase pair (body_a, body_b)
+    let contacts = world.generate_contacts().unwrap();
+
+    // Harus menghasilkan tepat 2 kontak (A1 ↔ B1 dan A2 ↔ B2).
+    // A1 dan B2 berjauhan (jarak 4.5 > 2.0), A2 dan B1 berjauhan (jarak 4.5 > 2.0).
+    assert_eq!(contacts.len(), 2);
+
+    let c1 = &contacts[0];
+    let c2 = &contacts[1];
+
+    assert_eq!(c1.body_a, body_a_id);
+    assert_eq!(c1.body_b, body_b_id);
+    assert_eq!(c1.collider_a, ColliderId(101));
+    assert_eq!(c1.collider_b, ColliderId(201));
+    assert!((c1.penetration - 1.5).abs() < 1e-4);
+
+    assert_eq!(c2.body_a, body_a_id);
+    assert_eq!(c2.body_b, body_b_id);
+    assert_eq!(c2.collider_a, ColliderId(102));
+    assert_eq!(c2.collider_b, ColliderId(202));
+    assert!((c2.penetration - 1.5).abs() < 1e-4);
 }

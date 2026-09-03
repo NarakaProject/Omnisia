@@ -6,6 +6,8 @@ use super::broadphase::{
     BodyType, BroadphaseError, BroadphasePair, BroadphaseProxy, RigidBodyId, SpatialHashBroadphase,
 };
 use super::collider::{Collider, ColliderId};
+use super::contact::Contact;
+use super::narrowphase::{collide, NarrowphaseError};
 use super::rigid_body::{MassProperties, RigidBody};
 use super::shape::Shape;
 use super::transform::Transform;
@@ -388,6 +390,63 @@ impl PhysicsWorld {
     #[inline(always)]
     pub fn generate_candidate_pairs(&self) -> Vec<BroadphasePair> {
         self.broadphase.generate_candidate_pairs()
+    }
+
+    /// Menghasilkan kontak geometris narrowphase untuk seluruh pasangan kandidat broadphase.
+    ///
+    /// JEMBATAN MULTI-COLLIDER TRANSAKSIONAL:
+    /// Broadphase Phase 9.1 tetap berindeks `RigidBodyId`.
+    /// Untuk setiap pasangan badan kandidat `(body_a, body_b)` dari broadphase:
+    /// - Mengambil seluruh collider milik `body_a` dan `body_b` dari registri otoritatif.
+    /// - Menghitung transform dunia masing-masing collider: $T_{\text{world}} = T_{\text{body}} \times T_{\text{local}}$.
+    /// - Mengevaluasi `narrowphase::collide(...)` untuk setiap kombinasi produk Cartesian `Collider_A × Collider_B`.
+    /// - Mengumpulkan kontak geometris yang valid dengan urutan deterministik.
+    pub fn generate_contacts(&self) -> Result<Vec<Contact>, NarrowphaseError> {
+        let pairs = self.broadphase.generate_candidate_pairs();
+        let mut contacts = Vec::new();
+
+        for pair in pairs {
+            let body_a = match self.rigid_bodies.get(&pair.body_a) {
+                Some(b) => b,
+                None => continue,
+            };
+            let body_b = match self.rigid_bodies.get(&pair.body_b) {
+                Some(b) => b,
+                None => continue,
+            };
+
+            let transform_body_a = body_a.transform();
+            let transform_body_b = body_b.transform();
+
+            for (_, collider_a) in self
+                .colliders
+                .iter()
+                .filter(|(_, c)| c.rigid_body_id() == pair.body_a)
+            {
+                let transform_world_a =
+                    transform_body_a.mul_transform(collider_a.local_transform());
+
+                for (_, collider_b) in self
+                    .colliders
+                    .iter()
+                    .filter(|(_, c)| c.rigid_body_id() == pair.body_b)
+                {
+                    let transform_world_b =
+                        transform_body_b.mul_transform(collider_b.local_transform());
+
+                    if let Some(contact) = collide(
+                        collider_a,
+                        &transform_world_a,
+                        collider_b,
+                        &transform_world_b,
+                    )? {
+                        contacts.push(contact);
+                    }
+                }
+            }
+        }
+
+        Ok(contacts)
     }
 
     /// Mengosongkan seluruh badan, collider, dan broadphase dari dunia fisika.

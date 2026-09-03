@@ -1369,6 +1369,140 @@ fn main() {
         );
     }
 
+    // ========================================================================
+    // BENCHMARK 41: Narrowphase Pair Collision Evaluation (Phase 9.4)
+    // 5,000 Evaluations (Sphere/Sphere, Sphere/Box, Capsule/Capsule, Box/Box, Box/Capsule)
+    // ========================================================================
+    {
+        use glam::Quat;
+        use omnisia::physics::{
+            collide, BoxShape, Capsule, Collider, ColliderId, RigidBodyId, Shape, Sphere, Transform,
+        };
+
+        let sphere_a = Collider::new(
+            ColliderId(1),
+            RigidBodyId(1),
+            Shape::Sphere(Sphere::new(1.0).unwrap()),
+            Transform::IDENTITY,
+        );
+        let sphere_b = Collider::new(
+            ColliderId(2),
+            RigidBodyId(2),
+            Shape::Sphere(Sphere::new(1.0).unwrap()),
+            Transform::IDENTITY,
+        );
+
+        let box_a = Collider::new(
+            ColliderId(3),
+            RigidBodyId(3),
+            Shape::Box(BoxShape::new(Vec3::ONE).unwrap()),
+            Transform::IDENTITY,
+        );
+        let box_b = Collider::new(
+            ColliderId(4),
+            RigidBodyId(4),
+            Shape::Box(BoxShape::new(Vec3::new(1.5, 0.8, 1.2)).unwrap()),
+            Transform::IDENTITY,
+        );
+
+        let cap_a = Collider::new(
+            ColliderId(5),
+            RigidBodyId(5),
+            Shape::Capsule(Capsule::new(0.5, 1.0).unwrap()),
+            Transform::IDENTITY,
+        );
+        let cap_b = Collider::new(
+            ColliderId(6),
+            RigidBodyId(6),
+            Shape::Capsule(Capsule::new(0.6, 1.2).unwrap()),
+            Transform::IDENTITY,
+        );
+
+        let iterations = 200;
+        let start = Instant::now();
+        let mut total_contacts = 0usize;
+
+        for iter in 0..iterations {
+            let offset = (iter as f32 * 0.001) % 0.5;
+
+            // 1,000 Sphere/Sphere
+            for i in 0..1000 {
+                let dist = 1.0 + (i as f32 * 0.002) + offset;
+                let t_a = Transform::IDENTITY;
+                let t_b = Transform::from_translation(Vec3::new(dist, 0.0, 0.0)).unwrap();
+                if let Ok(Some(_)) = collide(&sphere_a, &t_a, &sphere_b, &t_b) {
+                    total_contacts += 1;
+                }
+            }
+
+            // 1,000 Sphere/Box
+            for i in 0..1000 {
+                let dist = 1.0 + (i as f32 * 0.002) + offset;
+                let t_s = Transform::from_translation(Vec3::new(dist, 0.0, 0.0)).unwrap();
+                let t_b =
+                    Transform::new(Vec3::ZERO, Quat::from_rotation_y(0.1 * i as f32)).unwrap();
+                if let Ok(Some(_)) = collide(&sphere_a, &t_s, &box_a, &t_b) {
+                    total_contacts += 1;
+                }
+            }
+
+            // 1,000 Capsule/Capsule
+            for i in 0..1000 {
+                let dist = 0.5 + (i as f32 * 0.002) + offset;
+                let t_a = Transform::IDENTITY;
+                let t_b = Transform::new(
+                    Vec3::new(dist, 0.0, 0.0),
+                    Quat::from_rotation_z(0.05 * i as f32),
+                )
+                .unwrap();
+                if let Ok(Some(_)) = collide(&cap_a, &t_a, &cap_b, &t_b) {
+                    total_contacts += 1;
+                }
+            }
+
+            // 1,000 Box/Box (SAT 15 axes)
+            for i in 0..1000 {
+                let dist = 1.2 + (i as f32 * 0.002) + offset;
+                let t_a = Transform::IDENTITY;
+                let t_b = Transform::new(
+                    Vec3::new(dist, 0.0, 0.0),
+                    Quat::from_rotation_y(0.02 * i as f32),
+                )
+                .unwrap();
+                if let Ok(Some(_)) = collide(&box_a, &t_a, &box_b, &t_b) {
+                    total_contacts += 1;
+                }
+            }
+
+            // 1,000 Box/Capsule
+            for i in 0..1000 {
+                let dist = 0.8 + (i as f32 * 0.002) + offset;
+                let t_b = Transform::IDENTITY;
+                let t_c = Transform::new(
+                    Vec3::new(dist, 0.0, 0.0),
+                    Quat::from_rotation_x(0.03 * i as f32),
+                )
+                .unwrap();
+                if let Ok(Some(_)) = collide(&box_a, &t_b, &cap_a, &t_c) {
+                    total_contacts += 1;
+                }
+            }
+        }
+
+        std::hint::black_box(total_contacts);
+        let elapsed = start.elapsed();
+        let total_evals = (iterations * 5000) as f64;
+        let us_per_eval = elapsed.as_micros() as f64 / total_evals;
+        let evals_per_sec = 1_000_000.0 / us_per_eval;
+
+        println!(
+            "[BENCHMARK 41] Narrowphase Pair Collision Evaluation (5,000 pairs/batch): {:.3} µs/eval ({:.1} evals/sec, contacts: {})",
+            us_per_eval,
+            evals_per_sec,
+            total_contacts
+        );
+    }
+
     println!("============================================================");
     println!("             BENCHMARK SUITE COMPLETE                       ");
     println!("============================================================");
