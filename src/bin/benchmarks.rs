@@ -1116,6 +1116,152 @@ fn main() {
         );
     }
 
+    // ========================================================================
+    // BENCHMARK 36: Broadphase Update & AABB Query (Phase 9.1)
+    // 100 Separated Bodies across Positive and Negative Space
+    // ========================================================================
+    {
+        use omnisia::physics::{
+            Aabb, BodyType, BroadphaseProxy, RigidBodyId, SpatialHashBroadphase,
+        };
+
+        let mut broadphase = SpatialHashBroadphase::new(4.0);
+        let count = 100;
+        for i in 0..count {
+            let base_x = (i as f32 - 50.0) * 10.0;
+            let aabb = Aabb::try_new(
+                Vec3::new(base_x, -10.0, -10.0),
+                Vec3::new(base_x + 2.0, -8.0, -8.0),
+            )
+            .unwrap();
+            broadphase
+                .insert(BroadphaseProxy::new(
+                    RigidBodyId(i as u64 + 1),
+                    BodyType::Dynamic,
+                    aabb,
+                ))
+                .unwrap();
+        }
+
+        let iterations = 10_000;
+        let start = Instant::now();
+
+        for iter in 0..iterations {
+            let id = RigidBodyId((iter % count) as u64 + 1);
+            let base_x = ((iter % count) as f32 - 50.0) * 10.0 + 0.1;
+            let new_aabb = Aabb::try_new(
+                Vec3::new(base_x, -10.0, -10.0),
+                Vec3::new(base_x + 2.0, -8.0, -8.0),
+            )
+            .unwrap();
+            let _ = broadphase.update(id, new_aabb);
+
+            let query_box = Aabb::try_new(
+                Vec3::new(base_x - 1.0, -11.0, -11.0),
+                Vec3::new(base_x + 3.0, -7.0, -7.0),
+            )
+            .unwrap();
+            let hits = broadphase.query_aabb(&query_box);
+            std::hint::black_box(hits);
+        }
+
+        let elapsed = start.elapsed();
+        let us_per_op = elapsed.as_micros() as f64 / iterations as f64;
+        println!(
+            "[BENCHMARK 36] Broadphase Update & Query (100 separated bodies, +/- coords): {:.3} µs/op ({:.1} ops/sec)",
+            us_per_op,
+            1_000_000.0 / us_per_op
+        );
+    }
+
+    // ========================================================================
+    // BENCHMARK 37: Broadphase Candidate Pair Generation (Phase 9.1)
+    // Dense Cluster of 200 Bodies & Medium 500 Bodies
+    // ========================================================================
+    {
+        use omnisia::physics::{
+            Aabb, BodyType, BroadphaseProxy, RigidBodyId, SpatialHashBroadphase,
+        };
+
+        let mut broadphase = SpatialHashBroadphase::new(4.0);
+        let count = 200;
+        for i in 0..count {
+            let x = ((i * 7) % 20) as f32 * 0.8;
+            let y = ((i * 11) % 15) as f32 * 0.8;
+            let z = ((i * 13) % 20) as f32 * 0.8;
+            let aabb =
+                Aabb::try_new(Vec3::new(x, y, z), Vec3::new(x + 2.0, y + 2.0, z + 2.0)).unwrap();
+            let btype = if i % 5 == 0 {
+                BodyType::Static
+            } else {
+                BodyType::Dynamic
+            };
+            broadphase
+                .insert(BroadphaseProxy::new(RigidBodyId(i as u64 + 1), btype, aabb))
+                .unwrap();
+        }
+
+        let iterations = 1_000;
+        let start = Instant::now();
+
+        for _ in 0..iterations {
+            let pairs = broadphase.generate_candidate_pairs();
+            std::hint::black_box(pairs);
+        }
+
+        let elapsed = start.elapsed();
+        let us_per_gen = elapsed.as_micros() as f64 / iterations as f64;
+        println!(
+            "[BENCHMARK 37] Broadphase Candidate Pair Generation (200 dense bodies): {:.3} µs/run ({:.1} runs/sec)",
+            us_per_gen,
+            1_000_000.0 / us_per_gen
+        );
+    }
+
+    // ========================================================================
+    // BENCHMARK 38: Broadphase Large Multi-Cell Spanning AABBs (Phase 9.1)
+    // 50 Large Bodies (12m x 12m) Spanning 3x3x3 Cells with Deduplication
+    // ========================================================================
+    {
+        use omnisia::physics::{
+            Aabb, BodyType, BroadphaseProxy, RigidBodyId, SpatialHashBroadphase,
+        };
+
+        let mut broadphase = SpatialHashBroadphase::new(4.0);
+        let count = 50;
+        for i in 0..count {
+            let x = (i as f32 * 4.0) % 40.0;
+            let y = (i as f32 * 2.0) % 20.0;
+            let z = (i as f32 * 3.0) % 40.0;
+            // AABB 12m melintasi 3 hingga 4 sel di setiap sumbu
+            let aabb =
+                Aabb::try_new(Vec3::new(x, y, z), Vec3::new(x + 12.0, y + 12.0, z + 12.0)).unwrap();
+            broadphase
+                .insert(BroadphaseProxy::new(
+                    RigidBodyId(i as u64 + 1),
+                    BodyType::Dynamic,
+                    aabb,
+                ))
+                .unwrap();
+        }
+
+        let iterations = 1_000;
+        let start = Instant::now();
+
+        for _ in 0..iterations {
+            let pairs = broadphase.generate_candidate_pairs();
+            std::hint::black_box(pairs);
+        }
+
+        let elapsed = start.elapsed();
+        let us_per_gen = elapsed.as_micros() as f64 / iterations as f64;
+        println!(
+            "[BENCHMARK 38] Broadphase Large Multi-Cell Spanning & Deduplication (50 bodies): {:.3} µs/run ({:.1} runs/sec)",
+            us_per_gen,
+            1_000_000.0 / us_per_gen
+        );
+    }
+
     println!("============================================================");
     println!("             BENCHMARK SUITE COMPLETE                       ");
     println!("============================================================");
