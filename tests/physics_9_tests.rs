@@ -2,10 +2,12 @@ use glam::{IVec3, Mat3, Quat, Vec3};
 use omnisia::chunk::Chunk;
 use omnisia::material::MaterialId;
 use omnisia::physics::{
-    collide, compute_world_inv_inertia, solve_contacts, world_pos_to_cell, Aabb, AabbError,
-    BodyType, BoxShape, BroadphaseError, BroadphasePair, BroadphaseProxy, Capsule, CellCoord,
-    Collider, ColliderId, Contact, MassProperties, PhysicsWorld, PhysicsWorldConfig, RigidBody,
-    RigidBodyError, RigidBodyId, Shape, ShapeError, SolverConfig, SolverError,
+    collide, compute_world_inv_inertia, integrate_bodies, integrate_body, integrate_rotation,
+    integrate_transform, integrate_transforms, integrate_velocities, integrate_velocity,
+    solve_contacts, world_pos_to_cell, Aabb, AabbError, BodyType, BoxShape, BroadphaseError,
+    BroadphasePair, BroadphaseProxy, Capsule, CellCoord, Collider, ColliderId, Contact,
+    IntegrationConfig, IntegrationError, MassProperties, PhysicsWorld, PhysicsWorldConfig,
+    RigidBody, RigidBodyError, RigidBodyId, Shape, ShapeError, SolverConfig, SolverError,
     SpatialHashBroadphase, Sphere, StaticTerrainQuery, Transform,
 };
 use omnisia::streaming::store::ChunkStore;
@@ -3415,4 +3417,877 @@ fn test_9_5_end_to_end_cross_phase_shape_to_solver() {
     // Posisi dan rotasi TIDAK PERNAH berubah
     assert_eq!(solved_sphere.position(), pos_before);
     assert_eq!(solved_sphere.rotation(), rot_before);
+}
+
+// ============================================================================
+// 6. LINEAR + ANGULAR INTEGRATION UNIT & INTEGRATION TESTS (PHASE 9.6)
+// ============================================================================
+
+#[test]
+fn test_9_6_static_complete_immutability() {
+    let mut body =
+        RigidBody::new_static(RigidBodyId(1), Vec3::new(1.0, 2.0, 3.0), Quat::IDENTITY).unwrap();
+    let initial_pos = body.position();
+    let initial_rot = body.rotation();
+    let initial_v = body.linear_velocity();
+    let initial_w = body.angular_velocity();
+
+    integrate_body(&mut body, 1.0 / 30.0, Vec3::new(0.0, -9.81, 0.0)).unwrap();
+
+    assert_eq!(body.position(), initial_pos);
+    assert_eq!(body.rotation(), initial_rot);
+    assert_eq!(body.linear_velocity(), initial_v);
+    assert_eq!(body.angular_velocity(), initial_w);
+}
+
+#[test]
+fn test_9_6_dynamic_linear_integration() {
+    let inertia = Mat3::from_diagonal(Vec3::ONE);
+    let mut body = RigidBody::new_dynamic(
+        RigidBodyId(1),
+        Vec3::new(1.0, 2.0, 3.0),
+        Quat::IDENTITY,
+        2.0,
+        inertia,
+    )
+    .unwrap();
+    body.set_linear_velocity(Vec3::new(2.0, 0.0, -4.0)).unwrap();
+
+    // Integrasi posisi dengan gravitasi nol dan dt = 0.5: x_new = (1, 2, 3) + (2, 0, -4) * 0.5 = (2, 2, 1)
+    integrate_body(&mut body, 0.5, Vec3::ZERO).unwrap();
+
+    assert_eq!(body.position(), Vec3::new(2.0, 2.0, 1.0));
+}
+
+#[test]
+fn test_9_6_zero_velocity() {
+    let inertia = Mat3::from_diagonal(Vec3::ONE);
+    let mut body = RigidBody::new_dynamic(
+        RigidBodyId(1),
+        Vec3::new(5.0, 6.0, 7.0),
+        Quat::IDENTITY,
+        2.0,
+        inertia,
+    )
+    .unwrap();
+
+    integrate_body(&mut body, 1.0, Vec3::ZERO).unwrap();
+
+    assert_eq!(body.position(), Vec3::new(5.0, 6.0, 7.0));
+}
+
+#[test]
+fn test_9_6_dynamic_gravity_and_semi_implicit_euler() {
+    let inertia = Mat3::from_diagonal(Vec3::ONE);
+    let mut body = RigidBody::new_dynamic(
+        RigidBodyId(1),
+        Vec3::new(0.0, 10.0, 0.0),
+        Quat::IDENTITY,
+        2.0,
+        inertia,
+    )
+    .unwrap();
+    // Kecepatan awal nol, gravitasi = (0, -10, 0), dt = 0.5
+    // Semi-implicit Euler:
+    // v_new = 0 + (0, -10, 0) * 0.5 = (0, -5, 0)
+    // x_new = (0, 10, 0) + (0, -5, 0) * 0.5 = (0, 7.5, 0)
+    integrate_body(&mut body, 0.5, Vec3::new(0.0, -10.0, 0.0)).unwrap();
+
+    assert_eq!(body.linear_velocity(), Vec3::new(0.0, -5.0, 0.0));
+    assert_eq!(body.position(), Vec3::new(0.0, 7.5, 0.0));
+
+    // Verifikasi integrate_velocities & integrate_transforms pada BTreeMap
+    let mut map = std::collections::BTreeMap::new();
+    let body_b = RigidBody::new_dynamic(
+        RigidBodyId(2),
+        Vec3::new(0.0, 10.0, 0.0),
+        Quat::IDENTITY,
+        2.0,
+        inertia,
+    )
+    .unwrap();
+    map.insert(RigidBodyId(2), body_b);
+
+    let default_config = IntegrationConfig::default();
+    assert_eq!(default_config.gravity, Vec3::new(0.0, -9.81, 0.0));
+
+    integrate_velocities(&mut map, 0.5, Vec3::new(0.0, -10.0, 0.0)).unwrap();
+    integrate_transforms(&mut map, 0.5).unwrap();
+
+    let res_b = map.get(&RigidBodyId(2)).unwrap();
+    assert_eq!(res_b.linear_velocity(), Vec3::new(0.0, -5.0, 0.0));
+    assert_eq!(res_b.position(), Vec3::new(0.0, 7.5, 0.0));
+}
+
+#[test]
+fn test_9_6_static_gravity_immunity() {
+    let mut body = RigidBody::new_static(RigidBodyId(1), Vec3::ZERO, Quat::IDENTITY).unwrap();
+    integrate_velocity(&mut body, 1.0, Vec3::new(0.0, -10.0, 0.0)).unwrap();
+
+    assert_eq!(body.linear_velocity(), Vec3::ZERO);
+}
+
+#[test]
+fn test_9_6_kinematic_gravity_immunity() {
+    let mut body = RigidBody::new_kinematic(
+        RigidBodyId(1),
+        Vec3::ZERO,
+        Quat::IDENTITY,
+        Vec3::new(1.0, 0.0, 0.0),
+        Vec3::ZERO,
+    )
+    .unwrap();
+
+    integrate_velocity(&mut body, 1.0, Vec3::new(0.0, -10.0, 0.0)).unwrap();
+
+    assert_eq!(body.linear_velocity(), Vec3::new(1.0, 0.0, 0.0));
+}
+
+#[test]
+fn test_9_6_kinematic_velocity_integration() {
+    let mut body = RigidBody::new_kinematic(
+        RigidBodyId(1),
+        Vec3::ZERO,
+        Quat::IDENTITY,
+        Vec3::new(3.0, 0.0, 0.0),
+        Vec3::ZERO,
+    )
+    .unwrap();
+
+    integrate_transform(&mut body, 2.0).unwrap();
+
+    assert_eq!(body.position(), Vec3::new(6.0, 0.0, 0.0));
+}
+
+#[test]
+fn test_9_6_known_angular_integration() {
+    let q0 = Quat::IDENTITY;
+    // Putar di sumbu Y dengan omega = (0, pi, 0) selama dt = 0.5 detik (total rotasi pi/2 = 90 derajat)
+    let omega = Vec3::new(0.0, std::f32::consts::PI, 0.0);
+    let q1 = integrate_rotation(q0, omega, 0.5).unwrap();
+
+    // Rotasi 90 derajat mengelilingi Y: y = sin(pi/4) ≈ 0.7071, w = cos(pi/4) ≈ 0.7071
+    let expected = Quat::from_rotation_y(std::f32::consts::FRAC_PI_2);
+    assert!((q1.dot(expected).abs() - 1.0).abs() < 0.05);
+    assert!((q1.length() - 1.0).abs() < 1e-5);
+}
+
+#[test]
+fn test_9_6_very_small_angular_velocity() {
+    let q0 = Quat::IDENTITY;
+    let omega = Vec3::new(1e-7, 0.0, 0.0);
+    let q1 = integrate_rotation(q0, omega, 0.1).unwrap();
+
+    assert!(q1.is_finite());
+    assert!((q1.length() - 1.0).abs() < 1e-6);
+    assert!((q1 - q0).length() < 1e-5);
+}
+
+#[test]
+fn test_9_6_zero_angular_velocity() {
+    let q0 = Quat::from_rotation_z(0.5);
+    let q1 = integrate_rotation(q0, Vec3::ZERO, 1.0).unwrap();
+
+    assert_eq!(q1, q0);
+}
+
+#[test]
+fn test_9_6_long_run_quaternion_normalization() {
+    let mut q = Quat::IDENTITY;
+    let omega = Vec3::new(1.0, 2.0, 3.0);
+    let dt = 1.0 / 30.0;
+
+    for _ in 0..1000 {
+        q = integrate_rotation(q, omega, dt).unwrap();
+    }
+
+    assert!(q.is_finite());
+    assert!(
+        (q.length() - 1.0).abs() < 1e-6,
+        "Panjang kuaternion harus tetap mendekati 1.0, didapat: {}",
+        q.length()
+    );
+}
+
+#[test]
+fn test_9_6_rotation_90_degree_sanity() {
+    let mut q = Quat::IDENTITY;
+    // Rotasi 90 derajat (pi/2 rad/s selama 1s pada 30Hz) mengelilingi sumbu Y
+    let omega = Vec3::new(0.0, std::f32::consts::FRAC_PI_2, 0.0);
+    let dt = 1.0 / 30.0;
+    for _ in 0..30 {
+        q = integrate_rotation(q, omega, dt).unwrap();
+    }
+
+    // Vektor awal (1, 0, 0) diputar 90 derajat mengelilingi Y harus mengarah ke (0, 0, -1)
+    let v_rotated = q * Vec3::X;
+    assert!((v_rotated - Vec3::NEG_Z).length() < 0.05);
+}
+
+#[test]
+fn test_9_6_world_space_angular_velocity_on_rotated_body() {
+    // Badan awalnya diputar 90 derajat mengelilingi sumbu X
+    let q0 = Quat::from_rotation_x(std::f32::consts::FRAC_PI_2);
+
+    // Kecepatan sudut diberikan di RUANG DUNIA mengelilingi sumbu Y
+    let omega_world = Vec3::new(0.0, 1.0, 0.0);
+    let dt = 0.1;
+    let q1 = integrate_rotation(q0, omega_world, dt).unwrap();
+
+    // Perkalian kiri di ruang dunia: dq = 0.5 * Omega(omega_world) * q0
+    let omega_quat = Quat::from_xyzw(omega_world.x, omega_world.y, omega_world.z, 0.0);
+    let dq_left = (omega_quat * q0) * (0.5 * dt);
+    let expected_q = Quat::from_xyzw(
+        q0.x + dq_left.x,
+        q0.y + dq_left.y,
+        q0.z + dq_left.z,
+        q0.w + dq_left.w,
+    )
+    .normalize();
+
+    assert!((q1 - expected_q).length() < 1e-5);
+}
+
+#[test]
+fn test_9_6_linear_angular_independence() {
+    let inertia = Mat3::from_diagonal(Vec3::ONE);
+    let mut body1 =
+        RigidBody::new_dynamic(RigidBodyId(1), Vec3::ZERO, Quat::IDENTITY, 1.0, inertia).unwrap();
+    body1.set_linear_velocity(Vec3::new(5.0, 0.0, 0.0)).unwrap();
+
+    let mut body2 =
+        RigidBody::new_dynamic(RigidBodyId(2), Vec3::ZERO, Quat::IDENTITY, 1.0, inertia).unwrap();
+    body2
+        .set_angular_velocity(Vec3::new(0.0, 5.0, 0.0))
+        .unwrap();
+
+    integrate_body(&mut body1, 0.2, Vec3::ZERO).unwrap();
+    integrate_body(&mut body2, 0.2, Vec3::ZERO).unwrap();
+
+    // Body 1: posisi berubah, rotasi tetap identitas
+    assert_eq!(body1.position(), Vec3::new(1.0, 0.0, 0.0));
+    assert_eq!(body1.rotation(), Quat::IDENTITY);
+
+    // Body 2: rotasi berubah, posisi tetap nol
+    assert_eq!(body2.position(), Vec3::ZERO);
+    assert_ne!(body2.rotation(), Quat::IDENTITY);
+}
+
+#[test]
+fn test_9_6_invalid_timestep() {
+    let mut body = RigidBody::new_dynamic(
+        RigidBodyId(1),
+        Vec3::ZERO,
+        Quat::IDENTITY,
+        1.0,
+        Mat3::from_diagonal(Vec3::ONE),
+    )
+    .unwrap();
+
+    assert_eq!(
+        integrate_body(&mut body, 0.0, Vec3::ZERO),
+        Err(IntegrationError::InvalidTimestep)
+    );
+    assert_eq!(
+        integrate_body(&mut body, -0.1, Vec3::ZERO),
+        Err(IntegrationError::InvalidTimestep)
+    );
+    assert_eq!(
+        integrate_body(&mut body, f32::NAN, Vec3::ZERO),
+        Err(IntegrationError::InvalidTimestep)
+    );
+    assert_eq!(
+        integrate_body(&mut body, f32::INFINITY, Vec3::ZERO),
+        Err(IntegrationError::InvalidTimestep)
+    );
+}
+
+#[test]
+fn test_9_6_non_finite_body_state_and_gravity() {
+    let mut body = RigidBody::new_dynamic(
+        RigidBodyId(1),
+        Vec3::ZERO,
+        Quat::IDENTITY,
+        1.0,
+        Mat3::from_diagonal(Vec3::ONE),
+    )
+    .unwrap();
+
+    assert_eq!(
+        integrate_body(&mut body, 0.1, Vec3::new(f32::NAN, 0.0, 0.0)),
+        Err(IntegrationError::InvalidGravity)
+    );
+}
+
+#[test]
+fn test_9_6_invalid_quaternion() {
+    let bad_q = Quat::from_xyzw(0.0, 0.0, 0.0, 0.0);
+    assert_eq!(
+        integrate_rotation(bad_q, Vec3::new(1.0, 0.0, 0.0), 0.1),
+        Err(IntegrationError::InvalidRotation)
+    );
+}
+
+#[test]
+fn test_9_6_atomic_failure() {
+    let mut bodies = std::collections::BTreeMap::new();
+    let b1 = RigidBodyId(1);
+    let b2 = RigidBodyId(2);
+
+    let inertia = Mat3::from_diagonal(Vec3::ONE);
+    let body1 =
+        RigidBody::new_dynamic(b1, Vec3::new(1.0, 0.0, 0.0), Quat::IDENTITY, 1.0, inertia).unwrap();
+    let body2 =
+        RigidBody::new_dynamic(b2, Vec3::new(2.0, 0.0, 0.0), Quat::IDENTITY, 1.0, inertia).unwrap();
+
+    bodies.insert(b1, body1);
+    bodies.insert(b2, body2);
+
+    // Panggil dengan dt tidak valid
+    let res = integrate_bodies(&mut bodies, -1.0, Vec3::ZERO);
+    assert_eq!(res, Err(IntegrationError::InvalidTimestep));
+
+    // Status kedua badan tetap 100% tidak berubah
+    assert_eq!(
+        bodies.get(&b1).unwrap().position(),
+        Vec3::new(1.0, 0.0, 0.0)
+    );
+    assert_eq!(
+        bodies.get(&b2).unwrap().position(),
+        Vec3::new(2.0, 0.0, 0.0)
+    );
+}
+
+#[test]
+fn test_9_6_deterministic_execution() {
+    let setup = || {
+        let mut bodies = std::collections::BTreeMap::new();
+        let inertia = Mat3::from_diagonal(Vec3::ONE);
+        let mut b1 =
+            RigidBody::new_dynamic(RigidBodyId(1), Vec3::ZERO, Quat::IDENTITY, 1.0, inertia)
+                .unwrap();
+        b1.set_linear_velocity(Vec3::new(1.0, -2.0, 3.0)).unwrap();
+        b1.set_angular_velocity(Vec3::new(0.5, -0.5, 0.5)).unwrap();
+        bodies.insert(RigidBodyId(1), b1);
+        bodies
+    };
+
+    let mut bodies1 = setup();
+    let mut bodies2 = setup();
+
+    integrate_bodies(&mut bodies1, 1.0 / 30.0, Vec3::new(0.0, -9.81, 0.0)).unwrap();
+    integrate_bodies(&mut bodies2, 1.0 / 30.0, Vec3::new(0.0, -9.81, 0.0)).unwrap();
+
+    let res1 = bodies1.get(&RigidBodyId(1)).unwrap();
+    let res2 = bodies2.get(&RigidBodyId(1)).unwrap();
+
+    assert_eq!(res1.position(), res2.position());
+    assert_eq!(res1.rotation(), res2.rotation());
+    assert_eq!(res1.linear_velocity(), res2.linear_velocity());
+}
+
+#[test]
+fn test_9_6_multi_body_isolation() {
+    let mut bodies = std::collections::BTreeMap::new();
+    let inertia = Mat3::from_diagonal(Vec3::ONE);
+
+    let mut b1 =
+        RigidBody::new_dynamic(RigidBodyId(1), Vec3::ZERO, Quat::IDENTITY, 1.0, inertia).unwrap();
+    b1.set_linear_velocity(Vec3::new(10.0, 0.0, 0.0)).unwrap();
+
+    let mut b2 =
+        RigidBody::new_dynamic(RigidBodyId(2), Vec3::ZERO, Quat::IDENTITY, 1.0, inertia).unwrap();
+    b2.set_linear_velocity(Vec3::new(0.0, 20.0, 0.0)).unwrap();
+
+    bodies.insert(RigidBodyId(1), b1);
+    bodies.insert(RigidBodyId(2), b2);
+
+    integrate_bodies(&mut bodies, 0.1, Vec3::ZERO).unwrap();
+
+    assert_eq!(
+        bodies.get(&RigidBodyId(1)).unwrap().position(),
+        Vec3::new(1.0, 0.0, 0.0)
+    );
+    assert_eq!(
+        bodies.get(&RigidBodyId(2)).unwrap().position(),
+        Vec3::new(0.0, 2.0, 0.0)
+    );
+}
+
+#[test]
+fn test_9_6_mixed_static_kinematic_dynamic_collection() {
+    let mut bodies = std::collections::BTreeMap::new();
+    let inertia = Mat3::from_diagonal(Vec3::ONE);
+
+    // 1. Static di (1, 1, 1)
+    bodies.insert(
+        RigidBodyId(1),
+        RigidBody::new_static(RigidBodyId(1), Vec3::splat(1.0), Quat::IDENTITY).unwrap(),
+    );
+
+    // 2. Kinematic di (2, 2, 2) dengan v = (1, 0, 0)
+    let kin = RigidBody::new_kinematic(
+        RigidBodyId(2),
+        Vec3::splat(2.0),
+        Quat::IDENTITY,
+        Vec3::X,
+        Vec3::ZERO,
+    )
+    .unwrap();
+    bodies.insert(RigidBodyId(2), kin);
+
+    // 3. Dynamic di (3, 3, 3) dengan v = 0, terkena gravitasi g = (0, -10, 0)
+    let dyn_body = RigidBody::new_dynamic(
+        RigidBodyId(3),
+        Vec3::splat(3.0),
+        Quat::IDENTITY,
+        1.0,
+        inertia,
+    )
+    .unwrap();
+    bodies.insert(RigidBodyId(3), dyn_body);
+
+    integrate_bodies(&mut bodies, 1.0, Vec3::new(0.0, -10.0, 0.0)).unwrap();
+
+    // Static tidak berubah
+    assert_eq!(
+        bodies.get(&RigidBodyId(1)).unwrap().position(),
+        Vec3::splat(1.0)
+    );
+    assert_eq!(
+        bodies.get(&RigidBodyId(1)).unwrap().linear_velocity(),
+        Vec3::ZERO
+    );
+
+    // Kinematic maju oleh v, tidak terkena gravitasi
+    assert_eq!(
+        bodies.get(&RigidBodyId(2)).unwrap().position(),
+        Vec3::new(3.0, 2.0, 2.0)
+    );
+    assert_eq!(
+        bodies.get(&RigidBodyId(2)).unwrap().linear_velocity(),
+        Vec3::X
+    );
+
+    // Dynamic terkena gravitasi dan posisinya maju
+    assert_eq!(
+        bodies.get(&RigidBodyId(3)).unwrap().linear_velocity(),
+        Vec3::new(0.0, -10.0, 0.0)
+    );
+    assert_eq!(
+        bodies.get(&RigidBodyId(3)).unwrap().position(),
+        Vec3::new(3.0, -7.0, 3.0)
+    );
+}
+
+#[test]
+fn test_9_6_long_run_stability() {
+    let inertia = Mat3::from_diagonal(Vec3::ONE);
+    let mut body =
+        RigidBody::new_dynamic(RigidBodyId(1), Vec3::ZERO, Quat::IDENTITY, 1.0, inertia).unwrap();
+    body.set_angular_velocity(Vec3::new(1.0, 2.0, 3.0)).unwrap();
+
+    let dt = 1.0 / 30.0;
+    let gravity = Vec3::new(0.0, -9.81, 0.0);
+
+    for _ in 0..500 {
+        integrate_body(&mut body, dt, gravity).unwrap();
+    }
+
+    assert!(body.position().is_finite());
+    assert!(body.rotation().is_finite());
+    assert!((body.rotation().length() - 1.0).abs() < 1e-5);
+}
+
+#[test]
+fn test_9_6_solver_to_integration_boundary() {
+    // Memverifikasi batas fase: solver hanya mengubah kecepatan, integrasi memajukan posisi/rotasi
+    let mut world = PhysicsWorld::default();
+    let body_id = RigidBodyId(1);
+    let inertia = Mat3::from_diagonal(Vec3::ONE);
+    let mut body = RigidBody::new_dynamic(
+        body_id,
+        Vec3::new(0.0, 0.05, 0.0),
+        Quat::IDENTITY,
+        2.0,
+        inertia,
+    )
+    .unwrap();
+    body.set_linear_velocity(Vec3::new(0.0, -3.0, 0.0)).unwrap();
+    world.add_rigid_body(body, None).unwrap();
+
+    let floor_id = RigidBodyId(2);
+    world
+        .add_rigid_body(
+            RigidBody::new_static(floor_id, Vec3::ZERO, Quat::IDENTITY).unwrap(),
+            None,
+        )
+        .unwrap();
+
+    let contact = Contact::new(
+        ColliderId(1),
+        ColliderId(2),
+        body_id,
+        floor_id,
+        Vec3::ZERO,
+        Vec3::NEG_Y,
+        0.05,
+    );
+
+    // Langkah 1: Solver kontak
+    let pos_before_solve = world.rigid_bodies.get(&body_id).unwrap().position();
+    world.solve_contacts(&[contact]).unwrap();
+    let pos_after_solve = world.rigid_bodies.get(&body_id).unwrap().position();
+
+    // Solver TIDAK PERNAH memutasi posisi
+    assert_eq!(pos_before_solve, pos_after_solve);
+
+    // Langkah 2: Integrasi transform
+    world.integrate_transforms().unwrap();
+    let pos_after_integrate = world.rigid_bodies.get(&body_id).unwrap().position();
+
+    // Integrasi MEMUTASI posisi dari kecepatan pasca-solver
+    assert_ne!(pos_after_integrate, pos_after_solve);
+}
+
+#[test]
+fn test_9_6_existing_contact_solver_regression() {
+    let mut world = PhysicsWorld::default();
+    let dyn_id = RigidBodyId(1);
+    let static_id = RigidBodyId(2);
+    let inertia = Mat3::from_diagonal(Vec3::ONE);
+
+    let mut dyn_b = RigidBody::new_dynamic(
+        dyn_id,
+        Vec3::new(0.0, 1.0, 0.0),
+        Quat::IDENTITY,
+        1.0,
+        inertia,
+    )
+    .unwrap();
+    dyn_b
+        .set_linear_velocity(Vec3::new(0.0, -4.0, 0.0))
+        .unwrap();
+    world.add_rigid_body(dyn_b, None).unwrap();
+
+    world
+        .add_rigid_body(
+            RigidBody::new_static(static_id, Vec3::ZERO, Quat::IDENTITY).unwrap(),
+            None,
+        )
+        .unwrap();
+
+    let contact = Contact::new(
+        ColliderId(1),
+        ColliderId(2),
+        dyn_id,
+        static_id,
+        Vec3::new(0.0, 0.5, 0.0),
+        Vec3::NEG_Y,
+        0.0,
+    );
+
+    // Selesaikan kontak: v_y dinetralkan menjadi >= 0
+    world.solve_contacts(&[contact]).unwrap();
+    assert!(world.rigid_bodies.get(&dyn_id).unwrap().linear_velocity().y >= -1e-4);
+
+    // Integrasi: badan tidak lagi bergerak jatuh tembus ke bawah
+    world.integrate_transforms().unwrap();
+    assert!(world.rigid_bodies.get(&dyn_id).unwrap().position().y >= 1.0 - 1e-4);
+}
+
+#[test]
+fn test_9_6_broadphase_proxy_follows_translated_body() {
+    let mut world = PhysicsWorld::default();
+    let body_id = RigidBodyId(1);
+    let inertia = Mat3::from_diagonal(Vec3::ONE);
+
+    let mut body =
+        RigidBody::new_dynamic(body_id, Vec3::ZERO, Quat::IDENTITY, 1.0, inertia).unwrap();
+    body.set_linear_velocity(Vec3::new(10.0, 0.0, 0.0)).unwrap();
+    world.add_rigid_body(body, None).unwrap();
+
+    let box_shape = BoxShape::new(Vec3::splat(1.0)).unwrap();
+    world
+        .add_collider(Collider::new(
+            ColliderId(10),
+            body_id,
+            Shape::Box(box_shape),
+            Transform::IDENTITY,
+        ))
+        .unwrap();
+
+    // Integrasi transform selama 1 detik (fixed_dt = 1.0, bergerak sejauh 10 meter ke +X)
+    world.config.fixed_dt = 1.0;
+    world.integrate_transforms().unwrap();
+
+    // AABB proksi broadphase harus terbarui di sekitar x = 10.0
+    let proxy = world.broadphase.get_proxy(body_id).unwrap();
+    let center = proxy.aabb.center();
+    assert!((center.x - 10.0).abs() < 1e-3);
+}
+
+#[test]
+fn test_9_6_broadphase_proxy_follows_rotated_body() {
+    let mut world = PhysicsWorld::default();
+    let body_id = RigidBodyId(1);
+    let inertia = Mat3::from_diagonal(Vec3::ONE);
+
+    let mut body =
+        RigidBody::new_dynamic(body_id, Vec3::ZERO, Quat::IDENTITY, 1.0, inertia).unwrap();
+    // Rotasi 90 derajat mengelilingi sumbu Y: omega = (0, pi/2, 0) selama 1s (30 langkah 30Hz)
+    body.set_angular_velocity(Vec3::new(0.0, std::f32::consts::FRAC_PI_2, 0.0))
+        .unwrap();
+    world.add_rigid_body(body, None).unwrap();
+
+    // Boks panjang di sumbu X: half_extents = (5.0, 1.0, 1.0)
+    let box_shape = BoxShape::new(Vec3::new(5.0, 1.0, 1.0)).unwrap();
+    world
+        .add_collider(Collider::new(
+            ColliderId(10),
+            body_id,
+            Shape::Box(box_shape),
+            Transform::IDENTITY,
+        ))
+        .unwrap();
+
+    // Sebelum rotasi: rentang X = 10, rentang Z = 2
+    let initial_proxy = world.broadphase.get_proxy(body_id).unwrap();
+    assert!((initial_proxy.aabb.half_extents().x - 5.0).abs() < 1e-3);
+
+    // Integrasi transform selama 30 langkah (1 detik penuh)
+    for _ in 0..30 {
+        world.integrate_transforms().unwrap();
+    }
+
+    // Setelah rotasi 90 derajat di Y: boks panjang kini mengarah ke sumbu Z!
+    let rotated_proxy = world.broadphase.get_proxy(body_id).unwrap();
+    assert!((rotated_proxy.aabb.half_extents().z - 5.0).abs() < 0.1);
+    assert!((rotated_proxy.aabb.half_extents().x - 1.0).abs() < 0.1);
+}
+
+#[test]
+fn test_9_6_multi_collider_union_aabb_follows_body_transform() {
+    let mut world = PhysicsWorld::default();
+    let body_id = RigidBodyId(1);
+    let inertia = Mat3::from_diagonal(Vec3::ONE);
+
+    let mut body =
+        RigidBody::new_dynamic(body_id, Vec3::ZERO, Quat::IDENTITY, 1.0, inertia).unwrap();
+    body.set_linear_velocity(Vec3::new(5.0, 0.0, 0.0)).unwrap();
+    world.add_rigid_body(body, None).unwrap();
+
+    // Dua collider bola dengan offset -2 dan +2 di sumbu X
+    let s = Sphere::new(1.0).unwrap();
+    let col1 = Collider::new(
+        ColliderId(1),
+        body_id,
+        Shape::Sphere(s),
+        Transform::from_translation(Vec3::new(-2.0, 0.0, 0.0)).unwrap(),
+    );
+    let col2 = Collider::new(
+        ColliderId(2),
+        body_id,
+        Shape::Sphere(s),
+        Transform::from_translation(Vec3::new(2.0, 0.0, 0.0)).unwrap(),
+    );
+    world.add_collider(col1).unwrap();
+    world.add_collider(col2).unwrap();
+
+    // Integrasi 1 detik ke depan (fixed_dt = 1.0)
+    world.config.fixed_dt = 1.0;
+    world.integrate_transforms().unwrap();
+
+    // Setelah bergerak 5m ke kanan, pusat badan di x = 5.
+    // Bola 1 di x = 3 (min x = 2), Bola 2 di x = 7 (max x = 8). Union AABB X melingkupi [2, 8].
+    let proxy = world.broadphase.get_proxy(body_id).unwrap();
+    assert!((proxy.aabb.min.x - 2.0).abs() < 0.1);
+    assert!((proxy.aabb.max.x - 8.0).abs() < 0.1);
+}
+
+#[test]
+fn test_9_6_local_collider_offset_follows_body_rotation() {
+    let mut world = PhysicsWorld::default();
+    let body_id = RigidBodyId(1);
+    let inertia = Mat3::from_diagonal(Vec3::ONE);
+
+    let mut body =
+        RigidBody::new_dynamic(body_id, Vec3::ZERO, Quat::IDENTITY, 1.0, inertia).unwrap();
+    body.set_angular_velocity(Vec3::new(0.0, std::f32::consts::FRAC_PI_2, 0.0))
+        .unwrap();
+    world.add_rigid_body(body, None).unwrap();
+
+    // Bola kecil di offset lokal (2, 0, 0)
+    let s = Sphere::new(0.5).unwrap();
+    let col = Collider::new(
+        ColliderId(1),
+        body_id,
+        Shape::Sphere(s),
+        Transform::from_translation(Vec3::new(2.0, 0.0, 0.0)).unwrap(),
+    );
+    world.add_collider(col).unwrap();
+
+    // Integrasi 30 langkah (1 detik penuh)
+    for _ in 0..30 {
+        world.integrate_transforms().unwrap();
+    }
+
+    // Setelah badan berputar 90 derajat di sumbu Y, offset lokal (+2, 0, 0) berada di (0, 0, -2) dunia!
+    let proxy = world.broadphase.get_proxy(body_id).unwrap();
+    let center = proxy.aabb.center();
+    assert!(center.x.abs() < 0.1);
+    assert!((center.z - (-2.0)).abs() < 0.1);
+}
+
+#[test]
+fn test_9_6_failed_integration_does_not_update_broadphase_derived_state() {
+    let mut world = PhysicsWorld::default();
+    let body_id = RigidBodyId(1);
+    let body = RigidBody::new_dynamic(
+        body_id,
+        Vec3::ZERO,
+        Quat::IDENTITY,
+        1.0,
+        Mat3::from_diagonal(Vec3::ONE),
+    )
+    .unwrap();
+    world.add_rigid_body(body, None).unwrap();
+
+    let s = Sphere::new(1.0).unwrap();
+    world
+        .add_collider(Collider::new(
+            ColliderId(1),
+            body_id,
+            Shape::Sphere(s),
+            Transform::IDENTITY,
+        ))
+        .unwrap();
+
+    let initial_proxy = world.broadphase.get_proxy(body_id).unwrap().aabb;
+
+    // Paksa konfigurasi dt tidak valid
+    world.config.fixed_dt = -1.0;
+    assert!(world.integrate_transforms().is_err());
+
+    // Proksi broadphase tetap tidak berubah
+    assert_eq!(
+        world.broadphase.get_proxy(body_id).unwrap().aabb,
+        initial_proxy
+    );
+}
+
+#[test]
+fn test_9_6_world_space_angular_velocity_multiplication_direction() {
+    // Menguji secara eksplisit arah perkalian kuaternion dunia (omega_quat * q vs q * omega_quat)
+    let q = Quat::from_rotation_x(std::f32::consts::FRAC_PI_2);
+    let omega = Vec3::new(0.0, 2.0, 0.0);
+    let dt = 0.05;
+
+    let q_res = integrate_rotation(q, omega, dt).unwrap();
+
+    let omega_quat = Quat::from_xyzw(omega.x, omega.y, omega.z, 0.0);
+    let dq_left = (omega_quat * q) * (0.5 * dt);
+    let expected_left = Quat::from_xyzw(
+        q.x + dq_left.x,
+        q.y + dq_left.y,
+        q.z + dq_left.z,
+        q.w + dq_left.w,
+    )
+    .normalize();
+
+    let dq_right = (q * omega_quat) * (0.5 * dt);
+    let expected_right = Quat::from_xyzw(
+        q.x + dq_right.x,
+        q.y + dq_right.y,
+        q.z + dq_right.z,
+        q.w + dq_right.w,
+    )
+    .normalize();
+
+    assert!(
+        (q_res - expected_left).length() < 1e-5,
+        "Harus cocok dengan perkalian kiri dunia (omega_quat * q)"
+    );
+    assert!(
+        (q_res - expected_right).length() > 0.01,
+        "TIDAK BOLEH sama dengan perkalian kanan lokal"
+    );
+}
+
+#[test]
+fn test_9_6_kinematic_rotation_integration() {
+    let mut body = RigidBody::new_kinematic(
+        RigidBodyId(1),
+        Vec3::ZERO,
+        Quat::IDENTITY,
+        Vec3::ZERO,
+        Vec3::new(0.0, 2.0, 0.0),
+    )
+    .unwrap();
+
+    integrate_transform(&mut body, 0.5).unwrap();
+
+    assert_ne!(body.rotation(), Quat::IDENTITY);
+    assert!(body.rotation().is_finite());
+    assert!((body.rotation().length() - 1.0).abs() < 1e-5);
+}
+
+#[test]
+fn test_9_6_static_broadphase_proxy_remains_unchanged() {
+    let mut world = PhysicsWorld::default();
+    let body_id = RigidBodyId(1);
+    world
+        .add_rigid_body(
+            RigidBody::new_static(body_id, Vec3::new(10.0, 20.0, 30.0), Quat::IDENTITY).unwrap(),
+            None,
+        )
+        .unwrap();
+
+    let box_s = BoxShape::new(Vec3::splat(2.0)).unwrap();
+    world
+        .add_collider(Collider::new(
+            ColliderId(1),
+            body_id,
+            Shape::Box(box_s),
+            Transform::IDENTITY,
+        ))
+        .unwrap();
+
+    let proxy_before = world.broadphase.get_proxy(body_id).unwrap().aabb;
+
+    world.integrate().unwrap();
+
+    let proxy_after = world.broadphase.get_proxy(body_id).unwrap().aabb;
+    assert_eq!(proxy_before, proxy_after);
+}
+
+#[test]
+fn test_9_6_gravity_does_not_affect_angular_velocity() {
+    let inertia = Mat3::from_diagonal(Vec3::ONE);
+    let mut body =
+        RigidBody::new_dynamic(RigidBodyId(1), Vec3::ZERO, Quat::IDENTITY, 1.0, inertia).unwrap();
+    let initial_w = Vec3::new(1.0, 2.0, 3.0);
+    body.set_angular_velocity(initial_w).unwrap();
+
+    integrate_velocity(&mut body, 1.0, Vec3::new(0.0, -9.81, 0.0)).unwrap();
+
+    assert_eq!(body.angular_velocity(), initial_w);
+    assert_eq!(body.linear_velocity(), Vec3::new(0.0, -9.81, 0.0));
+}
+
+#[test]
+fn test_9_6_integration_does_not_mutate_local_inertia() {
+    let inertia = Mat3::from_diagonal(Vec3::new(1.0, 2.0, 3.0));
+    let mut body =
+        RigidBody::new_dynamic(RigidBodyId(1), Vec3::ZERO, Quat::IDENTITY, 1.0, inertia).unwrap();
+    let initial_local_inertia = body.mass_properties().local_inertia;
+    let initial_local_inv_inertia = body.mass_properties().local_inverse_inertia;
+
+    integrate_body(&mut body, 1.0, Vec3::new(0.0, -9.81, 0.0)).unwrap();
+
+    assert_eq!(body.mass_properties().local_inertia, initial_local_inertia);
+    assert_eq!(
+        body.mass_properties().local_inverse_inertia,
+        initial_local_inv_inertia
+    );
 }

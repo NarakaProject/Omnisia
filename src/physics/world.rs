@@ -7,6 +7,7 @@ use super::broadphase::{
 };
 use super::collider::{Collider, ColliderId};
 use super::contact::Contact;
+use super::integration::IntegrationError;
 use super::narrowphase::{collide, NarrowphaseError};
 use super::rigid_body::{MassProperties, RigidBody};
 use super::shape::Shape;
@@ -463,6 +464,78 @@ impl PhysicsWorld {
         let dt = self.config.fixed_dt;
         let solver_config = self.config.solver_config;
         solve_contacts_fn(&mut self.rigid_bodies, contacts, dt, &solver_config)
+    }
+
+    /// Menghitung ulang AABB dunia seluruh collider milik `body_id` dan menyinkronkan proksi broadphase.
+    pub fn sync_body_broadphase(&mut self, body_id: RigidBodyId) -> Result<(), BroadphaseError> {
+        let body = match self.rigid_bodies.get(&body_id) {
+            Some(b) => b,
+            None => {
+                self.broadphase.remove(body_id);
+                return Ok(());
+            }
+        };
+
+        let body_transform = body.transform();
+        let mut combined_aabb: Option<Aabb> = None;
+        for c in self
+            .colliders
+            .values()
+            .filter(|c| c.rigid_body_id() == body_id)
+        {
+            let aabb = c.compute_world_aabb(&body_transform)?;
+            combined_aabb = Some(match combined_aabb {
+                Some(prev) => prev.union(&aabb),
+                None => aabb,
+            });
+        }
+
+        if let Some(new_aabb) = combined_aabb {
+            if self.broadphase.get_proxy(body_id).is_some() {
+                self.broadphase.update(body_id, new_aabb)?;
+            } else {
+                let proxy = BroadphaseProxy::new(body_id, body.body_type(), new_aabb);
+                self.broadphase.insert(proxy)?;
+            }
+        } else {
+            self.broadphase.remove(body_id);
+        }
+
+        Ok(())
+    }
+
+    /// Mengintegrasikan kecepatan linier badan kaku dinamis dari gravitasi dunia (Phase 9.6).
+    pub fn integrate_velocities(&mut self) -> Result<(), IntegrationError> {
+        let dt = self.config.fixed_dt;
+        let gravity = self.config.world_gravity;
+        super::integration::integrate_velocities(&mut self.rigid_bodies, dt, gravity)
+    }
+
+    /// Mengintegrasikan posisi dan rotasi seluruh badan kaku serta menyinkronkan broadphase (Phase 9.6).
+    pub fn integrate_transforms(&mut self) -> Result<(), IntegrationError> {
+        let dt = self.config.fixed_dt;
+        super::integration::integrate_transforms(&mut self.rigid_bodies, dt)?;
+
+        // Sinkronisasi proksi broadphase untuk badan yang bergerak (non-static)
+        let moved_body_ids: Vec<RigidBodyId> = self
+            .rigid_bodies
+            .iter()
+            .filter(|(_, b)| b.body_type() != BodyType::Static)
+            .map(|(id, _)| *id)
+            .collect();
+
+        for body_id in moved_body_ids {
+            let _ = self.sync_body_broadphase(body_id);
+        }
+
+        Ok(())
+    }
+
+    /// Melakukan integrasi penuh: kecepatan dari gravitasi lalu transform dan sinkronisasi broadphase.
+    pub fn integrate(&mut self) -> Result<(), IntegrationError> {
+        self.integrate_velocities()?;
+        self.integrate_transforms()?;
+        Ok(())
     }
 
     /// Mengosongkan seluruh badan, collider, dan broadphase dari dunia fisika.

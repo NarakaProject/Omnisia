@@ -1586,6 +1586,83 @@ fn main() {
         }
     }
 
+    // ========================================================================
+    // BENCHMARK 43: Linear + Angular Integration (Phase 9.6)
+    // 100, 500, 1,000 Bodies (Linear-Only & Mixed Linear+Angular)
+    // ========================================================================
+    {
+        use glam::{Mat3, Quat};
+        use omnisia::physics::{integrate_bodies, RigidBody, RigidBodyId};
+        use std::collections::BTreeMap;
+
+        let body_counts = [100, 500, 1000];
+        let dt = 1.0 / 30.0;
+        let gravity = Vec3::new(0.0, -9.81, 0.0);
+
+        // Sub-benchmark A: Linear-only workload (angular velocity = 0)
+        for &count in &body_counts {
+            let mut bodies = BTreeMap::new();
+            let inertia = Mat3::from_diagonal(Vec3::ONE);
+
+            for i in 0..count {
+                let id = RigidBodyId(i as u64 + 1);
+                let pos = Vec3::new((i as f32) * 0.5, 10.0, 0.0);
+                let mut body =
+                    RigidBody::new_dynamic(id, pos, Quat::IDENTITY, 2.0, inertia).unwrap();
+                body.set_linear_velocity(Vec3::new(1.0, 0.0, 0.0)).unwrap();
+                bodies.insert(id, body);
+            }
+
+            let num_runs = 1000;
+            let start = Instant::now();
+
+            for _ in 0..num_runs {
+                integrate_bodies(&mut bodies, dt, gravity).unwrap();
+            }
+
+            let elapsed = start.elapsed();
+            let us_total = elapsed.as_micros() as f64 / num_runs as f64;
+            let us_per_body = us_total / count as f64;
+
+            println!(
+                "[BENCHMARK 43A] Linear-Only Integration ({} bodies): {:.3} µs/batch ({:.4} µs/body)",
+                count, us_total, us_per_body,
+            );
+        }
+
+        // Sub-benchmark B: Mixed Linear + Angular workload
+        for &count in &body_counts {
+            let mut bodies = BTreeMap::new();
+            let inertia = Mat3::from_diagonal(Vec3::ONE);
+
+            for i in 0..count {
+                let id = RigidBodyId(i as u64 + 1);
+                let pos = Vec3::new((i as f32) * 0.5, 10.0, 0.0);
+                let mut body =
+                    RigidBody::new_dynamic(id, pos, Quat::IDENTITY, 2.0, inertia).unwrap();
+                body.set_linear_velocity(Vec3::new(1.0, 0.0, 0.0)).unwrap();
+                body.set_angular_velocity(Vec3::new(0.0, 1.5, 0.0)).unwrap();
+                bodies.insert(id, body);
+            }
+
+            let num_runs = 1000;
+            let start = Instant::now();
+
+            for _ in 0..num_runs {
+                integrate_bodies(&mut bodies, dt, gravity).unwrap();
+            }
+
+            let elapsed = start.elapsed();
+            let us_total = elapsed.as_micros() as f64 / num_runs as f64;
+            let us_per_body = us_total / count as f64;
+
+            println!(
+                "[BENCHMARK 43B] Mixed Linear + Angular Integration ({} bodies): {:.3} µs/batch ({:.4} µs/body)",
+                count, us_total, us_per_body,
+            );
+        }
+    }
+
     println!("============================================================");
     println!("             BENCHMARK SUITE COMPLETE                       ");
     println!("============================================================");

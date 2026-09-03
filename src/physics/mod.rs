@@ -5,6 +5,7 @@ pub mod collider;
 pub mod collision;
 pub mod config;
 pub mod contact;
+pub mod integration;
 pub mod narrowphase;
 pub mod reintegrate;
 pub mod rigid_body;
@@ -24,6 +25,11 @@ pub use collider::{Collider, ColliderId};
 pub use collision::{swept_vertical_step, VerticalCollisionResult};
 pub use config::PhysicsConfig;
 pub use contact::Contact;
+pub use integration::{
+    integrate_bodies, integrate_body, integrate_rotation, integrate_transform,
+    integrate_transforms, integrate_velocities, integrate_velocity, IntegrationConfig,
+    IntegrationError,
+};
 pub use narrowphase::{collide, NarrowphaseError, CONTACT_EPSILON, NORMAL_EPSILON, SAT_EPSILON};
 pub use reintegrate::{ReintegrationError, ReintegrationPlan};
 pub use rigid_body::{MassProperties, RigidBody, RigidBodyError};
