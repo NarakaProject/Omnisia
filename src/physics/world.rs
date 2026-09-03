@@ -550,6 +550,39 @@ impl PhysicsWorld {
         build_islands(&self.rigid_bodies, contacts)
     }
 
+    /// Membangunkan badan kaku dinamis dan seluruh anggota pulau dinamis yang terhubung dengannya (Phase 9.10).
+    pub fn wake_body_and_island(&mut self, body_id: RigidBodyId) -> usize {
+        let contacts = self.generate_contacts().unwrap_or_default();
+        let islands = self.build_islands(&contacts).unwrap_or_default();
+
+        let mut woken = 0;
+        let mut target_island_idx = None;
+        for (i, island) in islands.iter().enumerate() {
+            if island.bodies.contains(&body_id) {
+                target_island_idx = Some(i);
+                break;
+            }
+        }
+
+        if let Some(idx) = target_island_idx {
+            for &member_id in &islands[idx].bodies {
+                if let Some(b) = self.rigid_bodies.get_mut(&member_id) {
+                    if b.is_sleeping() {
+                        b.wake();
+                        woken += 1;
+                    }
+                }
+            }
+        } else if let Some(b) = self.rigid_bodies.get_mut(&body_id) {
+            if b.is_sleeping() {
+                b.wake();
+                woken += 1;
+            }
+        }
+
+        woken
+    }
+
     /// Membangunkan badan kaku dinamis tertentu berdasarkan ID.
     pub fn wake_body(&mut self, id: RigidBodyId) -> bool {
         if let Some(body) = self.rigid_bodies.get_mut(&id) {

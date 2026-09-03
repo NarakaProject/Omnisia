@@ -8,6 +8,7 @@ pub mod contact;
 pub mod integration;
 pub mod island;
 pub mod narrowphase;
+pub mod player_bridge;
 pub mod reintegrate;
 pub mod rigid_body;
 pub mod runtime;
@@ -35,6 +36,7 @@ pub use island::{
     build_islands, IslandState, PhysicsIsland, PhysicsIslandId, SleepConfig, SleepError,
 };
 pub use narrowphase::{collide, NarrowphaseError, CONTACT_EPSILON, NORMAL_EPSILON, SAT_EPSILON};
+pub use player_bridge::{PlayerBridgeConfig, PlayerBridgeStepResult, PlayerRigidBodyBridge};
 pub use reintegrate::{ReintegrationError, ReintegrationPlan};
 pub use rigid_body::{MassProperties, RigidBody, RigidBodyError, SleepState};
 pub use runtime::PhysicsRuntime;

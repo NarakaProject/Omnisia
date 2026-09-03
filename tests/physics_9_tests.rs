@@ -10683,3 +10683,1632 @@ fn test_9_9_50_broadphase_sync_after_dynamic_dynamic_collision() {
     assert!(proxy_1.aabb.is_valid());
     assert!(proxy_2.aabb.is_valid());
 }
+
+// ============================================================================
+// PHASE 9.10: PLAYER <-> RIGIDBODY REFINEMENT TESTS (test_9_10_01 - 50)
+// ============================================================================
+
+use omnisia::physics::{PlayerBridgeStepResult, PlayerRigidBodyBridge};
+use omnisia::player::PlayerController;
+
+#[test]
+fn test_9_10_01_player_remains_kinematic_identity() {
+    let mut world = PhysicsWorld::default();
+    let mut bridge = PlayerRigidBodyBridge::default();
+    let mut player = PlayerController::new(Vec3::new(0.0, 1.0, 0.0));
+
+    // Player tidak pernah didaftarkan ke registri rigid_bodies PhysicsWorld
+    assert!(world.rigid_bodies.is_empty());
+
+    let _ = bridge.step(&mut player, &mut world, None, 1.0 / 30.0, 0.0);
+
+    // Player tetap memiliki transform sendiri, tidak ada badan dinamis baru
+    assert!(world.rigid_bodies.is_empty());
+    assert!(player.state.position.y < 1.0); // Kinematic fall
+}
+
+#[test]
+fn test_9_10_02_dynamic_body_remains_dynamic() {
+    let mut world = PhysicsWorld::default();
+    let mut bridge = PlayerRigidBodyBridge::default();
+    let mut player = PlayerController::new(Vec3::new(0.0, 0.5, 0.0));
+    player.state.velocity = Vec3::new(3.0, 0.0, 0.0);
+
+    let id = RigidBodyId(3001);
+    let inertia = Mat3::from_diagonal(Vec3::ONE);
+    let body =
+        RigidBody::new_dynamic(id, Vec3::new(0.8, 0.5, 0.0), Quat::IDENTITY, 2.0, inertia).unwrap();
+    world.add_rigid_body(body, None).unwrap();
+
+    let col = Collider::new(
+        ColliderId(3001),
+        id,
+        Shape::Box(BoxShape::new(Vec3::splat(0.4)).unwrap()),
+        Transform::IDENTITY,
+    );
+    world.add_collider(col).unwrap();
+
+    let _ = bridge.step(&mut player, &mut world, None, 1.0 / 30.0, 0.0);
+
+    let b = world.get_rigid_body(id).unwrap();
+    assert_eq!(b.body_type(), BodyType::Dynamic);
+}
+
+#[test]
+fn test_9_10_03_player_collides_with_dynamic_body() {
+    let mut world = PhysicsWorld::default();
+    let mut bridge = PlayerRigidBodyBridge::default();
+    let mut player = PlayerController::new(Vec3::new(0.0, 0.5, 0.0));
+    player.state.velocity = Vec3::new(3.0, 0.0, 0.0);
+
+    let id = RigidBodyId(3002);
+    let inertia = Mat3::from_diagonal(Vec3::ONE);
+    let body =
+        RigidBody::new_dynamic(id, Vec3::new(0.6, 0.5, 0.0), Quat::IDENTITY, 5.0, inertia).unwrap();
+    world.add_rigid_body(body, None).unwrap();
+
+    let col = Collider::new(
+        ColliderId(3002),
+        id,
+        Shape::Box(BoxShape::new(Vec3::splat(0.4)).unwrap()),
+        Transform::IDENTITY,
+    );
+    world.add_collider(col).unwrap();
+
+    let res = bridge.step(&mut player, &mut world, None, 1.0 / 30.0, 0.0);
+
+    assert!(res.bodies_pushed > 0);
+    assert!(bridge.last_pushed_bodies.contains(&id));
+}
+
+#[test]
+fn test_9_10_04_dynamic_body_responds_with_linear_velocity() {
+    let mut world = PhysicsWorld::default();
+    let mut bridge = PlayerRigidBodyBridge::default();
+    let mut player = PlayerController::new(Vec3::new(0.0, 0.5, 0.0));
+    player.state.velocity = Vec3::new(4.0, 0.0, 0.0);
+
+    let id = RigidBodyId(3003);
+    let inertia = Mat3::from_diagonal(Vec3::ONE);
+    let body =
+        RigidBody::new_dynamic(id, Vec3::new(0.6, 0.5, 0.0), Quat::IDENTITY, 2.0, inertia).unwrap();
+    world.add_rigid_body(body, None).unwrap();
+
+    let col = Collider::new(
+        ColliderId(3003),
+        id,
+        Shape::Box(BoxShape::new(Vec3::splat(0.4)).unwrap()),
+        Transform::IDENTITY,
+    );
+    world.add_collider(col).unwrap();
+
+    let initial_v = world.get_rigid_body(id).unwrap().linear_velocity();
+    assert_eq!(initial_v, Vec3::ZERO);
+
+    let _ = bridge.step(&mut player, &mut world, None, 1.0 / 30.0, 0.0);
+
+    let final_v = world.get_rigid_body(id).unwrap().linear_velocity();
+    assert!(final_v.x > 0.0);
+}
+
+#[test]
+fn test_9_10_05_player_push_center_produces_zero_torque() {
+    let mut world = PhysicsWorld::default();
+    let mut bridge = PlayerRigidBodyBridge::default();
+    // Pemain dan boks berada tepat pada sumbu Z = 0 dan Y = 0.9 (pusat kapsul berdiri Y = 0.9)
+    let mut player = PlayerController::new(Vec3::new(0.0, 0.0, 0.0));
+    player.state.velocity = Vec3::new(3.0, 0.0, 0.0);
+
+    let id = RigidBodyId(3004);
+    let inertia = Mat3::from_diagonal(Vec3::ONE);
+    let body =
+        RigidBody::new_dynamic(id, Vec3::new(0.6, 0.9, 0.0), Quat::IDENTITY, 2.0, inertia).unwrap();
+    world.add_rigid_body(body, None).unwrap();
+
+    let col = Collider::new(
+        ColliderId(3004),
+        id,
+        Shape::Box(BoxShape::new(Vec3::splat(0.4)).unwrap()),
+        Transform::IDENTITY,
+    );
+    world.add_collider(col).unwrap();
+
+    let _ = bridge.step(&mut player, &mut world, None, 1.0 / 30.0, 0.0);
+
+    let w = world.get_rigid_body(id).unwrap().angular_velocity();
+    // Dorongan tepat di tengah: torsi sumbu Y mendekati nol
+    assert!(w.y.abs() < 1e-3);
+}
+
+#[test]
+fn test_9_10_06_player_push_off_center_produces_angular_torque() {
+    let mut world = PhysicsWorld::default();
+    let mut bridge = PlayerRigidBodyBridge::default();
+    // Pemain dioffset pada sumbu Z = 0.3 (kontak tepi)
+    let mut player = PlayerController::new(Vec3::new(0.0, 0.0, 0.25));
+    player.state.velocity = Vec3::new(3.0, 0.0, 0.0);
+
+    let id = RigidBodyId(3005);
+    let inertia = Mat3::from_diagonal(Vec3::ONE);
+    let body =
+        RigidBody::new_dynamic(id, Vec3::new(0.6, 0.9, 0.0), Quat::IDENTITY, 2.0, inertia).unwrap();
+    world.add_rigid_body(body, None).unwrap();
+
+    let col = Collider::new(
+        ColliderId(3005),
+        id,
+        Shape::Box(BoxShape::new(Vec3::splat(0.4)).unwrap()),
+        Transform::IDENTITY,
+    );
+    world.add_collider(col).unwrap();
+
+    let _ = bridge.step(&mut player, &mut world, None, 1.0 / 30.0, 0.0);
+
+    let w = world.get_rigid_body(id).unwrap().angular_velocity();
+    // Dorongan off-center menghasilkan kecepatan sudut non-nol
+    assert!(w.length() > 0.01);
+}
+
+#[test]
+fn test_9_10_07_player_slow_push_walk_velocity_transfer() {
+    let mut world = PhysicsWorld::default();
+    let mut bridge = PlayerRigidBodyBridge::default();
+    let mut player = PlayerController::new(Vec3::new(0.0, 0.0, 0.0));
+    player.state.velocity = Vec3::new(1.5, 0.0, 0.0); // Jalan lambat
+
+    let id = RigidBodyId(3006);
+    let inertia = Mat3::from_diagonal(Vec3::ONE);
+    let body =
+        RigidBody::new_dynamic(id, Vec3::new(0.6, 0.9, 0.0), Quat::IDENTITY, 5.0, inertia).unwrap();
+    world.add_rigid_body(body, None).unwrap();
+
+    let col = Collider::new(
+        ColliderId(3006),
+        id,
+        Shape::Box(BoxShape::new(Vec3::splat(0.4)).unwrap()),
+        Transform::IDENTITY,
+    );
+    world.add_collider(col).unwrap();
+
+    let _ = bridge.step(&mut player, &mut world, None, 1.0 / 30.0, 0.0);
+
+    let v_slow = world.get_rigid_body(id).unwrap().linear_velocity().x;
+    assert!(v_slow > 0.0);
+}
+
+#[test]
+fn test_9_10_08_player_fast_push_sprint_velocity_transfer() {
+    // 1. Jalankan dorongan lambat (3.0 m/s)
+    let mut world1 = PhysicsWorld::default();
+    let mut bridge1 = PlayerRigidBodyBridge::default();
+    let mut player1 = PlayerController::new(Vec3::new(0.0, 0.0, 0.0));
+    player1.state.velocity = Vec3::new(3.0, 0.0, 0.0);
+
+    let id1 = RigidBodyId(3007);
+    let inertia = Mat3::from_diagonal(Vec3::ONE);
+    let body1 = RigidBody::new_dynamic(id1, Vec3::new(0.6, 0.9, 0.0), Quat::IDENTITY, 5.0, inertia)
+        .unwrap();
+    world1.add_rigid_body(body1, None).unwrap();
+    let col1 = Collider::new(
+        ColliderId(3007),
+        id1,
+        Shape::Box(BoxShape::new(Vec3::splat(0.4)).unwrap()),
+        Transform::IDENTITY,
+    );
+    world1.add_collider(col1).unwrap();
+    let _ = bridge1.step(&mut player1, &mut world1, None, 1.0 / 30.0, 0.0);
+    let v_walk = world1.get_rigid_body(id1).unwrap().linear_velocity().x;
+
+    // 2. Jalankan dorongan cepat / sprint (6.0 m/s)
+    let mut world2 = PhysicsWorld::default();
+    let mut bridge2 = PlayerRigidBodyBridge::default();
+    let mut player2 = PlayerController::new(Vec3::new(0.0, 0.0, 0.0));
+    player2.state.velocity = Vec3::new(6.0, 0.0, 0.0);
+
+    let id2 = RigidBodyId(3008);
+    let body2 = RigidBody::new_dynamic(id2, Vec3::new(0.6, 0.9, 0.0), Quat::IDENTITY, 5.0, inertia)
+        .unwrap();
+    world2.add_rigid_body(body2, None).unwrap();
+    let col2 = Collider::new(
+        ColliderId(3008),
+        id2,
+        Shape::Box(BoxShape::new(Vec3::splat(0.4)).unwrap()),
+        Transform::IDENTITY,
+    );
+    world2.add_collider(col2).unwrap();
+    let _ = bridge2.step(&mut player2, &mut world2, None, 1.0 / 30.0, 0.0);
+    let v_sprint = world2.get_rigid_body(id2).unwrap().linear_velocity().x;
+
+    // Sprint memberikan kecepatan dorong lebih tinggi daripada walk
+    assert!(v_sprint > v_walk);
+}
+
+#[test]
+fn test_9_10_09_player_pushing_massive_dynamic_body() {
+    let mut world = PhysicsWorld::default();
+    let mut bridge = PlayerRigidBodyBridge::default();
+    let mut player = PlayerController::new(Vec3::new(0.0, 0.0, 0.0));
+    player.state.velocity = Vec3::new(5.0, 0.0, 0.0);
+
+    let id = RigidBodyId(3009);
+    let inertia = Mat3::from_diagonal(Vec3::splat(1000.0));
+    // Badan 5.000 kg
+    let body = RigidBody::new_dynamic(
+        id,
+        Vec3::new(0.6, 0.9, 0.0),
+        Quat::IDENTITY,
+        5000.0,
+        inertia,
+    )
+    .unwrap();
+    world.add_rigid_body(body, None).unwrap();
+
+    let col = Collider::new(
+        ColliderId(3009),
+        id,
+        Shape::Box(BoxShape::new(Vec3::splat(0.4)).unwrap()),
+        Transform::IDENTITY,
+    );
+    world.add_collider(col).unwrap();
+
+    let _ = bridge.step(&mut player, &mut world, None, 1.0 / 30.0, 0.0);
+
+    let b = world.get_rigid_body(id).unwrap();
+    // Kecepatan badan sangat kecil tapi positif dan berhingga
+    assert!(b.linear_velocity().x > 0.0);
+    assert!(b.linear_velocity().x < 1.0);
+    // Pemain didepenetrasi dan tidak tembus melompati boks
+    assert!(player.state.position.x < 0.6);
+}
+
+#[test]
+fn test_9_10_10_player_pushing_lightweight_dynamic_body() {
+    let mut world = PhysicsWorld::default();
+    let mut bridge = PlayerRigidBodyBridge::default();
+    let mut player = PlayerController::new(Vec3::new(0.0, 0.0, 0.0));
+    player.state.velocity = Vec3::new(3.0, 0.0, 0.0);
+
+    let id = RigidBodyId(3010);
+    let inertia = Mat3::from_diagonal(Vec3::splat(0.1));
+    // Badan 0.5 kg
+    let body =
+        RigidBody::new_dynamic(id, Vec3::new(0.6, 0.9, 0.0), Quat::IDENTITY, 0.5, inertia).unwrap();
+    world.add_rigid_body(body, None).unwrap();
+
+    let col = Collider::new(
+        ColliderId(3010),
+        id,
+        Shape::Box(BoxShape::new(Vec3::splat(0.4)).unwrap()),
+        Transform::IDENTITY,
+    );
+    world.add_collider(col).unwrap();
+
+    let _ = bridge.step(&mut player, &mut world, None, 1.0 / 30.0, 0.0);
+
+    let b = world.get_rigid_body(id).unwrap();
+    // Kecepatan terdorong cepat tapi stabil (finite dan clamped)
+    assert!(b.linear_velocity().x > 1.0);
+    assert!(b.linear_velocity().is_finite());
+}
+
+#[test]
+fn test_9_10_11_player_stands_on_dynamic_body_grounded() {
+    let mut world = PhysicsWorld::default();
+    let mut bridge = PlayerRigidBodyBridge::default();
+
+    let id = RigidBodyId(3011);
+    let inertia = Mat3::from_diagonal(Vec3::ONE);
+    // Boks permukaan atas ada pada y = 0.5 + 0.5 = 1.0
+    let body = RigidBody::new_dynamic(id, Vec3::new(0.0, 0.5, 0.0), Quat::IDENTITY, 10.0, inertia)
+        .unwrap();
+    world.add_rigid_body(body, None).unwrap();
+
+    let col = Collider::new(
+        ColliderId(3011),
+        id,
+        Shape::Box(BoxShape::new(Vec3::splat(0.5)).unwrap()),
+        Transform::IDENTITY,
+    );
+    world.add_collider(col).unwrap();
+
+    // Pemain ditempatkan tepat di atas boks pada y = 1.01
+    let mut player = PlayerController::new(Vec3::new(0.0, 1.01, 0.0));
+
+    let res = bridge.step(&mut player, &mut world, None, 1.0 / 30.0, 0.0);
+
+    assert!(player.state.grounded);
+    assert_eq!(res.grounded_on_rigidbody, Some(id));
+    assert_eq!(player.state.position.y, 1.0);
+}
+
+#[test]
+fn test_9_10_12_grounding_invariant_stable_feet_y() {
+    let mut world = PhysicsWorld::default();
+    let mut bridge = PlayerRigidBodyBridge::default();
+
+    let id = RigidBodyId(3012);
+    let inertia = Mat3::from_diagonal(Vec3::ONE);
+    let body = RigidBody::new_dynamic(id, Vec3::new(0.0, 0.5, 0.0), Quat::IDENTITY, 10.0, inertia)
+        .unwrap();
+    world.add_rigid_body(body, None).unwrap();
+    let col = Collider::new(
+        ColliderId(3012),
+        id,
+        Shape::Box(BoxShape::new(Vec3::splat(0.5)).unwrap()),
+        Transform::IDENTITY,
+    );
+    world.add_collider(col).unwrap();
+
+    // 1. Di atas boks -> grounded == true && ground.stable_feet_y.is_some()
+    let mut player = PlayerController::new(Vec3::new(0.0, 1.01, 0.0));
+    bridge.step(&mut player, &mut world, None, 1.0 / 30.0, 0.0);
+    assert!(player.state.grounded);
+    let ground1 = bridge.check_ground(player.state.position, &player, None, &world);
+    assert!(ground1.grounded);
+    assert!(ground1.stable_feet_y.is_some());
+
+    // 2. Di udara tinggi -> grounded == false && ground.stable_feet_y.is_none()
+    let mut player_air = PlayerController::new(Vec3::new(0.0, 10.0, 0.0));
+    bridge.step(&mut player_air, &mut world, None, 1.0 / 30.0, 0.0);
+    assert!(!player_air.state.grounded);
+    let ground_air = bridge.check_ground(player_air.state.position, &player_air, None, &world);
+    assert!(!ground_air.grounded);
+    assert!(ground_air.stable_feet_y.is_none());
+}
+
+#[test]
+fn test_9_10_13_moving_dynamic_support_horizontal_carry() {
+    let mut world = PhysicsWorld::default();
+    let mut bridge = PlayerRigidBodyBridge::default();
+
+    let id = RigidBodyId(3013);
+    let inertia = Mat3::from_diagonal(Vec3::ONE);
+    let mut body =
+        RigidBody::new_dynamic(id, Vec3::new(0.0, 0.5, 0.0), Quat::IDENTITY, 10.0, inertia)
+            .unwrap();
+    body.set_linear_velocity(Vec3::new(3.0, 0.0, 0.0)).unwrap();
+    world.add_rigid_body(body, None).unwrap();
+
+    let col = Collider::new(
+        ColliderId(3013),
+        id,
+        Shape::Box(BoxShape::new(Vec3::splat(0.5)).unwrap()),
+        Transform::IDENTITY,
+    );
+    world.add_collider(col).unwrap();
+
+    let mut player = PlayerController::new(Vec3::new(0.0, 1.01, 0.0));
+    let dt = 1.0 / 30.0;
+
+    // Tick 1: Menemukan tumpuan dan mencatat support body
+    bridge.step(&mut player, &mut world, None, dt, 0.0);
+    assert!(player.state.grounded);
+
+    let initial_x = player.state.position.x;
+
+    // Tick 2: Support carry membawa pemain bergerak ke +X
+    bridge.step(&mut player, &mut world, None, dt, 0.0);
+
+    let dx = player.state.position.x - initial_x;
+    assert!((dx - 3.0 * dt).abs() < 1e-3);
+}
+
+#[test]
+fn test_9_10_14_moving_dynamic_support_vertical_carry() {
+    let mut world = PhysicsWorld::default();
+    let mut bridge = PlayerRigidBodyBridge::default();
+
+    let id = RigidBodyId(3014);
+    let inertia = Mat3::from_diagonal(Vec3::ONE);
+    let mut body =
+        RigidBody::new_dynamic(id, Vec3::new(0.0, 0.5, 0.0), Quat::IDENTITY, 10.0, inertia)
+            .unwrap();
+    body.set_linear_velocity(Vec3::new(0.0, 2.0, 0.0)).unwrap();
+    world.add_rigid_body(body, None).unwrap();
+
+    let col = Collider::new(
+        ColliderId(3014),
+        id,
+        Shape::Box(BoxShape::new(Vec3::splat(0.5)).unwrap()),
+        Transform::IDENTITY,
+    );
+    world.add_collider(col).unwrap();
+
+    let mut player = PlayerController::new(Vec3::new(0.0, 1.01, 0.0));
+    let dt = 1.0 / 30.0;
+
+    bridge.step(&mut player, &mut world, None, dt, 0.0);
+    let initial_y = player.state.position.y;
+
+    bridge.step(&mut player, &mut world, None, dt, 0.0);
+    let dy = player.state.position.y - initial_y;
+
+    assert!((dy - 2.0 * dt).abs() < 1e-3);
+}
+
+#[test]
+fn test_9_10_15_rotating_dynamic_support_surface_velocity() {
+    let mut world = PhysicsWorld::default();
+    let mut bridge = PlayerRigidBodyBridge::default();
+
+    let id = RigidBodyId(3015);
+    let inertia = Mat3::from_diagonal(Vec3::ONE);
+    let mut body =
+        RigidBody::new_dynamic(id, Vec3::new(0.0, 0.5, 0.0), Quat::IDENTITY, 10.0, inertia)
+            .unwrap();
+    // Berputar pada sumbu Y: omega = (0, 2, 0) rad/s
+    body.set_angular_velocity(Vec3::new(0.0, 2.0, 0.0)).unwrap();
+    world.add_rigid_body(body, None).unwrap();
+
+    let col = Collider::new(
+        ColliderId(3015),
+        id,
+        Shape::Box(BoxShape::new(Vec3::new(1.0, 0.5, 1.0)).unwrap()),
+        Transform::IDENTITY,
+    );
+    world.add_collider(col).unwrap();
+
+    // Pemain berdiri pada offset X = 0.5 (r = (0.5, 0.5, 0))
+    // v_surf = omega x r = (0, 2, 0) x (0.5, 0.5, 0) = (0, 0, -1.0)
+    let mut player = PlayerController::new(Vec3::new(0.5, 1.01, 0.0));
+    let dt = 1.0 / 30.0;
+
+    bridge.step(&mut player, &mut world, None, dt, 0.0);
+    let initial_z = player.state.position.z;
+
+    bridge.step(&mut player, &mut world, None, dt, 0.0);
+    let dz = player.state.position.z - initial_z;
+
+    // Terbawa rotasi tangensial pada sumbu Z
+    assert!(dz.abs() > 0.01);
+}
+
+#[test]
+fn test_9_10_16_player_leaves_dynamic_support_becomes_airborne() {
+    let mut world = PhysicsWorld::default();
+    let mut bridge = PlayerRigidBodyBridge::default();
+
+    let id = RigidBodyId(3016);
+    let inertia = Mat3::from_diagonal(Vec3::ONE);
+    let body = RigidBody::new_dynamic(id, Vec3::new(0.0, 0.5, 0.0), Quat::IDENTITY, 10.0, inertia)
+        .unwrap();
+    world.add_rigid_body(body, None).unwrap();
+
+    let col = Collider::new(
+        ColliderId(3016),
+        id,
+        Shape::Box(BoxShape::new(Vec3::splat(0.5)).unwrap()),
+        Transform::IDENTITY,
+    );
+    world.add_collider(col).unwrap();
+
+    let mut player = PlayerController::new(Vec3::new(0.0, 1.01, 0.0));
+    bridge.step(&mut player, &mut world, None, 1.0 / 30.0, 0.0);
+    assert!(player.state.grounded);
+
+    // Pemain berteleportasi / berjalan keluar dari permukaan boks
+    player.state.position.x = 2.0;
+    bridge.step(&mut player, &mut world, None, 1.0 / 30.0, 0.0);
+
+    assert!(!player.state.grounded);
+}
+
+#[test]
+fn test_9_10_17_player_jump_from_dynamic_body_authors_velocity() {
+    let mut world = PhysicsWorld::default();
+    let mut bridge = PlayerRigidBodyBridge::default();
+
+    let id = RigidBodyId(3017);
+    let inertia = Mat3::from_diagonal(Vec3::ONE);
+    let body = RigidBody::new_dynamic(id, Vec3::new(0.0, 0.5, 0.0), Quat::IDENTITY, 10.0, inertia)
+        .unwrap();
+    world.add_rigid_body(body, None).unwrap();
+
+    let col = Collider::new(
+        ColliderId(3017),
+        id,
+        Shape::Box(BoxShape::new(Vec3::splat(0.5)).unwrap()),
+        Transform::IDENTITY,
+    );
+    world.add_collider(col).unwrap();
+
+    let mut player = PlayerController::new(Vec3::new(0.0, 1.01, 0.0));
+    bridge.step(&mut player, &mut world, None, 1.0 / 30.0, 0.0);
+    assert!(player.state.grounded);
+
+    // Minta lompat
+    player.state.jump_requested = true;
+    let res = bridge.step(&mut player, &mut world, None, 1.0 / 30.0, 0.0);
+
+    assert!(res.jump_reaction_applied);
+    assert!(
+        player.state.velocity.y > 5.0 && player.state.velocity.y <= player.config.jump_velocity
+    );
+}
+
+#[test]
+fn test_9_10_18_player_jump_inherits_horizontal_support_momentum() {
+    let mut world = PhysicsWorld::default();
+    let mut bridge = PlayerRigidBodyBridge::default();
+
+    let id = RigidBodyId(3018);
+    let inertia = Mat3::from_diagonal(Vec3::ONE);
+    let mut body =
+        RigidBody::new_dynamic(id, Vec3::new(0.0, 0.5, 0.0), Quat::IDENTITY, 10.0, inertia)
+            .unwrap();
+    body.set_linear_velocity(Vec3::new(4.0, 0.0, 0.0)).unwrap();
+    world.add_rigid_body(body, None).unwrap();
+
+    let col = Collider::new(
+        ColliderId(3018),
+        id,
+        Shape::Box(BoxShape::new(Vec3::splat(0.5)).unwrap()),
+        Transform::IDENTITY,
+    );
+    world.add_collider(col).unwrap();
+
+    let mut player = PlayerController::new(Vec3::new(0.0, 1.01, 0.0));
+    bridge.step(&mut player, &mut world, None, 1.0 / 30.0, 0.0);
+
+    player.state.jump_requested = true;
+    bridge.step(&mut player, &mut world, None, 1.0 / 30.0, 0.0);
+
+    // Kecepatan horizontal pemain memuat kecepatan platform yang ditumpangi
+    assert!(player.state.velocity.x >= 4.0);
+}
+
+#[test]
+fn test_9_10_19_player_jump_applies_downward_reaction_impulse() {
+    let mut world = PhysicsWorld::default();
+    let mut bridge = PlayerRigidBodyBridge::default();
+
+    let id = RigidBodyId(3019);
+    let inertia = Mat3::from_diagonal(Vec3::ONE);
+    let body = RigidBody::new_dynamic(id, Vec3::new(0.0, 0.5, 0.0), Quat::IDENTITY, 10.0, inertia)
+        .unwrap();
+    world.add_rigid_body(body, None).unwrap();
+
+    let col = Collider::new(
+        ColliderId(3019),
+        id,
+        Shape::Box(BoxShape::new(Vec3::splat(0.5)).unwrap()),
+        Transform::IDENTITY,
+    );
+    world.add_collider(col).unwrap();
+
+    let mut player = PlayerController::new(Vec3::new(0.0, 1.01, 0.0));
+    bridge.step(&mut player, &mut world, None, 1.0 / 30.0, 0.0);
+
+    player.state.jump_requested = true;
+    bridge.step(&mut player, &mut world, None, 1.0 / 30.0, 0.0);
+
+    // Badan dinamis menerima impuls reaksi ke bawah (-Y)
+    let body_v = world.get_rigid_body(id).unwrap().linear_velocity();
+    assert!(body_v.y < 0.0);
+}
+
+#[test]
+fn test_9_10_20_airborne_side_collision_does_not_falsely_ground() {
+    let mut world = PhysicsWorld::default();
+    let mut bridge = PlayerRigidBodyBridge::default();
+
+    let id = RigidBodyId(3020);
+    let inertia = Mat3::from_diagonal(Vec3::ONE);
+    // Boks tinggi di udara
+    let body = RigidBody::new_dynamic(id, Vec3::new(1.0, 5.0, 0.0), Quat::IDENTITY, 10.0, inertia)
+        .unwrap();
+    world.add_rigid_body(body, None).unwrap();
+
+    let col = Collider::new(
+        ColliderId(3020),
+        id,
+        Shape::Box(BoxShape::new(Vec3::splat(1.0)).unwrap()),
+        Transform::IDENTITY,
+    );
+    world.add_collider(col).unwrap();
+
+    // Pemain terbang menabrak sisi samping boks pada y = 5.0 (kaki di y = 4.5, di samping muka vertikal)
+    let mut player = PlayerController::new(Vec3::new(0.2, 4.5, 0.0));
+    player.state.velocity = Vec3::new(3.0, 0.0, 0.0);
+
+    bridge.step(&mut player, &mut world, None, 1.0 / 30.0, 0.0);
+
+    // Menabrak sisi dinding tidak pernah menghasilkan status grounded
+    assert!(!player.state.grounded);
+}
+
+#[test]
+fn test_9_10_21_player_landing_on_dynamic_body_from_height() {
+    let mut world = PhysicsWorld::default();
+    let mut bridge = PlayerRigidBodyBridge::default();
+
+    let id = RigidBodyId(3021);
+    let inertia = Mat3::from_diagonal(Vec3::ONE);
+    let body = RigidBody::new_dynamic(id, Vec3::new(0.0, 0.5, 0.0), Quat::IDENTITY, 10.0, inertia)
+        .unwrap();
+    world.add_rigid_body(body, None).unwrap();
+
+    let col = Collider::new(
+        ColliderId(3021),
+        id,
+        Shape::Box(BoxShape::new(Vec3::splat(0.5)).unwrap()),
+        Transform::IDENTITY,
+    );
+    world.add_collider(col).unwrap();
+
+    // Pemain jatuh dari ketinggian y = 1.30
+    let mut player = PlayerController::new(Vec3::new(0.0, 1.30, 0.0));
+
+    for _ in 0..10 {
+        bridge.step(&mut player, &mut world, None, 1.0 / 30.0, 0.0);
+    }
+
+    // Pemain mendarat dan stabil di permukaan atas boks y = 1.0
+    assert!(player.state.grounded);
+    assert_eq!(player.state.position.y, 1.0);
+}
+
+#[test]
+fn test_9_10_22_quiet_player_on_sleeping_body_preserves_sleep() {
+    let mut world = PhysicsWorld::default();
+    let mut bridge = PlayerRigidBodyBridge::default();
+
+    let id = RigidBodyId(3022);
+    let inertia = Mat3::from_diagonal(Vec3::ONE);
+    let mut body =
+        RigidBody::new_dynamic(id, Vec3::new(0.0, 0.5, 0.0), Quat::IDENTITY, 10.0, inertia)
+            .unwrap();
+    body.put_to_sleep();
+    world.add_rigid_body(body, None).unwrap();
+
+    let col = Collider::new(
+        ColliderId(3022),
+        id,
+        Shape::Box(BoxShape::new(Vec3::splat(0.5)).unwrap()),
+        Transform::IDENTITY,
+    );
+    world.add_collider(col).unwrap();
+
+    let mut player = PlayerController::new(Vec3::new(0.0, 1.0, 0.0));
+    player.state.velocity = Vec3::ZERO;
+
+    // Jalankan 30 ticks pemain berdiri diam di atas boks tidur
+    for _ in 0..30 {
+        let res = bridge.step(&mut player, &mut world, None, 1.0 / 30.0, 0.0);
+        assert_eq!(res.bodies_woken, 0);
+    }
+
+    let b = world.get_rigid_body(id).unwrap();
+    assert!(b.is_sleeping());
+}
+
+#[test]
+fn test_9_10_23_player_movement_wakes_sleeping_support() {
+    let mut world = PhysicsWorld::default();
+    let mut bridge = PlayerRigidBodyBridge::default();
+
+    let id = RigidBodyId(3023);
+    let inertia = Mat3::from_diagonal(Vec3::ONE);
+    let mut body =
+        RigidBody::new_dynamic(id, Vec3::new(0.0, 0.5, 0.0), Quat::IDENTITY, 10.0, inertia)
+            .unwrap();
+    body.put_to_sleep();
+    world.add_rigid_body(body, None).unwrap();
+
+    let col = Collider::new(
+        ColliderId(3023),
+        id,
+        Shape::Box(BoxShape::new(Vec3::splat(0.5)).unwrap()),
+        Transform::IDENTITY,
+    );
+    world.add_collider(col).unwrap();
+
+    let mut player = PlayerController::new(Vec3::new(0.0, 1.0, 0.0));
+    // Pemain mulai bergerak (kecepatan 2 m/s)
+    player.state.velocity = Vec3::new(2.0, 0.0, 0.0);
+
+    let res = bridge.step(&mut player, &mut world, None, 1.0 / 30.0, 0.0);
+
+    assert!(res.bodies_woken > 0);
+    let b = world.get_rigid_body(id).unwrap();
+    assert!(b.is_awake());
+}
+
+#[test]
+fn test_9_10_24_player_jump_wakes_sleeping_support() {
+    let mut world = PhysicsWorld::default();
+    let mut bridge = PlayerRigidBodyBridge::default();
+
+    let id = RigidBodyId(3024);
+    let inertia = Mat3::from_diagonal(Vec3::ONE);
+    let mut body =
+        RigidBody::new_dynamic(id, Vec3::new(0.0, 0.5, 0.0), Quat::IDENTITY, 10.0, inertia)
+            .unwrap();
+    body.put_to_sleep();
+    world.add_rigid_body(body, None).unwrap();
+
+    let col = Collider::new(
+        ColliderId(3024),
+        id,
+        Shape::Box(BoxShape::new(Vec3::splat(0.5)).unwrap()),
+        Transform::IDENTITY,
+    );
+    world.add_collider(col).unwrap();
+
+    let mut player = PlayerController::new(Vec3::new(0.0, 1.0, 0.0));
+    bridge.step(&mut player, &mut world, None, 1.0 / 30.0, 0.0);
+
+    // Pemain melompat
+    player.state.jump_requested = true;
+    let res = bridge.step(&mut player, &mut world, None, 1.0 / 30.0, 0.0);
+
+    assert!(res.bodies_woken > 0);
+    let b = world.get_rigid_body(id).unwrap();
+    assert!(b.is_awake());
+}
+
+#[test]
+fn test_9_10_25_player_push_wakes_sleeping_dynamic_body() {
+    let mut world = PhysicsWorld::default();
+    let mut bridge = PlayerRigidBodyBridge::default();
+
+    let id = RigidBodyId(3025);
+    let inertia = Mat3::from_diagonal(Vec3::ONE);
+    let mut body =
+        RigidBody::new_dynamic(id, Vec3::new(0.6, 0.5, 0.0), Quat::IDENTITY, 5.0, inertia).unwrap();
+    body.put_to_sleep();
+    world.add_rigid_body(body, None).unwrap();
+
+    let col = Collider::new(
+        ColliderId(3025),
+        id,
+        Shape::Box(BoxShape::new(Vec3::splat(0.4)).unwrap()),
+        Transform::IDENTITY,
+    );
+    world.add_collider(col).unwrap();
+
+    let mut player = PlayerController::new(Vec3::new(0.0, 0.5, 0.0));
+    player.state.velocity = Vec3::new(3.0, 0.0, 0.0);
+
+    let res = bridge.step(&mut player, &mut world, None, 1.0 / 30.0, 0.0);
+
+    assert!(res.bodies_woken > 0);
+    let b = world.get_rigid_body(id).unwrap();
+    assert!(b.is_awake());
+}
+
+#[test]
+fn test_9_10_26_wake_propagates_across_dynamic_island() {
+    let mut world = PhysicsWorld::default();
+    let mut bridge = PlayerRigidBodyBridge::default();
+
+    let id_a = RigidBodyId(3026);
+    let id_b = RigidBodyId(3027);
+    let inertia = Mat3::from_diagonal(Vec3::ONE);
+
+    // Box A dan Box B bersentuhan
+    let mut body_a =
+        RigidBody::new_dynamic(id_a, Vec3::new(0.6, 0.5, 0.0), Quat::IDENTITY, 5.0, inertia)
+            .unwrap();
+    let mut body_b =
+        RigidBody::new_dynamic(id_b, Vec3::new(1.3, 0.5, 0.0), Quat::IDENTITY, 5.0, inertia)
+            .unwrap();
+    body_a.put_to_sleep();
+    body_b.put_to_sleep();
+    world.add_rigid_body(body_a, None).unwrap();
+    world.add_rigid_body(body_b, None).unwrap();
+
+    let col_a = Collider::new(
+        ColliderId(3026),
+        id_a,
+        Shape::Box(BoxShape::new(Vec3::splat(0.4)).unwrap()),
+        Transform::IDENTITY,
+    );
+    let col_b = Collider::new(
+        ColliderId(3027),
+        id_b,
+        Shape::Box(BoxShape::new(Vec3::splat(0.4)).unwrap()),
+        Transform::IDENTITY,
+    );
+    world.add_collider(col_a).unwrap();
+    world.add_collider(col_b).unwrap();
+
+    // Pemain menabrak Box A
+    let mut player = PlayerController::new(Vec3::new(0.0, 0.5, 0.0));
+    player.state.velocity = Vec3::new(3.0, 0.0, 0.0);
+
+    bridge.step(&mut player, &mut world, None, 1.0 / 30.0, 0.0);
+
+    // Box A bangun dan propagasi pulau membangunkan Box B
+    let _ = world.step();
+    assert!(world.get_rigid_body(id_a).unwrap().is_awake());
+    assert!(world.get_rigid_body(id_b).unwrap().is_awake());
+}
+
+#[test]
+fn test_9_10_27_no_wake_sleep_oscillation_quiet_scenario() {
+    let mut world = PhysicsWorld::default();
+    let mut bridge = PlayerRigidBodyBridge::default();
+
+    let id = RigidBodyId(3028);
+    let inertia = Mat3::from_diagonal(Vec3::ONE);
+    let mut body =
+        RigidBody::new_dynamic(id, Vec3::new(0.0, 0.5, 0.0), Quat::IDENTITY, 10.0, inertia)
+            .unwrap();
+    body.put_to_sleep();
+    world.add_rigid_body(body, None).unwrap();
+
+    let col = Collider::new(
+        ColliderId(3028),
+        id,
+        Shape::Box(BoxShape::new(Vec3::splat(0.5)).unwrap()),
+        Transform::IDENTITY,
+    );
+    world.add_collider(col).unwrap();
+
+    let mut player = PlayerController::new(Vec3::new(0.0, 1.0, 0.0));
+    player.state.velocity = Vec3::ZERO;
+
+    // Uji 100 ticks berturut-turut: status tidur tidak pernah berosilasi
+    for _ in 0..100 {
+        let res = bridge.step(&mut player, &mut world, None, 1.0 / 30.0, 0.0);
+        assert_eq!(res.bodies_woken, 0);
+        assert!(world.get_rigid_body(id).unwrap().is_sleeping());
+    }
+}
+
+#[test]
+fn test_9_10_28_dynamic_body_hits_stationary_player() {
+    let mut world = PhysicsWorld::default();
+    let mut bridge = PlayerRigidBodyBridge::default();
+
+    let id = RigidBodyId(3029);
+    let inertia = Mat3::from_diagonal(Vec3::ONE);
+    let mut body =
+        RigidBody::new_dynamic(id, Vec3::new(1.0, 0.9, 0.0), Quat::IDENTITY, 5.0, inertia).unwrap();
+    body.set_linear_velocity(Vec3::new(-4.0, 0.0, 0.0)).unwrap(); // Meluncur ke kiri menuju pemain
+    world.add_rigid_body(body, None).unwrap();
+
+    let col = Collider::new(
+        ColliderId(3029),
+        id,
+        Shape::Box(BoxShape::new(Vec3::splat(0.4)).unwrap()),
+        Transform::IDENTITY,
+    );
+    world.add_collider(col).unwrap();
+
+    // Pemain diam pada x = 0.5
+    let mut player = PlayerController::new(Vec3::new(0.5, 0.0, 0.0));
+
+    let _ = bridge.step(&mut player, &mut world, None, 1.0 / 30.0, 0.0);
+
+    // Badan dinamis menerima transfer impuls perlambatan
+    let b = world.get_rigid_body(id).unwrap();
+    assert!(b.linear_velocity().x > -4.0);
+    // Pemain didepenetrasi ke arah -X
+    assert!(player.state.position.x < 0.5);
+}
+
+#[test]
+fn test_9_10_29_dynamic_body_high_speed_impact_no_tunneling() {
+    let mut world = PhysicsWorld::default();
+    let mut bridge = PlayerRigidBodyBridge::default();
+
+    let id = RigidBodyId(3030);
+    let inertia = Mat3::from_diagonal(Vec3::ONE);
+    let mut body =
+        RigidBody::new_dynamic(id, Vec3::new(1.0, 0.9, 0.0), Quat::IDENTITY, 5.0, inertia).unwrap();
+    body.set_linear_velocity(Vec3::new(-15.0, 0.0, 0.0))
+        .unwrap();
+    world.add_rigid_body(body, None).unwrap();
+
+    let col = Collider::new(
+        ColliderId(3030),
+        id,
+        Shape::Box(BoxShape::new(Vec3::splat(0.4)).unwrap()),
+        Transform::IDENTITY,
+    );
+    world.add_collider(col).unwrap();
+
+    let mut player = PlayerController::new(Vec3::new(0.5, 0.0, 0.0));
+
+    let _ = bridge.step(&mut player, &mut world, None, 1.0 / 30.0, 0.0);
+
+    // Tidak terjadi tunneling tembus tak terhingga
+    assert!(player.state.position.is_finite());
+    assert!(world.get_rigid_body(id).unwrap().position().is_finite());
+}
+
+#[test]
+fn test_9_10_30_no_double_impulse_or_energy_creation() {
+    let mut world = PhysicsWorld::default();
+    let mut bridge = PlayerRigidBodyBridge::default();
+
+    let id = RigidBodyId(3031);
+    let inertia = Mat3::from_diagonal(Vec3::ONE);
+    let body = RigidBody::new_dynamic(id, Vec3::new(0.6, 0.9, 0.0), Quat::IDENTITY, 10.0, inertia)
+        .unwrap();
+    world.add_rigid_body(body, None).unwrap();
+
+    let col = Collider::new(
+        ColliderId(3031),
+        id,
+        Shape::Box(BoxShape::new(Vec3::splat(0.4)).unwrap()),
+        Transform::IDENTITY,
+    );
+    world.add_collider(col).unwrap();
+
+    let mut player = PlayerController::new(Vec3::new(0.0, 0.0, 0.0));
+    player.state.velocity = Vec3::new(3.0, 0.0, 0.0);
+
+    let res = bridge.step(&mut player, &mut world, None, 1.0 / 30.0, 0.0);
+
+    // Hanya terdorong sekali pada tick ini
+    assert_eq!(res.bodies_pushed, 1);
+    let b = world.get_rigid_body(id).unwrap();
+    assert!(b.linear_velocity().x <= 3.0); // Kecepatan tidak melebihi kecepatan pendorong
+}
+
+#[test]
+fn test_9_10_31_player_interacting_with_dynamic_stack() {
+    let mut world = PhysicsWorld::default();
+    let mut bridge = PlayerRigidBodyBridge::default();
+    let inertia = Mat3::from_diagonal(Vec3::ONE);
+
+    // Tumpukan 3 boks: y = 0.5, 1.5, 2.5 (permukaan atas y = 3.0)
+    for i in 1..=3 {
+        let id = RigidBodyId(3031 + i);
+        let pos = Vec3::new(0.0, (i as f32) - 0.5, 0.0);
+        let b = RigidBody::new_dynamic(id, pos, Quat::IDENTITY, 5.0, inertia).unwrap();
+        world.add_rigid_body(b, None).unwrap();
+        let c = Collider::new(
+            ColliderId(3031 + i),
+            id,
+            Shape::Box(BoxShape::new(Vec3::splat(0.5)).unwrap()),
+            Transform::IDENTITY,
+        );
+        world.add_collider(c).unwrap();
+    }
+
+    let top_box_id = RigidBodyId(3034);
+
+    // Pemain berdiri di atas boks ke-3 (y = 3.01)
+    let mut player = PlayerController::new(Vec3::new(0.0, 3.01, 0.0));
+    let res = bridge.step(&mut player, &mut world, None, 1.0 / 30.0, 0.0);
+
+    assert!(player.state.grounded);
+    assert_eq!(res.grounded_on_rigidbody, Some(top_box_id));
+    assert_eq!(player.state.position.y, 3.0);
+}
+
+#[test]
+fn test_9_10_32_player_pushing_bottom_of_dynamic_stack() {
+    let mut world = PhysicsWorld::default();
+    let mut bridge = PlayerRigidBodyBridge::default();
+    let inertia = Mat3::from_diagonal(Vec3::ONE);
+
+    let bot_id = RigidBodyId(3035);
+    let body_bot = RigidBody::new_dynamic(
+        bot_id,
+        Vec3::new(0.6, 0.5, 0.0),
+        Quat::IDENTITY,
+        5.0,
+        inertia,
+    )
+    .unwrap();
+    world.add_rigid_body(body_bot, None).unwrap();
+    let col_bot = Collider::new(
+        ColliderId(3035),
+        bot_id,
+        Shape::Box(BoxShape::new(Vec3::splat(0.5)).unwrap()),
+        Transform::IDENTITY,
+    );
+    world.add_collider(col_bot).unwrap();
+
+    let mut player = PlayerController::new(Vec3::new(0.0, 0.0, 0.0));
+    player.state.velocity = Vec3::new(3.0, 0.0, 0.0);
+
+    let res = bridge.step(&mut player, &mut world, None, 1.0 / 30.0, 0.0);
+
+    assert!(res.bodies_pushed > 0);
+    assert!(world.get_rigid_body(bot_id).unwrap().linear_velocity().x > 0.0);
+}
+
+#[test]
+fn test_9_10_33_player_is_not_island_member() {
+    let mut world = PhysicsWorld::default();
+    let mut bridge = PlayerRigidBodyBridge::default();
+
+    let id = RigidBodyId(3036);
+    let inertia = Mat3::from_diagonal(Vec3::ONE);
+    let body = RigidBody::new_dynamic(id, Vec3::new(0.0, 0.5, 0.0), Quat::IDENTITY, 10.0, inertia)
+        .unwrap();
+    world.add_rigid_body(body, None).unwrap();
+    let col = Collider::new(
+        ColliderId(3036),
+        id,
+        Shape::Box(BoxShape::new(Vec3::splat(0.5)).unwrap()),
+        Transform::IDENTITY,
+    );
+    world.add_collider(col).unwrap();
+
+    let mut player = PlayerController::new(Vec3::new(0.0, 1.0, 0.0));
+    let _ = bridge.step(&mut player, &mut world, None, 1.0 / 30.0, 0.0);
+
+    let contacts = world.generate_contacts().unwrap();
+    let islands = world.build_islands(&contacts).unwrap();
+
+    for isl in &islands {
+        for &b_id in &isl.bodies {
+            assert_ne!(b_id, RigidBodyId(u64::MAX));
+        }
+    }
+}
+
+#[test]
+fn test_9_10_34_player_does_not_bridge_separate_dynamic_islands() {
+    let mut world = PhysicsWorld::default();
+    let id_a = RigidBodyId(3037);
+    let id_b = RigidBodyId(3038);
+    let inertia = Mat3::from_diagonal(Vec3::ONE);
+
+    // Dua boks terpisah di ruang dunia
+    let body_a = RigidBody::new_dynamic(
+        id_a,
+        Vec3::new(-5.0, 0.5, 0.0),
+        Quat::IDENTITY,
+        10.0,
+        inertia,
+    )
+    .unwrap();
+    let body_b = RigidBody::new_dynamic(
+        id_b,
+        Vec3::new(5.0, 0.5, 0.0),
+        Quat::IDENTITY,
+        10.0,
+        inertia,
+    )
+    .unwrap();
+    world.add_rigid_body(body_a, None).unwrap();
+    world.add_rigid_body(body_b, None).unwrap();
+
+    let contacts = world.generate_contacts().unwrap();
+    let islands = world.build_islands(&contacts).unwrap();
+
+    // Box A dan Box B tetap berada di pulau terpisah
+    assert_eq!(islands.len(), 2);
+}
+
+#[test]
+fn test_9_10_35_static_terrain_grounding_regression() {
+    let mut world = PhysicsWorld::default();
+    let mut bridge = PlayerRigidBodyBridge::default();
+
+    let mut store = ChunkStore::new();
+    let mut chunk = Chunk::new(IVec3::ZERO);
+    // Voxel solid di (10, 2, 10) -> permukaan atas y = (2 + 1) * 0.5 = 1.5m
+    chunk.set_voxel(10, 2, 10, VoxelBlock::new(MaterialId::STONE));
+    store.insert(chunk);
+
+    let mut player = PlayerController::new(Vec3::new(5.25, 1.51, 5.25));
+    let res = bridge.step(&mut player, &mut world, Some(&store), 1.0 / 30.0, 0.0);
+
+    assert!(player.state.grounded);
+    assert_eq!(res.grounded_on_rigidbody, None);
+    assert_eq!(player.state.position.y, 1.5);
+}
+
+#[test]
+fn test_9_10_36_static_wall_collision_regression() {
+    let mut world = PhysicsWorld::default();
+    let mut bridge = PlayerRigidBodyBridge::default();
+
+    let mut store = ChunkStore::new();
+    let mut chunk = Chunk::new(IVec3::ZERO);
+    for x in 0..10 {
+        chunk.set_voxel(x, 0, 0, VoxelBlock::new(MaterialId::STONE));
+    }
+    chunk.set_voxel(4, 1, 0, VoxelBlock::new(MaterialId::STONE));
+    chunk.set_voxel(4, 2, 0, VoxelBlock::new(MaterialId::STONE));
+    store.insert(chunk);
+
+    let mut player = PlayerController::new(Vec3::new(0.5, 0.5, 0.25));
+    player.input.move_forward = 1.0; // Berjalan ke arah +X
+
+    for _ in 0..10 {
+        bridge.step(&mut player, &mut world, Some(&store), 1.0 / 30.0, -90.0);
+    }
+
+    // Pemain terhenti oleh dinding voxel dan tidak tembus
+    assert!(player.state.position.x <= 2.0);
+}
+
+#[test]
+fn test_9_10_37_crouch_under_low_dynamic_body() {
+    let mut world = PhysicsWorld::default();
+    let mut bridge = PlayerRigidBodyBridge::default();
+
+    let id = RigidBodyId(3039);
+    let inertia = Mat3::from_diagonal(Vec3::ONE);
+    // Boks melayang pada y = 1.45 (bawah boks = 1.35)
+    let body = RigidBody::new_dynamic(
+        id,
+        Vec3::new(0.6, 1.45, 0.0),
+        Quat::IDENTITY,
+        100.0,
+        inertia,
+    )
+    .unwrap();
+    world.add_rigid_body(body, None).unwrap();
+
+    let col = Collider::new(
+        ColliderId(3039),
+        id,
+        Shape::Box(BoxShape::new(Vec3::new(0.4, 0.1, 0.4)).unwrap()),
+        Transform::IDENTITY,
+    );
+    world.add_collider(col).unwrap();
+
+    let mut player = PlayerController::new(Vec3::new(0.0, 0.0, 0.0));
+    player.input.crouch = true; // Ketinggian crouch = 1.2m < 1.35m
+    player.state.velocity = Vec3::new(2.0, 0.0, 0.0);
+
+    bridge.step(&mut player, &mut world, None, 1.0 / 30.0, 0.0);
+
+    // Kapsul crouch muat di bawah boks
+    assert!(player.state.crouching);
+    assert_eq!(bridge.last_pushed_bodies.len(), 0);
+}
+
+#[test]
+fn test_9_10_38_sprint_jump_glide_semantics_preservation() {
+    let mut world = PhysicsWorld::default();
+    let mut bridge = PlayerRigidBodyBridge::default();
+
+    let mut player = PlayerController::new(Vec3::new(0.0, 0.0, 0.0));
+    player.state.grounded = true;
+    player.input.sprint = true;
+    player.input.move_forward = 1.0;
+    player.state.sprinting = true;
+    player.state.jump_requested = true;
+
+    bridge.step(&mut player, &mut world, None, 1.0 / 30.0, 0.0);
+
+    assert_eq!(
+        player.state.airborne_origin,
+        omnisia::player::state::AirborneOrigin::SprintJump
+    );
+    assert!(player.state.velocity.y > 0.0);
+}
+
+#[test]
+fn test_9_10_39_cliff_fall_no_glide_preservation() {
+    let mut world = PhysicsWorld::default();
+    let mut bridge = PlayerRigidBodyBridge::default();
+
+    let id = RigidBodyId(3040);
+    let inertia = Mat3::from_diagonal(Vec3::ONE);
+    let body = RigidBody::new_dynamic(id, Vec3::new(0.0, 0.5, 0.0), Quat::IDENTITY, 10.0, inertia)
+        .unwrap();
+    world.add_rigid_body(body, None).unwrap();
+    let col = Collider::new(
+        ColliderId(3040),
+        id,
+        Shape::Box(BoxShape::new(Vec3::splat(0.5)).unwrap()),
+        Transform::IDENTITY,
+    );
+    world.add_collider(col).unwrap();
+
+    let mut player = PlayerController::new(Vec3::new(0.0, 1.01, 0.0));
+    bridge.step(&mut player, &mut world, None, 1.0 / 30.0, 0.0);
+    assert!(player.state.grounded);
+
+    // Melangkah keluar tanpa melompat
+    player.state.position.x = 3.0;
+    player.input.jump = true; // Menahan spasi saat jatuh tebing
+    bridge.step(&mut player, &mut world, None, 1.0 / 30.0, 0.0);
+
+    // Tetap Falling, glide tidak aktif karena asal jatuh tebing (FellFromEdge)
+    assert!(!player.state.gliding);
+    assert_eq!(
+        player.state.airborne_origin,
+        omnisia::player::state::AirborneOrigin::FellFromEdge
+    );
+}
+
+#[test]
+fn test_9_10_40_dynamic_body_on_static_ground_with_player() {
+    let mut world = PhysicsWorld::default();
+    let mut bridge = PlayerRigidBodyBridge::default();
+
+    let ground_id = RigidBodyId(3041);
+    let box_id = RigidBodyId(3042);
+    let inertia = Mat3::from_diagonal(Vec3::ONE);
+
+    // Lantai statis
+    let ground_b =
+        RigidBody::new_static(ground_id, Vec3::new(0.0, 0.0, 0.0), Quat::IDENTITY).unwrap();
+    world.add_rigid_body(ground_b, None).unwrap();
+    let ground_col = Collider::new(
+        ColliderId(3041),
+        ground_id,
+        Shape::Box(BoxShape::new(Vec3::new(10.0, 0.1, 10.0)).unwrap()),
+        Transform::IDENTITY,
+    );
+    world.add_collider(ground_col).unwrap();
+
+    // Boks dinamis di atas lantai
+    let dyn_b = RigidBody::new_dynamic(
+        box_id,
+        Vec3::new(0.0, 0.6, 0.0),
+        Quat::IDENTITY,
+        10.0,
+        inertia,
+    )
+    .unwrap();
+    world.add_rigid_body(dyn_b, None).unwrap();
+    let dyn_col = Collider::new(
+        ColliderId(3042),
+        box_id,
+        Shape::Box(BoxShape::new(Vec3::splat(0.5)).unwrap()),
+        Transform::IDENTITY,
+    );
+    world.add_collider(dyn_col).unwrap();
+
+    // Pemain di atas boks dinamis
+    let mut player = PlayerController::new(Vec3::new(0.0, 1.11, 0.0));
+    let res = bridge.step(&mut player, &mut world, None, 1.0 / 30.0, 0.0);
+
+    assert!(player.state.grounded);
+    assert_eq!(res.grounded_on_rigidbody, Some(box_id));
+}
+
+#[test]
+fn test_9_10_41_deterministic_repeated_simulation_player_dynamic() {
+    let run_sim = || {
+        let mut world = PhysicsWorld::default();
+        let mut bridge = PlayerRigidBodyBridge::default();
+
+        let id = RigidBodyId(3043);
+        let inertia = Mat3::from_diagonal(Vec3::ONE);
+        let body =
+            RigidBody::new_dynamic(id, Vec3::new(0.6, 0.5, 0.0), Quat::IDENTITY, 5.0, inertia)
+                .unwrap();
+        world.add_rigid_body(body, None).unwrap();
+        let col = Collider::new(
+            ColliderId(3043),
+            id,
+            Shape::Box(BoxShape::new(Vec3::splat(0.4)).unwrap()),
+            Transform::IDENTITY,
+        );
+        world.add_collider(col).unwrap();
+
+        let mut player = PlayerController::new(Vec3::new(0.0, 0.5, 0.0));
+        player.state.velocity = Vec3::new(3.0, 0.0, 0.0);
+
+        for _ in 0..30 {
+            bridge.step(&mut player, &mut world, None, 1.0 / 30.0, 0.0);
+        }
+
+        (
+            player.state.position,
+            world.get_rigid_body(id).unwrap().linear_velocity(),
+        )
+    };
+
+    let (pos1, vel1) = run_sim();
+    let (pos2, vel2) = run_sim();
+
+    assert_eq!(pos1, pos2);
+    assert_eq!(vel1, vel2);
+}
+
+#[test]
+fn test_9_10_42_deterministic_body_id_ordering() {
+    let mut world = PhysicsWorld::default();
+    let mut bridge = PlayerRigidBodyBridge::default();
+    let inertia = Mat3::from_diagonal(Vec3::ONE);
+
+    // Dua boks identik berdampingan
+    let b1 = RigidBodyId(3044);
+    let b2 = RigidBodyId(3045);
+    let body1 =
+        RigidBody::new_dynamic(b1, Vec3::new(-0.2, 0.5, 0.0), Quat::IDENTITY, 10.0, inertia)
+            .unwrap();
+    let body2 = RigidBody::new_dynamic(b2, Vec3::new(0.2, 0.5, 0.0), Quat::IDENTITY, 10.0, inertia)
+        .unwrap();
+    world.add_rigid_body(body1, None).unwrap();
+    world.add_rigid_body(body2, None).unwrap();
+
+    let col1 = Collider::new(
+        ColliderId(3044),
+        b1,
+        Shape::Box(BoxShape::new(Vec3::splat(0.5)).unwrap()),
+        Transform::IDENTITY,
+    );
+    let col2 = Collider::new(
+        ColliderId(3045),
+        b2,
+        Shape::Box(BoxShape::new(Vec3::splat(0.5)).unwrap()),
+        Transform::IDENTITY,
+    );
+    world.add_collider(col1).unwrap();
+    world.add_collider(col2).unwrap();
+
+    let mut player = PlayerController::new(Vec3::new(0.0, 1.01, 0.0));
+    let res = bridge.step(&mut player, &mut world, None, 1.0 / 30.0, 0.0);
+
+    assert!(player.state.grounded);
+    assert!(res.grounded_on_rigidbody.is_some());
+}
+
+#[test]
+fn test_9_10_43_kinematic_rigid_body_platform_support() {
+    let mut world = PhysicsWorld::default();
+    let mut bridge = PlayerRigidBodyBridge::default();
+
+    let id = RigidBodyId(3046);
+    let body = RigidBody::new_kinematic(
+        id,
+        Vec3::new(0.0, 0.5, 0.0),
+        Quat::IDENTITY,
+        Vec3::new(2.5, 0.0, 0.0),
+        Vec3::ZERO,
+    )
+    .unwrap();
+    world.add_rigid_body(body, None).unwrap();
+
+    let col = Collider::new(
+        ColliderId(3046),
+        id,
+        Shape::Box(BoxShape::new(Vec3::splat(0.5)).unwrap()),
+        Transform::IDENTITY,
+    );
+    world.add_collider(col).unwrap();
+
+    let mut player = PlayerController::new(Vec3::new(0.0, 1.01, 0.0));
+    let dt = 1.0 / 30.0;
+
+    bridge.step(&mut player, &mut world, None, dt, 0.0);
+    assert!(player.state.grounded);
+
+    let init_x = player.state.position.x;
+    bridge.step(&mut player, &mut world, None, dt, 0.0);
+
+    let dx = player.state.position.x - init_x;
+    assert!((dx - 2.5 * dt).abs() < 1e-3);
+}
+
+#[test]
+fn test_9_10_44_kinematic_rigid_body_velocity_unaltered_by_player() {
+    let mut world = PhysicsWorld::default();
+    let mut bridge = PlayerRigidBodyBridge::default();
+
+    let id = RigidBodyId(3047);
+    let body = RigidBody::new_kinematic(
+        id,
+        Vec3::new(0.6, 0.5, 0.0),
+        Quat::IDENTITY,
+        Vec3::new(1.0, 0.0, 0.0),
+        Vec3::ZERO,
+    )
+    .unwrap();
+    world.add_rigid_body(body, None).unwrap();
+
+    let col = Collider::new(
+        ColliderId(3047),
+        id,
+        Shape::Box(BoxShape::new(Vec3::splat(0.4)).unwrap()),
+        Transform::IDENTITY,
+    );
+    world.add_collider(col).unwrap();
+
+    let mut player = PlayerController::new(Vec3::new(0.0, 0.5, 0.0));
+    player.state.velocity = Vec3::new(5.0, 0.0, 0.0); // Mendorong kuat
+
+    bridge.step(&mut player, &mut world, None, 1.0 / 30.0, 0.0);
+
+    // Kecepatan badan kinematik tidak dapat diubah oleh dorongan pemain
+    assert_eq!(
+        world.get_rigid_body(id).unwrap().linear_velocity(),
+        Vec3::new(1.0, 0.0, 0.0)
+    );
+}
+
+#[test]
+fn test_9_10_45_static_rigid_body_unaltered_by_player() {
+    let mut world = PhysicsWorld::default();
+    let mut bridge = PlayerRigidBodyBridge::default();
+
+    let id = RigidBodyId(3048);
+    let body = RigidBody::new_static(id, Vec3::new(0.6, 0.5, 0.0), Quat::IDENTITY).unwrap();
+    world.add_rigid_body(body, None).unwrap();
+
+    let col = Collider::new(
+        ColliderId(3048),
+        id,
+        Shape::Box(BoxShape::new(Vec3::splat(0.4)).unwrap()),
+        Transform::IDENTITY,
+    );
+    world.add_collider(col).unwrap();
+
+    let mut player = PlayerController::new(Vec3::new(0.0, 0.5, 0.0));
+    player.state.velocity = Vec3::new(5.0, 0.0, 0.0);
+
+    bridge.step(&mut player, &mut world, None, 1.0 / 30.0, 0.0);
+
+    // Posisi dan kecepatan badan statis tetap nol
+    let b = world.get_rigid_body(id).unwrap();
+    assert_eq!(b.position(), Vec3::new(0.6, 0.5, 0.0));
+    assert_eq!(b.linear_velocity(), Vec3::ZERO);
+}
+
+#[test]
+fn test_9_10_46_finite_state_preservation_under_extreme_player_push() {
+    let mut world = PhysicsWorld::default();
+    let mut bridge = PlayerRigidBodyBridge::default();
+
+    let id = RigidBodyId(3049);
+    let inertia = Mat3::from_diagonal(Vec3::ONE);
+    let body =
+        RigidBody::new_dynamic(id, Vec3::new(0.6, 0.5, 0.0), Quat::IDENTITY, 1.0, inertia).unwrap();
+    world.add_rigid_body(body, None).unwrap();
+
+    let col = Collider::new(
+        ColliderId(3049),
+        id,
+        Shape::Box(BoxShape::new(Vec3::splat(0.4)).unwrap()),
+        Transform::IDENTITY,
+    );
+    world.add_collider(col).unwrap();
+
+    let mut player = PlayerController::new(Vec3::new(0.0, 0.5, 0.0));
+    player.state.velocity = Vec3::new(100.0, 0.0, 0.0); // Kecepatan ekstrim 100 m/s
+
+    bridge.step(&mut player, &mut world, None, 1.0 / 30.0, 0.0);
+
+    let b = world.get_rigid_body(id).unwrap();
+    assert!(b.linear_velocity().is_finite());
+    assert!(b.angular_velocity().is_finite());
+    assert!(player.state.position.is_finite());
+}
+
+#[test]
+fn test_9_10_47_zero_nan_under_degenerate_overlaps() {
+    let mut world = PhysicsWorld::default();
+    let mut bridge = PlayerRigidBodyBridge::default();
+
+    let id = RigidBodyId(3050);
+    let inertia = Mat3::from_diagonal(Vec3::ONE);
+    // Tumpang tindih konsentris tepat di titik yang sama
+    let body =
+        RigidBody::new_dynamic(id, Vec3::new(0.0, 0.5, 0.0), Quat::IDENTITY, 5.0, inertia).unwrap();
+    world.add_rigid_body(body, None).unwrap();
+
+    let col = Collider::new(
+        ColliderId(3050),
+        id,
+        Shape::Box(BoxShape::new(Vec3::splat(0.5)).unwrap()),
+        Transform::IDENTITY,
+    );
+    world.add_collider(col).unwrap();
+
+    let mut player = PlayerController::new(Vec3::new(0.0, 0.0, 0.0));
+
+    bridge.step(&mut player, &mut world, None, 1.0 / 30.0, 0.0);
+
+    assert!(!player.state.position.x.is_nan());
+    assert!(!player.state.position.y.is_nan());
+    assert!(!player.state.position.z.is_nan());
+}
+
+#[test]
+fn test_9_10_48_player_support_disappearing_fall() {
+    let mut world = PhysicsWorld::default();
+    let mut bridge = PlayerRigidBodyBridge::default();
+
+    let id = RigidBodyId(3051);
+    let inertia = Mat3::from_diagonal(Vec3::ONE);
+    let body = RigidBody::new_dynamic(id, Vec3::new(0.0, 0.5, 0.0), Quat::IDENTITY, 10.0, inertia)
+        .unwrap();
+    world.add_rigid_body(body, None).unwrap();
+    let col = Collider::new(
+        ColliderId(3051),
+        id,
+        Shape::Box(BoxShape::new(Vec3::splat(0.5)).unwrap()),
+        Transform::IDENTITY,
+    );
+    world.add_collider(col).unwrap();
+
+    let mut player = PlayerController::new(Vec3::new(0.0, 1.01, 0.0));
+    bridge.step(&mut player, &mut world, None, 1.0 / 30.0, 0.0);
+    assert!(player.state.grounded);
+
+    // Hapus badan tumpuan
+    world.remove_rigid_body(id);
+
+    bridge.step(&mut player, &mut world, None, 1.0 / 30.0, 0.0);
+    assert!(!player.state.grounded);
+    assert!(player.state.velocity.y < 0.0);
+}
+
+#[test]
+fn test_9_10_49_broadphase_sync_after_player_push() {
+    let mut world = PhysicsWorld::default();
+    let mut bridge = PlayerRigidBodyBridge::default();
+
+    let id = RigidBodyId(3052);
+    let inertia = Mat3::from_diagonal(Vec3::ONE);
+    let body =
+        RigidBody::new_dynamic(id, Vec3::new(0.6, 0.5, 0.0), Quat::IDENTITY, 2.0, inertia).unwrap();
+    world.add_rigid_body(body, None).unwrap();
+    let col = Collider::new(
+        ColliderId(3052),
+        id,
+        Shape::Box(BoxShape::new(Vec3::splat(0.4)).unwrap()),
+        Transform::IDENTITY,
+    );
+    world.add_collider(col).unwrap();
+
+    let mut player = PlayerController::new(Vec3::new(0.0, 0.5, 0.0));
+    player.state.velocity = Vec3::new(3.0, 0.0, 0.0);
+
+    bridge.step(&mut player, &mut world, None, 1.0 / 30.0, 0.0);
+
+    // Langkah fisika penuh untuk mengintegrasikan posisi baru dan sinkronisasi broadphase
+    world.step().unwrap();
+
+    let proxy = world.broadphase.get_proxy(id).unwrap();
+    assert!(proxy.aabb.is_valid());
+}
+
+#[test]
+fn test_9_10_50_end_to_end_gameplay_walk_push_stand_jump_cycle() {
+    let mut world = PhysicsWorld::default();
+    let mut bridge = PlayerRigidBodyBridge::default();
+
+    let box_id = RigidBodyId(3053);
+    let inertia = Mat3::from_diagonal(Vec3::ONE);
+    let body = RigidBody::new_dynamic(
+        box_id,
+        Vec3::new(1.0, 0.5, 0.0),
+        Quat::IDENTITY,
+        5.0,
+        inertia,
+    )
+    .unwrap();
+    world.add_rigid_body(body, None).unwrap();
+    let col = Collider::new(
+        ColliderId(3053),
+        box_id,
+        Shape::Box(BoxShape::new(Vec3::splat(0.5)).unwrap()),
+        Transform::IDENTITY,
+    );
+    world.add_collider(col).unwrap();
+
+    let mut player = PlayerController::new(Vec3::new(0.0, 0.0, 0.0));
+
+    // 1. Berjalan menuju boks dan mendorongnya
+    player.state.velocity = Vec3::new(3.0, 0.0, 0.0);
+    let mut res_push = PlayerBridgeStepResult::default();
+    for _ in 0..5 {
+        res_push = bridge.step(&mut player, &mut world, None, 1.0 / 30.0, 0.0);
+        if res_push.bodies_pushed > 0 {
+            break;
+        }
+    }
+    assert!(res_push.bodies_pushed > 0);
+
+    // 2. Berada di atas boks (grounded)
+    player.state.position = Vec3::new(1.0, 1.01, 0.0);
+    player.state.velocity = Vec3::ZERO;
+    let res_stand = bridge.step(&mut player, &mut world, None, 1.0 / 30.0, 0.0);
+    assert!(player.state.grounded);
+    assert_eq!(res_stand.grounded_on_rigidbody, Some(box_id));
+
+    // 3. Melompat keluar dari boks
+    player.state.jump_requested = true;
+    let res_jump = bridge.step(&mut player, &mut world, None, 1.0 / 30.0, 0.0);
+    assert!(res_jump.jump_reaction_applied);
+    assert!(player.state.velocity.y > 0.0);
+}

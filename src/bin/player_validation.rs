@@ -33,6 +33,8 @@ fn main() {
 
     // Spawn pemain di ketinggian y = 5.0m di atas lantai
     let mut player = PlayerController::new(Vec3::new(2.5, 5.0, 2.5));
+    player.config.walk_speed = 5.0;
+    player.config.sprint_speed = 9.0;
     assert!(!player.state.grounded);
 
     // Jalankan simulasi hingga mendarat (maks 60 tick = 2.0s)

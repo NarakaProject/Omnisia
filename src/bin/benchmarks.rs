@@ -2028,6 +2028,67 @@ fn main() {
         }
     }
 
+    // ========================================================================
+    // BENCHMARK 47: Player ↔ DynamicBody Interaction (Phase 9.10)
+    // 10, 100, 500 DynamicBodies @ 30 Hz Fixed Step
+    // ========================================================================
+    {
+        use glam::{Mat3, Quat, Vec3};
+        use omnisia::physics::{
+            BoxShape, Collider, ColliderId, PhysicsWorld, PhysicsWorldConfig, PlayerBridgeConfig,
+            PlayerRigidBodyBridge, RigidBody, RigidBodyId, Shape, Transform,
+        };
+        use omnisia::player::PlayerController;
+
+        println!("------------------------------------------------------------");
+        println!(" [BENCHMARK 47] Player ↔ DynamicBody Interaction (9.10)     ");
+        println!("------------------------------------------------------------");
+
+        let body_counts = [10, 100, 500];
+        let dt = 1.0 / 30.0;
+        let num_runs = 100;
+        let inertia = Mat3::from_diagonal(Vec3::ONE);
+
+        for &count in &body_counts {
+            let mut world = PhysicsWorld::new(PhysicsWorldConfig::default());
+            let mut bridge = PlayerRigidBodyBridge::new(PlayerBridgeConfig::default());
+
+            // Buat N dynamic boxes terdistribusi di grid sekitar origin
+            let grid_side = (count as f32).sqrt().ceil() as usize;
+            for i in 0..count {
+                let id = RigidBodyId((i + 1) as u64);
+                let gx = (i % grid_side) as f32 * 1.5 - (grid_side as f32 * 0.75);
+                let gz = (i / grid_side) as f32 * 1.5 - (grid_side as f32 * 0.75);
+                let pos = Vec3::new(gx, 0.5, gz);
+
+                let body = RigidBody::new_dynamic(id, pos, Quat::IDENTITY, 2.0, inertia).unwrap();
+                world.add_rigid_body(body, None).unwrap();
+
+                let col = Collider::new(
+                    ColliderId((i + 1) as u64),
+                    id,
+                    Shape::Box(BoxShape::new(Vec3::splat(0.5)).unwrap()),
+                    Transform::IDENTITY,
+                );
+                world.add_collider(col).unwrap();
+            }
+
+            let mut player = PlayerController::new(Vec3::new(0.0, 1.0, 0.0));
+            player.state.velocity = Vec3::new(3.0, 0.0, 0.0); // Jalan normal 3.0 m/s
+
+            let start = Instant::now();
+            for _ in 0..num_runs {
+                bridge.step(&mut player, &mut world, None, dt, 0.0);
+            }
+            let us_step = start.elapsed().as_micros() as f64 / num_runs as f64;
+
+            println!(
+                "[BM47] Player ↔ DynamicBody Step ({} bodies): {:.3} µs/step",
+                count, us_step
+            );
+        }
+    }
+
     println!("============================================================");
     println!("             BENCHMARK SUITE COMPLETE                       ");
     println!("============================================================");

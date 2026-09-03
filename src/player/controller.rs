@@ -525,6 +525,18 @@ impl PlayerController {
         }
     }
 
+    /// Menjalankan satu langkah simulasi fisika kinematik berwaktu tetap dengan dukungan PhysicsWorld (Phase 9.10).
+    pub fn step_simulation_with_rigidbody(
+        &mut self,
+        fixed_dt: f32,
+        store: Option<&crate::streaming::store::ChunkStore>,
+        world: &mut crate::physics::PhysicsWorld,
+        bridge: &mut crate::physics::PlayerRigidBodyBridge,
+        camera_yaw_deg: f32,
+    ) -> crate::physics::PlayerBridgeStepResult {
+        bridge.step(self, world, store, fixed_dt, camera_yaw_deg)
+    }
+
     /// Menemukan titik spawn yang valid di atas permukaan tanah solid (Section 19).
     ///
     /// INVARIANTS:

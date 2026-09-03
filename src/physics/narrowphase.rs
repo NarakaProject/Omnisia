@@ -777,6 +777,7 @@ fn collide_box_capsule(
         // Untuk setiap muka i, jarak minimum segmen ke muka i adalah:
         // d_face = min_{t in [0,1]} (h_a[i] - sign * s[i](t)).
         // Karena s(t) linier, nilai minimum selalu terjadi pada salah satu ujung s0 atau s1!
+        let s_inside = closest_seg_local.clamp(-h_a, h_a);
         let mut min_face_dist = f32::INFINITY;
         let mut best_face_normal = Vec3::X;
         let mut best_box_pt_local = Vec3::ZERO;
@@ -784,38 +785,37 @@ fn collide_box_capsule(
         let test_faces = [
             (
                 Vec3::X,
-                h_a.x - s0.x.max(s1.x),
-                Vec3::new(h_a.x, closest_seg_local.y, closest_seg_local.z),
+                h_a.x - s_inside.x,
+                Vec3::new(h_a.x, s_inside.y, s_inside.z),
             ),
             (
                 Vec3::NEG_X,
-                h_a.x - (-s0.x).max(-s1.x),
-                Vec3::new(-h_a.x, closest_seg_local.y, closest_seg_local.z),
+                h_a.x + s_inside.x,
+                Vec3::new(-h_a.x, s_inside.y, s_inside.z),
             ),
             (
                 Vec3::Y,
-                h_a.y - s0.y.max(s1.y),
-                Vec3::new(closest_seg_local.x, h_a.y, closest_seg_local.z),
+                h_a.y - s_inside.y,
+                Vec3::new(s_inside.x, h_a.y, s_inside.z),
             ),
             (
                 Vec3::NEG_Y,
-                h_a.y - (-s0.y).max(-s1.y),
-                Vec3::new(closest_seg_local.x, -h_a.y, closest_seg_local.z),
+                h_a.y + s_inside.y,
+                Vec3::new(s_inside.x, -h_a.y, s_inside.z),
             ),
             (
                 Vec3::Z,
-                h_a.z - s0.z.max(s1.z),
-                Vec3::new(closest_seg_local.x, closest_seg_local.y, h_a.z),
+                h_a.z - s_inside.z,
+                Vec3::new(s_inside.x, s_inside.y, h_a.z),
             ),
             (
                 Vec3::NEG_Z,
-                h_a.z - (-s0.z).max(-s1.z),
-                Vec3::new(closest_seg_local.x, closest_seg_local.y, -h_a.z),
+                h_a.z + s_inside.z,
+                Vec3::new(s_inside.x, s_inside.y, -h_a.z),
             ),
         ];
 
         for (face_normal, depth, pt_local) in test_faces {
-            // depth adalah jarak dari bagian terdalam segmen ke batas muka boks
             if depth < min_face_dist {
                 min_face_dist = depth;
                 best_face_normal = face_normal;

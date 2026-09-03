@@ -513,4 +513,59 @@ impl RigidBody {
             self.sleep_state = SleepState::Awake;
         }
     }
+
+    /// Menghitung tensor inersia invers di ruang dunia: $I_{\text{world}}^{-1} = R I_{\text{local}}^{-1} R^T$.
+    #[inline(always)]
+    pub fn world_inverse_inertia(&self) -> Mat3 {
+        if self.body_type != BodyType::Dynamic {
+            Mat3::ZERO
+        } else {
+            let rot_mat = Mat3::from_quat(self.rotation);
+            rot_mat * self.mass_properties.local_inverse_inertia * rot_mat.transpose()
+        }
+    }
+
+    /// Menerapkan impuls linier pada badan kaku.
+    /// Tidak berpengaruh pada badan Statis atau Kinematik.
+    pub fn apply_linear_impulse(&mut self, impulse: Vec3) -> Result<(), RigidBodyError> {
+        if !impulse.is_finite() {
+            return Err(RigidBodyError::NonFiniteVelocity);
+        }
+        if self.body_type == BodyType::Dynamic {
+            let new_v = self.linear_velocity + self.mass_properties.inverse_mass * impulse;
+            self.set_linear_velocity(new_v)?;
+        }
+        Ok(())
+    }
+
+    /// Menerapkan impuls sudut (angular impulse) pada badan kaku.
+    /// Tidak berpengaruh pada badan Statis atau Kinematik.
+    pub fn apply_angular_impulse(&mut self, impulse: Vec3) -> Result<(), RigidBodyError> {
+        if !impulse.is_finite() {
+            return Err(RigidBodyError::NonFiniteVelocity);
+        }
+        if self.body_type == BodyType::Dynamic {
+            let new_w = self.angular_velocity + self.world_inverse_inertia() * impulse;
+            self.set_angular_velocity(new_w)?;
+        }
+        Ok(())
+    }
+
+    /// Menerapkan impuls pada titik kontak dunia tertentu, menghasilkan impuls linier dan torsi.
+    /// Titik kontak dinyatakan dalam koordinat dunia.
+    pub fn apply_impulse_at_point(
+        &mut self,
+        impulse: Vec3,
+        world_point: Vec3,
+    ) -> Result<(), RigidBodyError> {
+        if !impulse.is_finite() || !world_point.is_finite() {
+            return Err(RigidBodyError::NonFiniteVelocity);
+        }
+        if self.body_type == BodyType::Dynamic {
+            let r = world_point - self.position;
+            self.apply_linear_impulse(impulse)?;
+            self.apply_angular_impulse(r.cross(impulse))?;
+        }
+        Ok(())
+    }
 }
