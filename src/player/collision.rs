@@ -4,19 +4,31 @@ use crate::physics::PhysicsRuntime;
 use crate::streaming::store::ChunkStore;
 use crate::voxel::VOXEL_SIZE;
 
-/// Hasil evaluasi kontak tumpuan tanah (Ground Detection)
+pub const GROUND_CONTACT_EPSILON: f32 = 0.05;
+
+/// Toleransi penetrasi ke bawah permukaan tumpuan (meter).
+///
+/// INVARIAN (Phase 8D.4):
+/// Diselaraskan simetris dengan epsilon tumpuan (0.05m).
+/// Mencegah false airborne ketika pemain bergerak dari tumpuan tepi (di mana kaki berada pada
+/// ~0.96m akibat geometri bola) menuju permukaan datar (1.00m).
+pub const GROUND_PENETRATION_TOLERANCE: f32 = 0.05;
+
+/// Hasil evaluasi kontak tumpuan tanah untuk kapsul pemain (8B.2 & 8D.4).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct GroundContactResult {
-    /// Apakah pemain bertumpu pada permukaan solid yang dimuat
+    /// Apakah pemain bertumpu stabil pada permukaan tanah
     pub grounded: bool,
-    /// Vektor normal permukaan tumpuan (default: (0, 1, 0))
+    /// Normal permukaan tumpuan (kanonikal +Y)
     pub ground_normal: Vec3,
-    /// Jarak vertikal dari telapak kaki ke permukaan tumpuan dalam meter
+    /// Jarak vertikal dari kurva kapsul bawah ke permukaan tanah (>= 0.0)
     pub ground_distance: f32,
     /// Koordinat voxel dunia yang memberikan tumpuan
     pub support_voxel: Option<IVec3>,
-    /// Ketinggian Y permukaan atas tumpuan dalam meter
+    /// Ketinggian Y permukaan atas tumpuan dalam meter (surface_y)
     pub ground_y_surface: Option<f32>,
+    /// Ketinggian Y posisi telapak kaki (PlayerState.position.y / capsule base) yang stabil secara geometris (Phase 8D.4)
+    pub stable_feet_y: Option<f32>,
 }
 
 impl Default for GroundContactResult {
@@ -27,17 +39,30 @@ impl Default for GroundContactResult {
             ground_distance: f32::INFINITY,
             support_voxel: None,
             ground_y_surface: None,
+            stable_feet_y: None,
         }
     }
 }
 
-/// Memeriksa apakah telapak kaki pemain bertumpu pada permukaan tanah solid (8B.2).
+/// Memeriksa apakah telapak kaki pemain bertumpu pada permukaan tanah solid (8B.2 & 8D.4).
 ///
-/// ATURAN KANONIKAL:
-/// - 1 voxel = 0.5 meter.
+/// ATURAN KANONIKAL & GEOMETRI (Phase 8D.4):
+/// - 1 voxel = 0.5 meter (VOXEL_SIZE).
 /// - Permukaan atas voxel Y berada di $y_{\text{surface}} = (Y + 1) \times 0.5\text{m}$.
-/// - Grounded terjadi jika telapak kaki pemain ($y_{\text{feet}}$) berada di atas permukaan solid
-///   dengan jarak vertikal $\le \text{epsilon}$.
+/// - Model Footprint-Aware Lower-Hemisphere:
+///   Mengevaluasi setiap permukaan atas voxel solid yang terekspos (`Known Solid` di bawah, `Known Air` di atas)
+///   dalam jangkauan horizontal footprint lingkaran kapsul ($feet\_pos.xz \pm radius$) dan rentang vertikal kontak.
+/// - Menghitung jarak geometris aktual antara belahan bola bawah kapsul pada offset horizontal $d \le radius$
+///   dan permukaan atas voxel:
+///   $y_{\text{capsule\_bottom}} = (feet\_pos.y + radius) - \sqrt{radius^2 - d^2}$.
+///   $vertical\_dist = y_{\text{capsule\_bottom}} - y_{\text{surface}}$.
+/// - Kontak valid jika $-penetration\_tol \le vertical\_dist \le epsilon$ (dengan $penetration\_tol = 0.03\text{m}$).
+/// - Ketinggian telapak kaki stabil yang presisi:
+///   $stable\_feet\_y = y_{\text{surface}} - (radius - \sqrt{radius^2 - d^2})$.
+/// - Seleksi kandidat terbaik secara deterministik (Amendment 7): error kontak absolut terkecil,
+///   lalu jarak horizontal terdekat, lalu tie-break koordinat deterministik.
+/// - Hard Invariant Unknown != Air (Amendment 4): jika voxel tumpuan atau voxel di atasnya Unknown,
+///   kandidat ditolak dan tidak pernah menghasilkan `grounded = true`.
 /// - Bebas alokasi heap (Zero Allocation).
 pub fn check_ground_support(
     feet_pos: Vec3,
@@ -45,69 +70,150 @@ pub fn check_ground_support(
     epsilon: f32,
     store: &ChunkStore,
 ) -> GroundContactResult {
+    let penetration_tol = GROUND_PENETRATION_TOLERANCE;
+
+    // 1. Rentang horizontal kotak voxel yang bersinggungan dengan footprint lingkaran kaki (radius)
     let vx_min = ((feet_pos.x - radius) / VOXEL_SIZE).floor() as i32;
     let vx_max = ((feet_pos.x + radius) / VOXEL_SIZE).floor() as i32;
-
     let vz_min = ((feet_pos.z - radius) / VOXEL_SIZE).floor() as i32;
     let vz_max = ((feet_pos.z + radius) / VOXEL_SIZE).floor() as i32;
 
-    // Voxel kandidat tepat di bawah telapak kaki dalam jangkauan epsilon
-    let vy = ((feet_pos.y - epsilon) / VOXEL_SIZE).floor() as i32;
-    let surface_y = (vy + 1) as f32 * VOXEL_SIZE;
+    // 2. Rentang vertikal permukaan atas voxel yang mungkin bersentuhan dengan belahan bola bawah kapsul:
+    // Permukaan atas minimum: feet_pos.y - epsilon
+    // Permukaan atas maksimum: feet_pos.y + radius + penetration_tol
+    let min_surface_y = feet_pos.y - epsilon;
+    let max_surface_y = feet_pos.y + radius + penetration_tol;
 
-    // Pastikan posisi kaki berada tepat atau sedikit di atas permukaan (dalam rentang toleransi epsilon)
-    let dist = feet_pos.y - surface_y;
-    if dist < -0.01 || dist > epsilon {
-        return GroundContactResult::default();
+    let vy_min = ((min_surface_y / VOXEL_SIZE).floor() as i32) - 1;
+    let vy_max = ((max_surface_y / VOXEL_SIZE).ceil() as i32) - 1;
+
+    struct Candidate {
+        coord: IVec3,
+        surface_y: f32,
+        stable_feet_y: f32,
+        vertical_dist: f32,
+        abs_vertical_dist: f32,
+        horiz_dist_sq: f32,
     }
 
-    let mut found_support = false;
-    let mut supporting_voxel = None;
+    let mut best_candidate: Option<Candidate> = None;
 
-    // Periksa footprint horizontal lingkaran dasar kaki terhadap kotak voxel [vx_min..=vx_max, vz_min..=vz_max]
-    for vz in vz_min..=vz_max {
-        for vx in vx_min..=vx_max {
-            let box_min_x = vx as f32 * VOXEL_SIZE;
-            let box_max_x = box_min_x + VOXEL_SIZE;
-            let box_min_z = vz as f32 * VOXEL_SIZE;
-            let box_max_z = box_min_z + VOXEL_SIZE;
+    // 3. Evaluasi setiap kandidat voxel dalam rentang kontak 3D
+    for vy in vy_min..=vy_max {
+        let surface_y = (vy + 1) as f32 * VOXEL_SIZE;
+        if surface_y < min_surface_y || surface_y > max_surface_y {
+            continue;
+        }
 
-            // Uji overlap lingkaran horizontal (radius) dengan AABB 2D horizontal kotak voxel
-            let closest_x = feet_pos.x.clamp(box_min_x, box_max_x);
-            let closest_z = feet_pos.z.clamp(box_min_z, box_max_z);
-            let dx = feet_pos.x - closest_x;
-            let dz = feet_pos.z - closest_z;
-
-            if (dx * dx + dz * dz) <= (radius * radius) {
+        for vz in vz_min..=vz_max {
+            for vx in vx_min..=vx_max {
                 let coord = IVec3::new(vx, vy, vz);
-                if let Some(block) = store.get_voxel_world_checked(coord) {
-                    if !block.is_air() {
-                        found_support = true;
-                        supporting_voxel = Some(coord);
-                        break;
+                let above_coord = IVec3::new(vx, vy + 1, vz);
+
+                // HARD INVARIANT (Amendment 2 & 4):
+                // Voxel kandidat harus Known Solid (Some && !is_air), dan
+                // Voxel tepat di atasnya harus Known Air (Some && is_air).
+                // Unknown (None) BUKAN Air dan TIDAK PERNAH menghasilkan tumpuan valid!
+                let current_block = store.get_voxel_world_checked(coord);
+                let above_block = store.get_voxel_world_checked(above_coord);
+
+                let is_exposed_top = match (current_block, above_block) {
+                    (Some(curr), Some(above)) => !curr.is_air() && above.is_air(),
+                    _ => false,
+                };
+
+                if !is_exposed_top {
+                    continue;
+                }
+
+                // Titik terdekat pada permukaan atas voxel ke sumbu vertikal kapsul
+                let box_min_x = vx as f32 * VOXEL_SIZE;
+                let box_max_x = box_min_x + VOXEL_SIZE;
+                let box_min_z = vz as f32 * VOXEL_SIZE;
+                let box_max_z = box_min_z + VOXEL_SIZE;
+
+                let closest_x = feet_pos.x.clamp(box_min_x, box_max_x);
+                let closest_z = feet_pos.z.clamp(box_min_z, box_max_z);
+                let dx = feet_pos.x - closest_x;
+                let dz = feet_pos.z - closest_z;
+                let horiz_dist_sq = dx * dx + dz * dz;
+
+                if horiz_dist_sq > (radius * radius) {
+                    continue;
+                }
+
+                // Geometri belahan bola bawah kapsul pada offset horizontal terdekat
+                let y_offset = (radius * radius - horiz_dist_sq).max(0.0).sqrt();
+                let capsule_bottom_at_contact = (feet_pos.y + radius) - y_offset;
+                let vertical_dist = capsule_bottom_at_contact - surface_y;
+
+                // Uji toleransi kontak terpisah:
+                // -penetration_tol <= vertical_dist <= epsilon
+                if vertical_dist < -penetration_tol || vertical_dist > epsilon {
+                    continue;
+                }
+
+                // Ketinggian kaki stabil: posisi base kapsul jika menempel tepat pada permukaan ini
+                let stable_feet_y = surface_y - (radius - y_offset);
+                let abs_vertical_dist = vertical_dist.abs();
+
+                let candidate = Candidate {
+                    coord,
+                    surface_y,
+                    stable_feet_y,
+                    vertical_dist,
+                    abs_vertical_dist,
+                    horiz_dist_sq,
+                };
+
+                // Seleksi kandidat terbaik secara deterministik (Amendment 7):
+                // 1. Error kontak absolut terkecil
+                // 2. Jarak horizontal terkecil ke pusat kaki
+                // 3. Tie-break koordinat deterministik
+                let is_better = match &best_candidate {
+                    None => true,
+                    Some(best) => {
+                        let diff = candidate.abs_vertical_dist - best.abs_vertical_dist;
+                        if diff < -1e-5 {
+                            true
+                        } else if diff > 1e-5 {
+                            false
+                        } else {
+                            let horiz_diff = candidate.horiz_dist_sq - best.horiz_dist_sq;
+                            if horiz_diff < -1e-5 {
+                                true
+                            } else if horiz_diff > 1e-5 {
+                                false
+                            } else {
+                                (candidate.coord.y, -candidate.coord.x, -candidate.coord.z)
+                                    > (best.coord.y, -best.coord.x, -best.coord.z)
+                            }
+                        }
                     }
+                };
+
+                if is_better {
+                    best_candidate = Some(candidate);
                 }
             }
         }
-        if found_support {
-            break;
-        }
     }
 
-    if found_support {
+    if let Some(best) = best_candidate {
         GroundContactResult {
             grounded: true,
             ground_normal: Vec3::Y,
-            ground_distance: dist.max(0.0),
-            support_voxel: supporting_voxel,
-            ground_y_surface: Some(surface_y),
+            ground_distance: best.vertical_dist.max(0.0),
+            support_voxel: Some(best.coord),
+            ground_y_surface: Some(best.surface_y),
+            stable_feet_y: Some(best.stable_feet_y),
         }
     } else {
         GroundContactResult::default()
     }
 }
 
-/// Evaluasi kontak tumpuan tanah dengan dukungan PhysicsRuntime DynamicBody (8C.2).
+/// Evaluasi kontak tumpuan tanah dengan dukungan PhysicsRuntime DynamicBody (8C.2 & 8D.4).
 pub fn check_ground_support_with_physics(
     feet_pos: Vec3,
     radius: f32,
@@ -120,20 +226,74 @@ pub fn check_ground_support_with_physics(
         return static_res;
     }
 
+    let penetration_tol = GROUND_PENETRATION_TOLERANCE;
+    let min_surface_y = feet_pos.y - epsilon;
+    let max_surface_y = feet_pos.y + radius + penetration_tol;
+
+    let footprint_min_x = feet_pos.x - radius;
+    let footprint_max_x = feet_pos.x + radius;
+    let footprint_min_z = feet_pos.z - radius;
+    let footprint_max_z = feet_pos.z + radius;
+
     if let Some(runtime) = physics {
+        struct DynCandidate {
+            surface_y: f32,
+            stable_feet_y: f32,
+            vertical_dist: f32,
+            abs_vertical_dist: f32,
+            horiz_dist_sq: f32,
+            body_id: crate::physics::DynamicBodyId,
+        }
+
+        let mut best_dyn: Option<DynCandidate> = None;
+
         for body in runtime.bodies.values() {
             let (b_min, b_max) = body.world_bounds();
-            if feet_pos.x < b_min.x - radius
-                || feet_pos.x > b_max.x + radius
-                || feet_pos.z < b_min.z - radius
-                || feet_pos.z > b_max.z + radius
-                || feet_pos.y < b_min.y - 0.1
-                || feet_pos.y > b_max.y + epsilon + 0.1
+            // Early-rejection AABB seluruh body
+            if footprint_max_x < b_min.x
+                || footprint_min_x > b_max.x
+                || footprint_max_z < b_min.z
+                || footprint_min_z > b_max.z
+                || max_surface_y < b_min.y
+                || min_surface_y > b_max.y + VOXEL_SIZE
             {
                 continue;
             }
 
+            // Batasi pencarian voxel lokal aggregate secara spasial ke irisan footprint (BLOCKING AMENDMENT 3)
+            let rel_min_x =
+                (((footprint_min_x - body.position.x) / VOXEL_SIZE).floor() as i32).max(0);
+            let rel_max_x = ((footprint_max_x - body.position.x) / VOXEL_SIZE).floor() as i32;
+            let rel_min_z =
+                (((footprint_min_z - body.position.z) / VOXEL_SIZE).floor() as i32).max(0);
+            let rel_max_z = ((footprint_max_z - body.position.z) / VOXEL_SIZE).floor() as i32;
+            let rel_min_y = (((min_surface_y - VOXEL_SIZE - body.position.y) / VOXEL_SIZE).floor()
+                as i32)
+                .max(0);
+            let rel_max_y = ((max_surface_y - body.position.y) / VOXEL_SIZE).floor() as i32;
+
             for v in &body.aggregate.voxels {
+                if v.relative_coord.x < rel_min_x
+                    || v.relative_coord.x > rel_max_x
+                    || v.relative_coord.z < rel_min_z
+                    || v.relative_coord.z > rel_max_z
+                    || v.relative_coord.y < rel_min_y
+                    || v.relative_coord.y > rel_max_y
+                {
+                    continue;
+                }
+
+                // Periksa apakah voxel ini memiliki permukaan atas yang terekspos (tidak tertutup voxel lain di atasnya)
+                let above_rel = v.relative_coord + IVec3::Y;
+                let has_voxel_above = body
+                    .aggregate
+                    .voxels
+                    .iter()
+                    .any(|other| other.relative_coord == above_rel);
+                if has_voxel_above {
+                    continue;
+                }
+
                 let box_min = body.position
                     + Vec3::new(
                         v.relative_coord.x as f32 * VOXEL_SIZE,
@@ -142,25 +302,93 @@ pub fn check_ground_support_with_physics(
                     );
                 let box_max = box_min + Vec3::splat(VOXEL_SIZE);
                 let surface_y = box_max.y;
-                let dist = feet_pos.y - surface_y;
 
-                if dist >= -0.01 && dist <= epsilon {
-                    let closest_x = feet_pos.x.clamp(box_min.x, box_max.x);
-                    let closest_z = feet_pos.z.clamp(box_min.z, box_max.z);
-                    let dx = feet_pos.x - closest_x;
-                    let dz = feet_pos.z - closest_z;
+                if surface_y < min_surface_y || surface_y > max_surface_y {
+                    continue;
+                }
 
-                    if (dx * dx + dz * dz) <= (radius * radius) {
-                        return GroundContactResult {
-                            grounded: true,
-                            ground_normal: Vec3::Y,
-                            ground_distance: dist.max(0.0),
-                            support_voxel: None,
-                            ground_y_surface: Some(surface_y),
-                        };
+                // Pastikan di dunia statis di atas voxel ini adalah Known Air
+                let world_above_center = Vec3::new(
+                    (box_min.x + box_max.x) * 0.5,
+                    surface_y + 0.1,
+                    (box_min.z + box_max.z) * 0.5,
+                );
+                let world_above_voxel = crate::coord::world_pos_to_world_voxel(world_above_center);
+                let above_query = store.get_voxel_world_checked(world_above_voxel);
+                let is_air_above = match above_query {
+                    Some(block) => block.is_air(),
+                    None => false, // Unknown != Air
+                };
+                if !is_air_above {
+                    continue;
+                }
+
+                let closest_x = feet_pos.x.clamp(box_min.x, box_max.x);
+                let closest_z = feet_pos.z.clamp(box_min.z, box_max.z);
+                let dx = feet_pos.x - closest_x;
+                let dz = feet_pos.z - closest_z;
+                let horiz_dist_sq = dx * dx + dz * dz;
+
+                if horiz_dist_sq > (radius * radius) {
+                    continue;
+                }
+
+                let y_offset = (radius * radius - horiz_dist_sq).max(0.0).sqrt();
+                let capsule_bottom_at_contact = (feet_pos.y + radius) - y_offset;
+                let vertical_dist = capsule_bottom_at_contact - surface_y;
+
+                if vertical_dist < -penetration_tol || vertical_dist > epsilon {
+                    continue;
+                }
+
+                let stable_feet_y = surface_y - (radius - y_offset);
+                let abs_vertical_dist = vertical_dist.abs();
+
+                let candidate = DynCandidate {
+                    surface_y,
+                    stable_feet_y,
+                    vertical_dist,
+                    abs_vertical_dist,
+                    horiz_dist_sq,
+                    body_id: body.id,
+                };
+
+                let is_better = match &best_dyn {
+                    None => true,
+                    Some(best) => {
+                        let diff = candidate.abs_vertical_dist - best.abs_vertical_dist;
+                        if diff < -1e-5 {
+                            true
+                        } else if diff > 1e-5 {
+                            false
+                        } else {
+                            let horiz_diff = candidate.horiz_dist_sq - best.horiz_dist_sq;
+                            if horiz_diff < -1e-5 {
+                                true
+                            } else if horiz_diff > 1e-5 {
+                                false
+                            } else {
+                                candidate.body_id < best.body_id
+                            }
+                        }
                     }
+                };
+
+                if is_better {
+                    best_dyn = Some(candidate);
                 }
             }
+        }
+
+        if let Some(best) = best_dyn {
+            return GroundContactResult {
+                grounded: true,
+                ground_normal: Vec3::Y,
+                ground_distance: best.vertical_dist.max(0.0),
+                support_voxel: None,
+                ground_y_surface: Some(best.surface_y),
+                stable_feet_y: Some(best.stable_feet_y),
+            };
         }
     }
 
@@ -197,8 +425,8 @@ pub fn check_capsule_clearance_with_physics(
 
     let vx_min = (aabb_min.x / VOXEL_SIZE).floor() as i32;
     let vx_max = (aabb_max.x / VOXEL_SIZE).floor() as i32;
-    let vy_min = (aabb_min.y / VOXEL_SIZE).floor() as i32;
-    let vy_max = (aabb_max.y / VOXEL_SIZE).floor() as i32;
+    let vy_min = ((aabb_min.y + 0.05) / VOXEL_SIZE).floor() as i32;
+    let vy_max = ((aabb_max.y - 0.01) / VOXEL_SIZE).floor() as i32;
     let vz_min = (aabb_min.z / VOXEL_SIZE).floor() as i32;
     let vz_max = (aabb_max.z / VOXEL_SIZE).floor() as i32;
 
@@ -251,6 +479,9 @@ pub fn check_capsule_clearance_with_physics(
                         v.relative_coord.z as f32 * VOXEL_SIZE,
                     );
                 let box_max = box_min + Vec3::splat(VOXEL_SIZE);
+                if box_max.y <= feet_pos.y + 0.05 {
+                    continue;
+                }
 
                 if standing_capsule.intersects_aabb(box_min, box_max) {
                     return false;
@@ -310,7 +541,7 @@ pub fn swept_axis_x(capsule: &super::collider::Capsule, dx: f32, store: &ChunkSt
     let vx_min = (swept_min_x / VOXEL_SIZE).floor() as i32;
     let vx_max = (swept_max_x / VOXEL_SIZE).floor() as i32;
 
-    let vy_min = ((base.y + 0.01) / VOXEL_SIZE).floor() as i32;
+    let vy_min = ((base.y + 0.05) / VOXEL_SIZE).floor() as i32;
     let vy_max = ((base.y + height - 0.01) / VOXEL_SIZE).floor() as i32;
 
     let vz_min = ((base.z - radius) / VOXEL_SIZE).floor() as i32;
@@ -438,7 +669,7 @@ pub fn swept_axis_z(capsule: &super::collider::Capsule, dz: f32, store: &ChunkSt
     let vz_min = (swept_min_z / VOXEL_SIZE).floor() as i32;
     let vz_max = (swept_max_z / VOXEL_SIZE).floor() as i32;
 
-    let vy_min = ((base.y + 0.01) / VOXEL_SIZE).floor() as i32;
+    let vy_min = ((base.y + 0.05) / VOXEL_SIZE).floor() as i32;
     let vy_max = ((base.y + height - 0.01) / VOXEL_SIZE).floor() as i32;
 
     let vx_min = ((base.x - radius) / VOXEL_SIZE).floor() as i32;
@@ -774,7 +1005,7 @@ pub fn swept_axis_x_with_physics(
 
         let swept_min_x = (base.x - radius).min(base.x + dx - radius);
         let swept_max_x = (base.x + radius).max(base.x + dx + radius);
-        let c_min_y = base.y + 0.01;
+        let c_min_y = base.y + 0.05;
         let c_max_y = base.y + height - 0.01;
         let c_min_z = base.z - radius;
         let c_max_z = base.z + radius;
@@ -802,6 +1033,10 @@ pub fn swept_axis_x_with_physics(
                         v.relative_coord.z as f32 * VOXEL_SIZE,
                     );
                 let box_max = box_min + Vec3::splat(VOXEL_SIZE);
+
+                if box_max.y <= base.y + 0.05 {
+                    continue;
+                }
 
                 let closest_z = base.z.clamp(box_min.z, box_max.z);
                 let dz = base.z - closest_z;
@@ -900,7 +1135,7 @@ pub fn swept_axis_z_with_physics(
 
         let swept_min_z = (base.z - radius).min(base.z + dz - radius);
         let swept_max_z = (base.z + radius).max(base.z + dz + radius);
-        let c_min_y = base.y + 0.01;
+        let c_min_y = base.y + 0.05;
         let c_max_y = base.y + height - 0.01;
         let c_min_x = base.x - radius;
         let c_max_x = base.x + radius;
@@ -928,6 +1163,10 @@ pub fn swept_axis_z_with_physics(
                         v.relative_coord.z as f32 * VOXEL_SIZE,
                     );
                 let box_max = box_min + Vec3::splat(VOXEL_SIZE);
+
+                if box_max.y <= base.y + 0.05 {
+                    continue;
+                }
 
                 let closest_x = base.x.clamp(box_min.x, box_max.x);
                 let dx = base.x - closest_x;

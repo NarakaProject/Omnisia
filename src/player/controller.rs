@@ -305,6 +305,11 @@ impl PlayerController {
             );
             self.state.grounded = initial_ground.grounded;
             self.state.ground_distance = initial_ground.ground_distance;
+            if initial_ground.grounded {
+                if let Some(stable_feet) = initial_ground.stable_feet_y {
+                    self.state.position.y = stable_feet;
+                }
+            }
         }
 
         // 1. Evaluasi transisi jongkok dan clearance
@@ -385,9 +390,12 @@ impl PlayerController {
             self.state.ground_normal = ground.ground_normal;
             self.state.ground_distance = ground.ground_distance;
             self.state.velocity.y = 0.0;
-            if let Some(surf_y) = ground.ground_y_surface {
-                self.state.position.y = surf_y;
-            }
+            // HARD INVARIANT (Phase 8D.4): Selaraskan ke stable_feet_y, BUKAN ground_y_surface!
+            // Dilarang keras ada fallback ke ground_y_surface untuk posisi pemain.
+            let stable_feet = ground
+                .stable_feet_y
+                .expect("Grounded result harus memiliki stable_feet_y valid!");
+            self.state.position.y = stable_feet;
         } else {
             self.state.grounded = false;
             self.state.ground_distance = ground.ground_distance;

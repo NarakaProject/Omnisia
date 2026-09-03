@@ -858,8 +858,8 @@ fn main() {
     // BENCHMARK 30: Auto-Step Traversal Solver (8D.1)
     // ========================================================================
     {
-        use omnisia::player::collision::resolve_swept_step_with_stepup;
         use omnisia::player::collider::Capsule;
+        use omnisia::player::collision::resolve_swept_step_with_stepup;
 
         let mut store = omnisia::streaming::store::ChunkStore::new();
         let mut chunk = Chunk::new(IVec3::ZERO);
@@ -952,6 +952,163 @@ fn main() {
             "[BENCHMARK 31] Airborne Glide Simulation: {:.3} µs/tick ({:.1} ticks/sec)",
             us_per_tick,
             1_000_000.0 / us_per_tick
+        );
+    }
+
+    // ========================================================================
+    // BENCHMARK 32 (BM-G1): Ground Detection Flat Ground (8D.4)
+    // Target: < 2.0 µs/query
+    // ========================================================================
+    {
+        use omnisia::player::collision::check_ground_support;
+        use omnisia::streaming::store::ChunkStore;
+
+        let mut store = ChunkStore::new();
+        let mut chunk = Chunk::new(IVec3::ZERO);
+        for vx in 0..32 {
+            for vz in 0..32 {
+                chunk.set_voxel(vx, 0, vz, VoxelBlock::new(MaterialId::STONE));
+            }
+        }
+        store.insert(chunk);
+
+        let feet_pos = Vec3::new(4.25, 0.5, 4.25);
+        let iterations = 50_000;
+        let start = Instant::now();
+
+        for _ in 0..iterations {
+            let res = check_ground_support(feet_pos, 0.30, 0.05, &store);
+            std::hint::black_box(res);
+        }
+
+        let elapsed = start.elapsed();
+        let us_per_query = elapsed.as_micros() as f64 / iterations as f64;
+        println!(
+            "[BENCHMARK 32] Ground Detection Flat Ground (BM-G1): {:.3} µs/query ({:.1} queries/sec)",
+            us_per_query,
+            1_000_000.0 / us_per_query
+        );
+    }
+
+    // ========================================================================
+    // BENCHMARK 33 (BM-G2): Ground Detection Edge Contact (8D.4)
+    // Target: < 5.0 µs/query
+    // ========================================================================
+    {
+        use omnisia::player::collision::check_ground_support;
+        use omnisia::streaming::store::ChunkStore;
+
+        let mut store = ChunkStore::new();
+        let mut chunk = Chunk::new(IVec3::ZERO);
+        chunk.set_voxel(4, 1, 4, VoxelBlock::new(MaterialId::STONE));
+        store.insert(chunk);
+
+        // Posisi menjorok di tepi (d = 0.15m)
+        let feet_pos = Vec3::new(2.65, 0.96, 2.25);
+        let iterations = 50_000;
+        let start = Instant::now();
+
+        for _ in 0..iterations {
+            let res = check_ground_support(feet_pos, 0.30, 0.05, &store);
+            std::hint::black_box(res);
+        }
+
+        let elapsed = start.elapsed();
+        let us_per_query = elapsed.as_micros() as f64 / iterations as f64;
+        println!(
+            "[BENCHMARK 33] Ground Detection Edge Contact (BM-G2): {:.3} µs/query ({:.1} queries/sec)",
+            us_per_query,
+            1_000_000.0 / us_per_query
+        );
+    }
+
+    // ========================================================================
+    // BENCHMARK 34 (BM-G3): Ground Detection Uneven Terrain / Slope (8D.4)
+    // Target: < 5.0 µs/query
+    // ========================================================================
+    {
+        use omnisia::player::collision::check_ground_support;
+        use omnisia::streaming::store::ChunkStore;
+
+        let mut store = ChunkStore::new();
+        let mut chunk = Chunk::new(IVec3::ZERO);
+        for vx in 0..10 {
+            for vz in 0..10 {
+                chunk.set_voxel(vx, 0, vz, VoxelBlock::new(MaterialId::STONE));
+                if vx >= 5 {
+                    chunk.set_voxel(vx, 1, vz, VoxelBlock::new(MaterialId::STONE));
+                }
+            }
+        }
+        store.insert(chunk);
+
+        // Posisi di lereng undakan
+        let feet_pos = Vec3::new(2.55, 1.00, 2.25);
+        let iterations = 50_000;
+        let start = Instant::now();
+
+        for _ in 0..iterations {
+            let res = check_ground_support(feet_pos, 0.30, 0.05, &store);
+            std::hint::black_box(res);
+        }
+
+        let elapsed = start.elapsed();
+        let us_per_query = elapsed.as_micros() as f64 / iterations as f64;
+        println!(
+            "[BENCHMARK 34] Ground Detection Uneven/Slope (BM-G3): {:.3} µs/query ({:.1} queries/sec)",
+            us_per_query,
+            1_000_000.0 / us_per_query
+        );
+    }
+
+    // ========================================================================
+    // BENCHMARK 35 (BM-G4): Ground Detection DynamicBody Contact (8D.4)
+    // Target: < 10.0 µs/query
+    // ========================================================================
+    {
+        use omnisia::physics::{DynamicBodyState, PhysicsRuntime};
+        use omnisia::player::collision::check_ground_support_with_physics;
+        use omnisia::streaming::store::ChunkStore;
+        use omnisia::structure::aggregate::DetachedAggregate;
+
+        let mut store = ChunkStore::new();
+        let mut chunk = Chunk::new(IVec3::ZERO);
+        for vx in 0..32 {
+            for vz in 0..32 {
+                chunk.set_voxel(vx, 0, vz, VoxelBlock::new(MaterialId::STONE));
+            }
+        }
+        store.insert(chunk);
+
+        let mut physics = PhysicsRuntime::default();
+        let mut voxels = Vec::new();
+        for vx in 0..4 {
+            for vz in 0..4 {
+                voxels.push((IVec3::new(vx, 1, vz), VoxelBlock::new(MaterialId::STONE)));
+            }
+        }
+        let agg = DetachedAggregate::from_world_voxels(999, &voxels).unwrap();
+        let body_id = physics.spawn_from_detached_aggregate(agg);
+        let body_mut = physics.get_body_mut(body_id).unwrap();
+        body_mut.state = DynamicBodyState::Settled;
+        body_mut.is_grounded = true;
+
+        let feet_pos = Vec3::new(1.0, 1.0, 1.0);
+        let iterations = 50_000;
+        let start = Instant::now();
+
+        for _ in 0..iterations {
+            let res =
+                check_ground_support_with_physics(feet_pos, 0.30, 0.05, &store, Some(&physics));
+            std::hint::black_box(res);
+        }
+
+        let elapsed = start.elapsed();
+        let us_per_query = elapsed.as_micros() as f64 / iterations as f64;
+        println!(
+            "[BENCHMARK 35] Ground Detection DynamicBody Contact (BM-G4): {:.3} µs/query ({:.1} queries/sec)",
+            us_per_query,
+            1_000_000.0 / us_per_query
         );
     }
 

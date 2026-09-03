@@ -1,7 +1,8 @@
 use glam::{IVec3, Vec3};
 use omnisia::chunk::Chunk;
 use omnisia::material::MaterialId;
-use omnisia::physics::DynamicBodyState;
+use omnisia::physics::{DynamicBodyState, PhysicsRuntime};
+use omnisia::player::collision::{check_ground_support, check_ground_support_with_physics};
 use omnisia::player::{PlayerController, PlayerInput};
 use omnisia::streaming::store::ChunkStore;
 use omnisia::structure::aggregate::DetachedAggregate;
@@ -903,4 +904,1137 @@ fn test_8d2_glide_air_control_bounded() {
         horiz_speed,
         expected_glide_speed
     );
+}
+
+// ============================================================================
+// PHASE 8D.4 — GROUNDING & TERRAIN CONTACT HARDENING TEST SUITE
+// ============================================================================
+
+// ----------------------------------------------------------------------------
+// 1. FLAT GROUND CONTACT
+// ----------------------------------------------------------------------------
+
+#[test]
+fn test_8d4_flat_ground_centered_support() {
+    let mut store = ChunkStore::new();
+    let mut chunk = Chunk::new(IVec3::ZERO);
+    // Voxel lantai di (4, 0, 4) -> permukaan atas y = 0.5m
+    chunk.set_voxel(4, 0, 4, VoxelBlock::new(MaterialId::STONE));
+    store.insert(chunk);
+
+    let feet_pos = Vec3::new(2.25, 0.50, 2.25);
+    let res = check_ground_support(feet_pos, 0.30, 0.05, &store);
+    assert!(res.grounded);
+    assert_eq!(res.ground_y_surface, Some(0.5));
+    assert_eq!(res.stable_feet_y, Some(0.5));
+    assert_eq!(res.support_voxel, Some(IVec3::new(4, 0, 4)));
+    assert!((res.ground_distance - 0.0).abs() < 1e-5);
+}
+
+#[test]
+fn test_8d4_flat_ground_small_gap_tolerance() {
+    let mut store = ChunkStore::new();
+    let mut chunk = Chunk::new(IVec3::ZERO);
+    chunk.set_voxel(4, 0, 4, VoxelBlock::new(MaterialId::STONE));
+    store.insert(chunk);
+
+    // Kaki melayang 0.03m di atas tanah (0.03m <= epsilon 0.05m)
+    let feet_pos = Vec3::new(2.25, 0.53, 2.25);
+    let res = check_ground_support(feet_pos, 0.30, 0.05, &store);
+    assert!(res.grounded);
+    assert!((res.ground_distance - 0.03).abs() < 1e-4);
+    assert_eq!(res.stable_feet_y, Some(0.5));
+}
+
+#[test]
+fn test_8d4_flat_ground_penetration_tolerance() {
+    let mut store = ChunkStore::new();
+    let mut chunk = Chunk::new(IVec3::ZERO);
+    chunk.set_voxel(4, 0, 4, VoxelBlock::new(MaterialId::STONE));
+    store.insert(chunk);
+
+    // Kaki sedikit penetrasi 0.02m ke bawah permukaan (0.02m <= penetration_tolerance 0.03m)
+    let feet_pos = Vec3::new(2.25, 0.48, 2.25);
+    let res = check_ground_support(feet_pos, 0.30, 0.05, &store);
+    assert!(res.grounded);
+    assert_eq!(res.stable_feet_y, Some(0.5));
+}
+
+#[test]
+fn test_8d4_flat_ground_beyond_tolerance_rejected() {
+    let mut store = ChunkStore::new();
+    let mut chunk = Chunk::new(IVec3::ZERO);
+    chunk.set_voxel(4, 0, 4, VoxelBlock::new(MaterialId::STONE));
+    store.insert(chunk);
+
+    // 1. Celah udara terlalu besar (0.07m > epsilon 0.05m)
+    let feet_too_high = Vec3::new(2.25, 0.57, 2.25);
+    assert!(!check_ground_support(feet_too_high, 0.30, 0.05, &store).grounded);
+
+    // 2. Penetrasi terlalu dalam (0.07m > penetration_tolerance 0.05m)
+    let feet_too_low = Vec3::new(2.25, 0.43, 2.25);
+    assert!(!check_ground_support(feet_too_low, 0.30, 0.05, &store).grounded);
+}
+
+// ----------------------------------------------------------------------------
+// 2. EDGE CONTACT & GEOMETRY ASSERTION
+// ----------------------------------------------------------------------------
+
+#[test]
+fn test_8d4_edge_partial_overhang_grounded() {
+    let mut store = ChunkStore::new();
+    let mut chunk = Chunk::new(IVec3::ZERO);
+    // Voxel solid di vx = 4 (x: 2.0m .. 2.5m), permukaan atas 1.0m (vy = 1)
+    chunk.set_voxel(4, 1, 4, VoxelBlock::new(MaterialId::STONE));
+    store.insert(chunk);
+
+    // Pusat kaki pemain berada di luar tepi voxel (x = 2.60m, offset d = 0.10m), z = 2.25m
+    let feet_pos = Vec3::new(2.60, 0.98, 2.25);
+    let res = check_ground_support(feet_pos, 0.30, 0.05, &store);
+    assert!(
+        res.grounded,
+        "Pemain yang sebagian menjorok keluar tepi harus tetap grounded!"
+    );
+    assert_eq!(res.support_voxel, Some(IVec3::new(4, 1, 4)));
+    assert_eq!(res.ground_y_surface, Some(1.0));
+}
+
+#[test]
+fn test_8d4_edge_lower_hemisphere_contact_geometry() {
+    // MANDATORY GEOMETRY ASSERTION (Section 15):
+    // support_surface_y = 1.0m, d > 0 => stable_feet_y < support_surface_y
+    let mut store = ChunkStore::new();
+    let mut chunk = Chunk::new(IVec3::ZERO);
+    chunk.set_voxel(4, 1, 4, VoxelBlock::new(MaterialId::STONE));
+    store.insert(chunk);
+
+    // Voxel x: [2.0, 2.5], permukaan 1.0m.
+    // Posisi pemain di x = 2.65m (offset d = 0.15m dari tepi x = 2.50m)
+    let feet_pos = Vec3::new(2.65, 0.96, 2.25);
+    let res = check_ground_support(feet_pos, 0.30, 0.05, &store);
+
+    assert!(res.grounded);
+    let support_y = res.ground_y_surface.unwrap();
+    let stable_feet = res.stable_feet_y.unwrap();
+
+    assert_eq!(support_y, 1.0);
+    // d = 0.15m, r = 0.30m => y_offset = sqrt(0.09 - 0.0225) = 0.2598m
+    // stable_feet_y = 1.0 - (0.30 - 0.2598) = 0.9598m < 1.0m
+    assert!(
+        stable_feet < support_y,
+        "HARD INVARIANT: Pada kontak tepi (d > 0), stable_feet_y ({}) harus < support_surface_y ({})!",
+        stable_feet,
+        support_y
+    );
+    assert!(
+        (stable_feet - 0.9598).abs() < 1e-3,
+        "stable_feet_y dihitung: {}, ekspektasi: 0.9598",
+        stable_feet
+    );
+}
+
+#[test]
+fn test_8d4_edge_controller_snaps_to_stable_feet_no_upward_teleport() {
+    let mut store = ChunkStore::new();
+    let mut chunk = Chunk::new(IVec3::ZERO);
+    chunk.set_voxel(4, 1, 4, VoxelBlock::new(MaterialId::STONE));
+    store.insert(chunk);
+
+    // Spawn controller di tepi balok (x = 2.65m, d = 0.15m)
+    let mut controller = PlayerController::new(Vec3::new(2.65, 0.96, 2.25));
+    controller.step_simulation(1.0 / 30.0, &store, 0.0);
+
+    assert!(controller.state.grounded);
+    // HARD INVARIANT: Posisi kaki pengontrol harus sama persis dengan stable_feet_y (~0.96m),
+    // BUKAN terangkat/teleportasi ke support_surface_y (1.00m)!
+    assert!(
+        (controller.state.position.y - 0.9598).abs() < 1e-3,
+        "Pengontrol dilarang snap ke support_surface_y! Terukur: {}, Ekspektasi stable_feet_y: ~0.9598",
+        controller.state.position.y
+    );
+}
+
+#[test]
+fn test_8d4_edge_deep_overhang_loss_of_support_becomes_airborne() {
+    let mut store = ChunkStore::new();
+    let mut chunk = Chunk::new(IVec3::ZERO);
+    chunk.set_voxel(4, 1, 4, VoxelBlock::new(MaterialId::STONE));
+    store.insert(chunk);
+
+    // Pemain menjorok terlalu jauh (x = 2.85m, d = 0.35m > radius 0.30m)
+    let feet_overhang = Vec3::new(2.85, 0.96, 2.25);
+    let res = check_ground_support(feet_overhang, 0.30, 0.05, &store);
+    assert!(
+        !res.grounded,
+        "Pemain yang seluruh footprint-nya di luar tepi harus airborne!"
+    );
+}
+
+// ----------------------------------------------------------------------------
+// 3. UNEVEN TERRAIN, STAIRCASE, HILL & RIVER BANK
+// ----------------------------------------------------------------------------
+
+#[test]
+fn test_8d4_hill_voxel_terrain_grounded() {
+    let mut store = ChunkStore::new();
+    let mut chunk = Chunk::new(IVec3::ZERO);
+    // Buat lereng bertingkat (hill):
+    // vx = 4: vy = 0 (surface 0.5m)
+    // vx = 5: vy = 1 (surface 1.0m)
+    // vx = 6: vy = 2 (surface 1.5m)
+    for vz in 0..10 {
+        chunk.set_voxel(4, 0, vz, VoxelBlock::new(MaterialId::STONE));
+        chunk.set_voxel(5, 1, vz, VoxelBlock::new(MaterialId::STONE));
+        chunk.set_voxel(6, 2, vz, VoxelBlock::new(MaterialId::STONE));
+    }
+    store.insert(chunk);
+
+    // Berdiri di lereng vx = 5, vy = 1 (surface 1.0m)
+    let feet_slope = Vec3::new(2.75, 1.00, 2.50);
+    let res = check_ground_support(feet_slope, 0.30, 0.05, &store);
+    assert!(res.grounded);
+    assert_eq!(res.ground_y_surface, Some(1.0));
+}
+
+#[test]
+fn test_8d4_staircase_ascending_continuous_grounding() {
+    let mut store = ChunkStore::new();
+    let mut chunk = Chunk::new(IVec3::ZERO);
+    // Tangga 1-voxel: x = 4..8, masing-masing undakan naik 1 voxel (0.5m)
+    for step in 0..4 {
+        let vx = 4 + step;
+        let vy = step;
+        for vz in 0..10 {
+            for fill_y in 0..=vy {
+                chunk.set_voxel(vx, fill_y, vz, VoxelBlock::new(MaterialId::STONE));
+            }
+        }
+    }
+    store.insert(chunk);
+
+    // Uji grounding di setiap pijakan tangga
+    for step in 0..4 {
+        let x = (4 + step) as f32 * 0.5 + 0.25;
+        let y = (step + 1) as f32 * 0.5;
+        let res = check_ground_support(Vec3::new(x, y, 2.5), 0.30, 0.05, &store);
+        assert!(res.grounded, "Pijakan tangga step {} harus grounded!", step);
+        assert_eq!(res.ground_y_surface, Some(y));
+    }
+}
+
+#[test]
+fn test_8d4_staircase_descending_continuous_grounding() {
+    let mut store = ChunkStore::new();
+    let mut chunk = Chunk::new(IVec3::ZERO);
+    for step in 0..4 {
+        let vx = 4 + step;
+        let vy = 3 - step;
+        for vz in 0..10 {
+            for fill_y in 0..=vy {
+                chunk.set_voxel(vx, fill_y, vz, VoxelBlock::new(MaterialId::STONE));
+            }
+        }
+    }
+    store.insert(chunk);
+
+    for step in 0..4 {
+        let x = (4 + step) as f32 * 0.5 + 0.25;
+        let y = (3 - step + 1) as f32 * 0.5;
+        let res = check_ground_support(Vec3::new(x, y, 2.5), 0.30, 0.05, &store);
+        assert!(res.grounded, "Turunan tangga step {} harus grounded!", step);
+        assert_eq!(res.ground_y_surface, Some(y));
+    }
+}
+
+#[test]
+fn test_8d4_river_bank_boundary_grounded() {
+    let mut store = ChunkStore::new();
+    let mut chunk = Chunk::new(IVec3::ZERO);
+    // Bantaran sungai: vx = 0..4 adalah tebing (y = 1.0m, vy = 1), vx >= 5 adalah dasar air (y = 0.5m, vy = 0)
+    for vx in 0..=4 {
+        for vz in 0..10 {
+            chunk.set_voxel(vx, 0, vz, VoxelBlock::new(MaterialId::STONE));
+            chunk.set_voxel(vx, 1, vz, VoxelBlock::new(MaterialId::STONE));
+        }
+    }
+    for vx in 5..10 {
+        for vz in 0..10 {
+            chunk.set_voxel(vx, 0, vz, VoxelBlock::new(MaterialId::STONE));
+        }
+    }
+    store.insert(chunk);
+
+    // Pemain berdiri tepat di tepi bantaran tebing sungai (x = 2.40m, tepi di 2.50m)
+    let feet_bank = Vec3::new(2.40, 1.00, 2.50);
+    let res = check_ground_support(feet_bank, 0.30, 0.05, &store);
+    assert!(
+        res.grounded,
+        "Pemain di tepi bantaran sungai harus grounded!"
+    );
+    assert_eq!(res.ground_y_surface, Some(1.0));
+}
+
+#[test]
+fn test_8d4_uneven_multi_height_footprint_grounded() {
+    let mut store = ChunkStore::new();
+    let mut chunk = Chunk::new(IVec3::ZERO);
+    // Dua balok bersebelahan dengan ketinggian berbeda dalam satu footprint:
+    // Balok A di vx = 4: vy = 0 (surface 0.5m)
+    // Balok B di vx = 5: vy = 1 (surface 1.0m)
+    chunk.set_voxel(4, 0, 4, VoxelBlock::new(MaterialId::STONE));
+    chunk.set_voxel(5, 0, 4, VoxelBlock::new(MaterialId::STONE));
+    chunk.set_voxel(5, 1, 4, VoxelBlock::new(MaterialId::STONE));
+    store.insert(chunk);
+
+    // Pemain bertumpu pada balok B yang lebih tinggi (x = 2.55m, y = 1.0m)
+    let feet_pos = Vec3::new(2.55, 1.00, 2.25);
+    let res = check_ground_support(feet_pos, 0.30, 0.05, &store);
+    assert!(res.grounded);
+    assert_eq!(res.ground_y_surface, Some(1.0));
+    assert_eq!(res.support_voxel, Some(IVec3::new(5, 1, 4)));
+}
+
+// ----------------------------------------------------------------------------
+// 4. CANDIDATE SELECTION & DETERMINISM
+// ----------------------------------------------------------------------------
+
+#[test]
+fn test_8d4_candidate_selection_deterministic_order_independence() {
+    let mut store = ChunkStore::new();
+    let mut chunk = Chunk::new(IVec3::ZERO);
+    for vx in 4..=6 {
+        for vz in 4..=6 {
+            chunk.set_voxel(vx, 0, vz, VoxelBlock::new(MaterialId::STONE));
+        }
+    }
+    store.insert(chunk);
+
+    let feet_pos = Vec3::new(2.75, 0.50, 2.75);
+    let res1 = check_ground_support(feet_pos, 0.30, 0.05, &store);
+    let res2 = check_ground_support(feet_pos, 0.30, 0.05, &store);
+
+    assert!(res1.grounded);
+    assert_eq!(res1.support_voxel, res2.support_voxel);
+    assert_eq!(res1.ground_y_surface, res2.ground_y_surface);
+    assert_eq!(res1.stable_feet_y, res2.stable_feet_y);
+    assert_eq!(res1.ground_distance, res2.ground_distance);
+}
+
+#[test]
+fn test_8d4_multiple_valid_surfaces_selects_closest() {
+    let mut store = ChunkStore::new();
+    let mut chunk = Chunk::new(IVec3::ZERO);
+    for vx in 4..=5 {
+        for vz in 4..=5 {
+            chunk.set_voxel(vx, 0, vz, VoxelBlock::new(MaterialId::STONE));
+        }
+    }
+    store.insert(chunk);
+
+    // Kaki lebih dekat ke voxel (5, 0, 5) daripada (4, 0, 4)
+    let feet_pos = Vec3::new(2.70, 0.50, 2.70);
+    let res = check_ground_support(feet_pos, 0.30, 0.05, &store);
+    assert!(res.grounded);
+    assert_eq!(res.support_voxel, Some(IVec3::new(5, 0, 5)));
+}
+
+// ----------------------------------------------------------------------------
+// 5. SIDE WALL REJECTION
+// ----------------------------------------------------------------------------
+
+#[test]
+fn test_8d4_side_wall_0_5m_not_grounded() {
+    let mut store = ChunkStore::new();
+    let mut chunk = Chunk::new(IVec3::ZERO);
+    // Dinding di samping pemain (x = 2.5m .. 3.0m, vy = 1), tetapi pemain berada di udara bebas pada y = 0.2m
+    chunk.set_voxel(5, 1, 4, VoxelBlock::new(MaterialId::STONE));
+    store.insert(chunk);
+
+    // Pemain di udara bebas pada y = 0.2m di samping dinding 1.0m (bukan lantai)
+    let feet_side = Vec3::new(2.30, 0.20, 2.25);
+    let res = check_ground_support(feet_side, 0.30, 0.05, &store);
+    assert!(
+        !res.grounded,
+        "Dinding di samping tidak boleh membuat pemain grounded!"
+    );
+}
+
+#[test]
+fn test_8d4_side_wall_1_0m_not_grounded() {
+    let mut store = ChunkStore::new();
+    let mut chunk = Chunk::new(IVec3::ZERO);
+    chunk.set_voxel(5, 1, 4, VoxelBlock::new(MaterialId::STONE));
+    chunk.set_voxel(5, 2, 4, VoxelBlock::new(MaterialId::STONE));
+    store.insert(chunk);
+
+    let feet_side = Vec3::new(2.30, 0.50, 2.25);
+    let res = check_ground_support(feet_side, 0.30, 0.05, &store);
+    assert!(
+        !res.grounded,
+        "Dinding 1.0m di samping tidak boleh membuat pemain grounded!"
+    );
+}
+
+#[test]
+fn test_8d4_side_wall_2_0m_not_grounded() {
+    let mut store = ChunkStore::new();
+    let mut chunk = Chunk::new(IVec3::ZERO);
+    for vy in 1..=4 {
+        chunk.set_voxel(5, vy, 4, VoxelBlock::new(MaterialId::STONE));
+    }
+    store.insert(chunk);
+
+    let feet_side = Vec3::new(2.30, 1.00, 2.25);
+    let res = check_ground_support(feet_side, 0.30, 0.05, &store);
+    assert!(
+        !res.grounded,
+        "Dinding tinggi 2.0m di samping tidak boleh membuat pemain grounded!"
+    );
+}
+
+// ----------------------------------------------------------------------------
+// 6. UNKNOWN != AIR HARD INVARIANTS
+// ----------------------------------------------------------------------------
+
+#[test]
+fn test_8d4_unknown_below_player_never_grounded() {
+    // ChunkStore kosong (Unknown)
+    let store = ChunkStore::new();
+    let feet_pos = Vec3::new(4.0, 1.0, 4.0);
+    let res = check_ground_support(feet_pos, 0.30, 0.05, &store);
+    assert!(
+        !res.grounded,
+        "Unknown di bawah pemain dilarang menghasilkan grounded=true!"
+    );
+    assert_eq!(res.stable_feet_y, None);
+}
+
+#[test]
+fn test_8d4_voxel_above_unknown_never_grounded() {
+    // Balok tumpuan di chunk (0, 0, 0) y = 31 (vy = 31 -> surface 16.0m).
+    // Chunk di atasnya (0, 1, 0) TIDAK DIMUAT (Unknown)!
+    let mut store = ChunkStore::new();
+    let mut chunk = Chunk::new(IVec3::new(0, 0, 0));
+    chunk.set_voxel(4, 31, 4, VoxelBlock::new(MaterialId::STONE));
+    store.insert(chunk);
+
+    // Pemain berada di y = 16.0m tepat di atas voxel 31.
+    // Karena voxel di atasnya adalah Unknown (bukan Known Air), kandidat HARUS DITOLAK!
+    let feet_pos = Vec3::new(2.25, 16.00, 2.25);
+    let res = check_ground_support(feet_pos, 0.30, 0.05, &store);
+    assert!(
+        !res.grounded,
+        "HARD INVARIANT: Jika voxel di atas adalah Unknown, tumpuan harus ditolak!"
+    );
+}
+
+#[test]
+fn test_8d4_mixed_known_unknown_footprint_safety() {
+    // Chunk (0, 0, 0) dimuat, chunk (1, 0, 0) tidak dimuat (Unknown)
+    let mut store = ChunkStore::new();
+    let mut chunk = Chunk::new(IVec3::ZERO);
+    for vz in 0..10 {
+        chunk.set_voxel(31, 0, vz, VoxelBlock::new(MaterialId::STONE));
+    }
+    store.insert(chunk);
+
+    // Kaki di x = 15.95m (bersandar pada voxel 31 chunk 0, footprint menjangkau chunk 1 yang Unknown)
+    let feet_pos = Vec3::new(15.95, 0.50, 2.25);
+    let res = check_ground_support(feet_pos, 0.30, 0.05, &store);
+    // Harus bertumpu aman pada Known Solid chunk 0 tanpa crash atau error dari Unknown chunk 1
+    assert!(res.grounded);
+    assert_eq!(res.support_voxel, Some(IVec3::new(31, 0, 4)));
+}
+
+// ----------------------------------------------------------------------------
+// 7. NEGATIVE COORDINATES & BOUNDARY FLOATS
+// ----------------------------------------------------------------------------
+
+#[test]
+fn test_8d4_negative_x_grounding() {
+    let mut store = ChunkStore::new();
+    let mut chunk = Chunk::new(IVec3::new(-1, 0, 0));
+    chunk.set_voxel(30, 0, 4, VoxelBlock::new(MaterialId::STONE));
+    store.insert(chunk);
+
+    // x di koordinat negatif: chunk -1, vx = 30 -> world x = -1 * 16 + 15 = -1.0m
+    let feet_pos = Vec3::new(-0.75, 0.50, 2.25);
+    let res = check_ground_support(feet_pos, 0.30, 0.05, &store);
+    assert!(res.grounded);
+    assert_eq!(res.ground_y_surface, Some(0.5));
+}
+
+#[test]
+fn test_8d4_negative_z_grounding() {
+    let mut store = ChunkStore::new();
+    let mut chunk = Chunk::new(IVec3::new(0, 0, -1));
+    chunk.set_voxel(4, 0, 30, VoxelBlock::new(MaterialId::STONE));
+    store.insert(chunk);
+
+    let feet_pos = Vec3::new(2.25, 0.50, -0.75);
+    let res = check_ground_support(feet_pos, 0.30, 0.05, &store);
+    assert!(res.grounded);
+    assert_eq!(res.ground_y_surface, Some(0.5));
+}
+
+#[test]
+fn test_8d4_negative_chunk_boundary_grounding() {
+    let mut store = ChunkStore::new();
+    let mut chunk = Chunk::new(IVec3::new(-1, 0, -1));
+    chunk.set_voxel(31, 2, 31, VoxelBlock::new(MaterialId::STONE));
+    store.insert(chunk);
+
+    let feet_pos = Vec3::new(-0.25, 1.50, -0.25);
+    let res = check_ground_support(feet_pos, 0.30, 0.05, &store);
+    assert!(res.grounded);
+    assert_eq!(res.support_voxel, Some(IVec3::new(-1, 2, -1)));
+    assert_eq!(res.ground_y_surface, Some(1.5));
+    assert_eq!(res.stable_feet_y, Some(1.5));
+}
+
+#[test]
+fn test_8d4_negative_y_surface_grounding() {
+    let mut store = ChunkStore::new();
+    let mut chunk = Chunk::new(IVec3::new(0, -1, 0));
+    // Chunk -1: vy = 30 -> world vy = -1*32 + 30 = -2.
+    // surface_y = (-2 + 1) * 0.5 = -0.5m
+    chunk.set_voxel(4, 30, 4, VoxelBlock::new(MaterialId::STONE));
+    store.insert(chunk);
+
+    let feet_pos = Vec3::new(2.25, -0.50, 2.25);
+    let res = check_ground_support(feet_pos, 0.30, 0.05, &store);
+    assert!(res.grounded);
+    assert_eq!(res.ground_y_surface, Some(-0.5));
+    assert_eq!(res.stable_feet_y, Some(-0.5));
+}
+
+#[test]
+fn test_8d4_exact_voxel_boundaries_flooring_math() {
+    let mut store = ChunkStore::new();
+    let mut chunk = Chunk::new(IVec3::ZERO);
+    chunk.set_voxel(4, 1, 4, VoxelBlock::new(MaterialId::STONE)); // surface 1.0m (air above)
+    chunk.set_voxel(8, 2, 8, VoxelBlock::new(MaterialId::STONE)); // surface 1.5m (air above)
+    store.insert(chunk);
+
+    // Uji nilai batas kritis sesuai Section 3 MEGAPROMPT
+    // Kolom 1: surface 1.0m
+    let test_heights_1m = [0.999999, 1.0, 1.000001];
+    for &y in &test_heights_1m {
+        let feet_pos = Vec3::new(2.25, y, 2.25);
+        let res = check_ground_support(feet_pos, 0.30, 0.05, &store);
+        assert!(
+            res.grounded,
+            "Grounding harus stabil pada batas float y = {}",
+            y
+        );
+    }
+
+    // Kolom 2: surface 1.5m
+    let test_heights_1_5m = [1.499999, 1.5, 1.500001];
+    for &y in &test_heights_1_5m {
+        let feet_pos = Vec3::new(4.25, y, 4.25);
+        let res = check_ground_support(feet_pos, 0.30, 0.05, &store);
+        assert!(
+            res.grounded,
+            "Grounding harus stabil pada batas float y = {}",
+            y
+        );
+    }
+}
+
+// ----------------------------------------------------------------------------
+// 8. DYNAMIC BODY SUPPORT
+// ----------------------------------------------------------------------------
+
+#[test]
+fn test_8d4_dynamic_body_flat_grounded() {
+    let mut store = ChunkStore::new();
+    let mut chunk = Chunk::new(IVec3::ZERO);
+    for vx in 0..32 {
+        for vz in 0..32 {
+            chunk.set_voxel(vx, 0, vz, VoxelBlock::new(MaterialId::STONE));
+        }
+    }
+    store.insert(chunk);
+
+    let mut physics = PhysicsRuntime::default();
+    let mut voxels = Vec::new();
+    for vx in 0..4 {
+        for vz in 0..4 {
+            voxels.push((IVec3::new(vx, 1, vz), VoxelBlock::new(MaterialId::STONE)));
+        }
+    }
+    let agg = DetachedAggregate::from_world_voxels(901, &voxels).unwrap();
+    let body_id = physics.spawn_from_detached_aggregate(agg);
+    let body_mut = physics.get_body_mut(body_id).unwrap();
+    body_mut.state = DynamicBodyState::Settled;
+    body_mut.is_grounded = true;
+
+    // Pemain berdiri di atas DynamicBody pada y = 1.0m (center-supported)
+    let feet_pos = Vec3::new(1.0, 1.0, 1.0);
+    let res = check_ground_support_with_physics(feet_pos, 0.30, 0.05, &store, Some(&physics));
+    assert!(res.grounded);
+    assert_eq!(res.ground_y_surface, Some(1.0));
+    assert_eq!(res.stable_feet_y, Some(1.0));
+}
+
+#[test]
+fn test_8d4_dynamic_body_edge_grounded_stable_feet() {
+    let mut store = ChunkStore::new();
+    let mut chunk = Chunk::new(IVec3::ZERO);
+    for vx in 0..32 {
+        for vz in 0..32 {
+            chunk.set_voxel(vx, 0, vz, VoxelBlock::new(MaterialId::STONE));
+        }
+    }
+    store.insert(chunk);
+
+    let mut physics = PhysicsRuntime::default();
+    let mut voxels = Vec::new();
+    // Voxel x: [0, 1] -> world x: [0.0, 1.0], surface 1.0m
+    for vx in 0..2 {
+        for vz in 0..2 {
+            voxels.push((IVec3::new(vx, 1, vz), VoxelBlock::new(MaterialId::STONE)));
+        }
+    }
+    let agg = DetachedAggregate::from_world_voxels(902, &voxels).unwrap();
+    let body_id = physics.spawn_from_detached_aggregate(agg);
+    let body_mut = physics.get_body_mut(body_id).unwrap();
+    body_mut.state = DynamicBodyState::Settled;
+    body_mut.is_grounded = true;
+
+    // Pemain di tepi DynamicBody pada x = 1.10m (offset d = 0.10m dari tepi 1.00m)
+    let feet_pos = Vec3::new(1.10, 0.98, 0.50);
+    let res = check_ground_support_with_physics(feet_pos, 0.30, 0.05, &store, Some(&physics));
+    assert!(res.grounded);
+    assert_eq!(res.ground_y_surface, Some(1.0));
+    assert!(res.stable_feet_y.unwrap() < 1.0);
+}
+
+#[test]
+fn test_8d4_dynamic_body_side_wall_not_grounded() {
+    let mut store = ChunkStore::new();
+    let chunk = Chunk::new(IVec3::ZERO);
+    store.insert(chunk);
+
+    let mut physics = PhysicsRuntime::default();
+    let mut voxels = Vec::new();
+    // DynamicBody di x = [4.0, 5.0], y = [1.0, 2.0]
+    for vx in 8..10 {
+        for vy in 2..4 {
+            voxels.push((IVec3::new(vx, vy, 4), VoxelBlock::new(MaterialId::STONE)));
+        }
+    }
+    let agg = DetachedAggregate::from_world_voxels(903, &voxels).unwrap();
+    let body_id = physics.spawn_from_detached_aggregate(agg);
+    let body_mut = physics.get_body_mut(body_id).unwrap();
+    body_mut.state = DynamicBodyState::Settled;
+
+    // Pemain di samping pada y = 0.5m (bukan di atasnya)
+    let feet_pos = Vec3::new(3.80, 0.50, 2.25);
+    let res = check_ground_support_with_physics(feet_pos, 0.30, 0.05, &store, Some(&physics));
+    assert!(
+        !res.grounded,
+        "Kontak samping dengan DynamicBody tidak boleh grounded!"
+    );
+}
+
+#[test]
+fn test_8d4_dynamic_body_above_unknown_rejected() {
+    // DynamicBody ada, tetapi chunk statis di atasnya belum dimuat (Unknown)
+    let store = ChunkStore::new(); // empty store (Unknown)
+    let mut physics = PhysicsRuntime::default();
+    let voxels = vec![(IVec3::new(4, 1, 4), VoxelBlock::new(MaterialId::STONE))];
+    let agg = DetachedAggregate::from_world_voxels(904, &voxels).unwrap();
+    let _ = physics.spawn_from_detached_aggregate(agg);
+
+    let feet_pos = Vec3::new(2.25, 1.00, 2.25);
+    let res = check_ground_support_with_physics(feet_pos, 0.30, 0.05, &store, Some(&physics));
+    assert!(
+        !res.grounded,
+        "DynamicBody dengan Unknown di atasnya harus ditolak!"
+    );
+}
+
+// ----------------------------------------------------------------------------
+// 9. ORIGINAL BUG REGRESSIONS & JUMP INTEGRATION
+// ----------------------------------------------------------------------------
+
+#[test]
+fn test_8d4_regression_standing_on_slope_space_jumps() {
+    // REGRESI BUG A: Pemain berdiri di lereng/undakan tidak bisa lompat karena false airborne
+    let mut store = ChunkStore::new();
+    let mut chunk = Chunk::new(IVec3::ZERO);
+    for vx in 0..10 {
+        for vz in 0..10 {
+            chunk.set_voxel(vx, 0, vz, VoxelBlock::new(MaterialId::STONE));
+            if vx >= 5 {
+                chunk.set_voxel(vx, 1, vz, VoxelBlock::new(MaterialId::STONE)); // undakan 1.0m
+            }
+        }
+    }
+    store.insert(chunk);
+
+    // Spawn di lereng undakan (x = 2.60m, y = 1.0m)
+    let mut player = PlayerController::new(Vec3::new(2.60, 1.0, 2.5));
+    // Jalankan beberapa tick untuk stabilisasi
+    for _ in 0..5 {
+        player.step_simulation(1.0 / 30.0, &store, 0.0);
+    }
+    assert!(player.state.grounded, "Pemain di lereng harus grounded!");
+
+    // Tekan Space untuk melompat
+    let jump_input = PlayerInput {
+        jump: true,
+        ..Default::default()
+    };
+    player.set_input(jump_input);
+    player.step_simulation(1.0 / 30.0, &store, 0.0);
+
+    // INVARIAN: Space harus berhasil memicu lompatan!
+    assert!(
+        !player.state.grounded,
+        "Lompat harus membuat pemain lepas landas!"
+    );
+    assert!(
+        player.state.velocity.y > 0.0,
+        "Kecepatan vertikal harus positif setelah lompat! Terukur: {}",
+        player.state.velocity.y
+    );
+    assert!(
+        player.state.position.y > 1.0,
+        "Posisi pemain harus terangkat ke atas! Terukur: {}",
+        player.state.position.y
+    );
+}
+
+#[test]
+fn test_8d4_regression_standing_on_river_bank_space_jumps() {
+    // REGRESI BUG A: Berdiri di tepi sungai bisa lompat
+    let mut store = ChunkStore::new();
+    let mut chunk = Chunk::new(IVec3::ZERO);
+    for vx in 0..=5 {
+        for vz in 0..10 {
+            chunk.set_voxel(vx, 0, vz, VoxelBlock::new(MaterialId::STONE));
+            chunk.set_voxel(vx, 1, vz, VoxelBlock::new(MaterialId::STONE));
+        }
+    }
+    store.insert(chunk);
+
+    let mut player = PlayerController::new(Vec3::new(2.85, 1.0, 2.5));
+    for _ in 0..5 {
+        player.step_simulation(1.0 / 30.0, &store, 0.0);
+    }
+    assert!(player.state.grounded);
+
+    player.set_input(PlayerInput {
+        jump: true,
+        ..Default::default()
+    });
+    player.step_simulation(1.0 / 30.0, &store, 0.0);
+
+    assert!(!player.state.grounded);
+    assert!(player.state.velocity.y > 0.0);
+}
+
+#[test]
+fn test_8d4_regression_standing_on_edge_space_jumps() {
+    // REGRESI BUG A: Berdiri menjorok di tepi balok bisa lompat
+    let mut store = ChunkStore::new();
+    let mut chunk = Chunk::new(IVec3::ZERO);
+    chunk.set_voxel(4, 1, 4, VoxelBlock::new(MaterialId::STONE));
+    store.insert(chunk);
+
+    let mut player = PlayerController::new(Vec3::new(2.65, 0.96, 2.25));
+    player.step_simulation(1.0 / 30.0, &store, 0.0);
+    assert!(player.state.grounded);
+
+    player.set_input(PlayerInput {
+        jump: true,
+        ..Default::default()
+    });
+    player.step_simulation(1.0 / 30.0, &store, 0.0);
+
+    assert!(!player.state.grounded);
+    assert!(player.state.velocity.y > 0.0);
+}
+
+#[test]
+fn test_8d4_jump_from_staircase() {
+    let mut store = ChunkStore::new();
+    let mut chunk = Chunk::new(IVec3::ZERO);
+    for step in 0..3 {
+        for vz in 0..10 {
+            for y in 0..=step {
+                chunk.set_voxel(4 + step, y, vz, VoxelBlock::new(MaterialId::STONE));
+            }
+        }
+    }
+    store.insert(chunk);
+
+    let mut player = PlayerController::new(Vec3::new(2.75, 1.0, 2.5));
+    player.step_simulation(1.0 / 30.0, &store, 0.0);
+    assert!(player.state.grounded);
+
+    player.set_input(PlayerInput {
+        jump: true,
+        ..Default::default()
+    });
+    player.step_simulation(1.0 / 30.0, &store, 0.0);
+    assert!(!player.state.grounded);
+    assert!(player.state.velocity.y > 0.0);
+}
+
+#[test]
+fn test_8d4_jump_while_sprinting_from_edge() {
+    let mut store = ChunkStore::new();
+    let mut chunk = Chunk::new(IVec3::ZERO);
+    for vx in 0..10 {
+        for vz in 0..10 {
+            chunk.set_voxel(vx, 0, vz, VoxelBlock::new(MaterialId::STONE));
+        }
+    }
+    store.insert(chunk);
+
+    let mut player = PlayerController::new(Vec3::new(2.5, 0.5, 2.5));
+    player.step_simulation(1.0 / 30.0, &store, 0.0);
+    assert!(player.state.grounded);
+
+    // Sprint + Jump
+    player.set_input(PlayerInput {
+        move_forward: 1.0,
+        sprint: true,
+        jump: true,
+        ..Default::default()
+    });
+    player.step_simulation(1.0 / 30.0, &store, 0.0);
+
+    assert!(!player.state.grounded);
+    assert!(player.state.velocity.y > 0.0);
+}
+
+#[test]
+fn test_8d4_jump_immediately_after_landing_on_edge() {
+    // REGRESI BUG C: Mendarat di tepi dan langsung melompat lagi
+    let mut store = ChunkStore::new();
+    let mut chunk = Chunk::new(IVec3::ZERO);
+    chunk.set_voxel(4, 0, 4, VoxelBlock::new(MaterialId::STONE));
+    store.insert(chunk);
+
+    // Pemain jatuh dari ketinggian y = 1.5m tepat menuju tepi (x = 2.60m)
+    let mut player = PlayerController::new(Vec3::new(2.60, 1.5, 2.25));
+    player.state.grounded = false;
+
+    // Simulasikan hingga mendarat
+    for _ in 0..30 {
+        player.step_simulation(1.0 / 30.0, &store, 0.0);
+        if player.state.grounded {
+            break;
+        }
+    }
+    assert!(
+        player.state.grounded,
+        "Pemain harus berhasil mendarat di tepi!"
+    );
+
+    // Langsung lompat
+    player.set_input(PlayerInput {
+        jump: true,
+        ..Default::default()
+    });
+    player.step_simulation(1.0 / 30.0, &store, 0.0);
+    assert!(!player.state.grounded);
+    assert!(player.state.velocity.y > 0.0);
+}
+
+#[test]
+fn test_8d4_jump_after_auto_step() {
+    // REGRESI BUG B & C: Melangkah naik undakan lalu langsung melompat
+    let mut store = ChunkStore::new();
+    let mut chunk = Chunk::new(IVec3::ZERO);
+    for vx in 0..10 {
+        for vz in 0..10 {
+            chunk.set_voxel(vx, 0, vz, VoxelBlock::new(MaterialId::STONE));
+            if vx >= 5 {
+                chunk.set_voxel(vx, 1, vz, VoxelBlock::new(MaterialId::STONE));
+            }
+        }
+    }
+    store.insert(chunk);
+
+    let mut player = PlayerController::new(Vec3::new(2.2, 0.5, 2.5));
+    player.set_input(PlayerInput {
+        move_forward: 1.0,
+        ..Default::default()
+    });
+
+    // Jalankan langkah hingga menaiki undakan
+    for _ in 0..10 {
+        player.step_simulation(1.0 / 30.0, &store, 0.0);
+    }
+    assert!(player.state.position.x > 2.5);
+    assert!(player.state.grounded);
+
+    // Langsung tekan Jump
+    player.set_input(PlayerInput {
+        jump: true,
+        ..Default::default()
+    });
+    player.step_simulation(1.0 / 30.0, &store, 0.0);
+    assert!(!player.state.grounded);
+    assert!(player.state.velocity.y > 0.0);
+}
+
+// ----------------------------------------------------------------------------
+// 10. AUTO-STEP INTEGRATION
+// ----------------------------------------------------------------------------
+
+#[test]
+fn test_8d4_auto_step_one_voxel_step_from_rest() {
+    let mut store = ChunkStore::new();
+    let mut chunk = Chunk::new(IVec3::ZERO);
+    for vx in 0..10 {
+        for vz in 0..10 {
+            chunk.set_voxel(vx, 0, vz, VoxelBlock::new(MaterialId::STONE));
+            if vx >= 5 {
+                chunk.set_voxel(vx, 1, vz, VoxelBlock::new(MaterialId::STONE));
+            }
+        }
+    }
+    store.insert(chunk);
+
+    // Tepat di depan undakan 0.5m
+    let mut player = PlayerController::new(Vec3::new(2.19, 0.5, 2.5));
+    player.set_input(PlayerInput {
+        move_forward: 1.0,
+        ..Default::default()
+    });
+
+    for _ in 0..10 {
+        player.step_simulation(1.0 / 30.0, &store, 0.0);
+    }
+
+    assert!(player.state.position.x > 2.5);
+    assert!((player.state.position.y - 1.0).abs() < 1e-2);
+}
+
+#[test]
+fn test_8d4_auto_step_walking_into_step() {
+    let mut store = ChunkStore::new();
+    setup_flat_ground(&mut store, IVec3::ZERO);
+    if let Some(chunk) = store.get_mut(&IVec3::ZERO) {
+        for vx in 6..32 {
+            for vz in 0..32 {
+                chunk.set_voxel(vx, 1, vz, VoxelBlock::new(MaterialId::STONE));
+            }
+        }
+    }
+
+    let mut player = PlayerController::new(Vec3::new(1.5, 0.5, 2.5));
+    player.set_input(PlayerInput {
+        move_forward: 1.0,
+        ..Default::default()
+    });
+
+    for _ in 0..20 {
+        player.step_simulation(1.0 / 30.0, &store, 0.0);
+    }
+
+    assert!(player.state.position.x > 3.0);
+    assert!((player.state.position.y - 1.0).abs() < 1e-2);
+}
+
+#[test]
+fn test_8d4_auto_step_sprinting_into_step() {
+    let mut store = ChunkStore::new();
+    setup_flat_ground(&mut store, IVec3::ZERO);
+    if let Some(chunk) = store.get_mut(&IVec3::ZERO) {
+        for vx in 6..32 {
+            for vz in 0..32 {
+                chunk.set_voxel(vx, 1, vz, VoxelBlock::new(MaterialId::STONE));
+            }
+        }
+    }
+
+    let mut player = PlayerController::new(Vec3::new(1.5, 0.5, 2.5));
+    player.set_input(PlayerInput {
+        move_forward: 1.0,
+        sprint: true,
+        ..Default::default()
+    });
+
+    for _ in 0..15 {
+        player.step_simulation(1.0 / 30.0, &store, 0.0);
+    }
+
+    assert!(player.state.position.x > 3.0);
+    assert!((player.state.position.y - 1.0).abs() < 1e-2);
+}
+
+#[test]
+fn test_8d4_auto_step_diagonal_approach() {
+    let mut store = ChunkStore::new();
+    setup_flat_ground(&mut store, IVec3::ZERO);
+    if let Some(chunk) = store.get_mut(&IVec3::ZERO) {
+        for vx in 5..32 {
+            for vz in 5..32 {
+                chunk.set_voxel(vx, 1, vz, VoxelBlock::new(MaterialId::STONE));
+            }
+        }
+    }
+
+    let mut player = PlayerController::new(Vec3::new(2.1, 0.5, 2.1));
+    player.set_input(PlayerInput {
+        move_forward: 1.0,
+        move_right: 1.0,
+        ..Default::default()
+    });
+
+    for _ in 0..20 {
+        player.step_simulation(1.0 / 30.0, &store, 45.0);
+    }
+
+    assert!(player.state.position.x > 2.5 || player.state.position.z > 2.5);
+}
+
+#[test]
+fn test_8d4_auto_step_repeated_stair_steps() {
+    let mut store = ChunkStore::new();
+    setup_flat_ground(&mut store, IVec3::ZERO);
+    if let Some(chunk) = store.get_mut(&IVec3::ZERO) {
+        for step in 1..3 {
+            for vx in (4 + step * 2)..32 {
+                for vz in 0..32 {
+                    chunk.set_voxel(vx, step, vz, VoxelBlock::new(MaterialId::STONE));
+                }
+            }
+        }
+    }
+
+    let mut player = PlayerController::new(Vec3::new(1.5, 0.5, 2.5));
+    player.set_input(PlayerInput {
+        move_forward: 1.0,
+        ..Default::default()
+    });
+
+    for _ in 0..40 {
+        player.step_simulation(1.0 / 30.0, &store, 0.0);
+    }
+
+    assert!(player.state.position.x > 4.0);
+    assert!(player.state.position.y >= 1.0);
+}
+
+#[test]
+fn test_8d4_auto_step_two_voxel_wall_blocked() {
+    let mut store = ChunkStore::new();
+    setup_flat_ground(&mut store, IVec3::ZERO);
+    if let Some(chunk) = store.get_mut(&IVec3::ZERO) {
+        for vx in 5..32 {
+            for vz in 0..32 {
+                chunk.set_voxel(vx, 1, vz, VoxelBlock::new(MaterialId::STONE));
+                chunk.set_voxel(vx, 2, vz, VoxelBlock::new(MaterialId::STONE)); // 1.0m wall
+            }
+        }
+    }
+
+    let mut player = PlayerController::new(Vec3::new(2.1, 0.5, 2.5));
+    player.set_input(PlayerInput {
+        move_forward: 1.0,
+        ..Default::default()
+    });
+
+    for _ in 0..20 {
+        player.step_simulation(1.0 / 30.0, &store, 0.0);
+    }
+
+    // Dinding 1.0m harus tetap terblokir!
+    assert!(player.state.position.x < 2.25);
+    assert_eq!(player.state.position.y, 0.5);
+}
+
+#[test]
+fn test_8d4_step_plus_jump_no_permanent_sticking() {
+    // REGRESI BUG B & C: Menekan lompat sambil mendekati step tidak membuat pemain stuck
+    let mut store = ChunkStore::new();
+    setup_flat_ground(&mut store, IVec3::ZERO);
+    if let Some(chunk) = store.get_mut(&IVec3::ZERO) {
+        for vx in 5..32 {
+            for vz in 0..32 {
+                chunk.set_voxel(vx, 1, vz, VoxelBlock::new(MaterialId::STONE));
+            }
+        }
+    }
+
+    let mut player = PlayerController::new(Vec3::new(2.0, 0.5, 2.5));
+    player.set_input(PlayerInput {
+        move_forward: 1.0,
+        jump: true,
+        ..Default::default()
+    });
+
+    for _ in 0..35 {
+        player.step_simulation(1.0 / 30.0, &store, 0.0);
+    }
+
+    // Pemain harus berhasil melompat melewati undakan dan mendarat mulus
+    assert!(player.state.position.x > 2.5);
+    assert!(player.state.grounded);
+    assert!((player.state.position.y - 1.0).abs() < 1e-2);
+}
+
+// ----------------------------------------------------------------------------
+// 11. SAFETY & STABILITY
+// ----------------------------------------------------------------------------
+
+#[test]
+fn test_8d4_grounding_never_snaps_upward_by_large_amount() {
+    let mut store = ChunkStore::new();
+    let mut chunk = Chunk::new(IVec3::ZERO);
+    chunk.set_voxel(4, 2, 4, VoxelBlock::new(MaterialId::STONE)); // surface 1.5m
+    store.insert(chunk);
+
+    // Kaki pemain di y = 1.0m (0.5m di bawah permukaan voxel)
+    let feet_pos = Vec3::new(2.25, 1.00, 2.25);
+    let res = check_ground_support(feet_pos, 0.30, 0.05, &store);
+    // Dilarang snap ke atas tebing!
+    assert!(!res.grounded);
+    assert_eq!(res.stable_feet_y, None);
+}
+
+#[test]
+fn test_8d4_grounding_never_bridges_large_gap() {
+    let mut store = ChunkStore::new();
+    let mut chunk = Chunk::new(IVec3::ZERO);
+    // Dua pilar terpisah jarak 0.6m (lebih besar dari diameter kapsul)
+    chunk.set_voxel(2, 1, 4, VoxelBlock::new(MaterialId::STONE));
+    chunk.set_voxel(6, 1, 4, VoxelBlock::new(MaterialId::STONE));
+    store.insert(chunk);
+
+    // Pemain berada di tengah celah jurang (x = 2.0m)
+    let feet_pos = Vec3::new(2.0, 1.0, 2.25);
+    let res = check_ground_support(feet_pos, 0.30, 0.05, &store);
+    assert!(
+        !res.grounded,
+        "Pemain di atas celah jurang tidak boleh grounded!"
+    );
+}
+
+#[test]
+fn test_8d4_repeated_ticks_on_stable_ground_remain_stable() {
+    let mut store = ChunkStore::new();
+    let mut chunk = Chunk::new(IVec3::ZERO);
+    for vx in 0..10 {
+        for vz in 0..10 {
+            chunk.set_voxel(vx, 0, vz, VoxelBlock::new(MaterialId::STONE));
+        }
+    }
+    store.insert(chunk);
+
+    let mut player = PlayerController::new(Vec3::new(2.5, 0.5, 2.5));
+    for tick in 0..100 {
+        player.step_simulation(1.0 / 30.0, &store, 0.0);
+        assert!(player.state.grounded, "Tick {} harus tetap grounded!", tick);
+        assert_eq!(player.state.position.y, 0.5);
+    }
 }
