@@ -854,6 +854,107 @@ fn main() {
         );
     }
 
+    // ========================================================================
+    // BENCHMARK 30: Auto-Step Traversal Solver (8D.1)
+    // ========================================================================
+    {
+        use omnisia::player::collision::resolve_swept_step_with_stepup;
+        use omnisia::player::collider::Capsule;
+
+        let mut store = omnisia::streaming::store::ChunkStore::new();
+        let mut chunk = Chunk::new(IVec3::ZERO);
+        for vx in 0..32 {
+            for vz in 0..32 {
+                chunk.set_voxel(vx, 0, vz, VoxelBlock::new(MaterialId::STONE));
+            }
+        }
+        // Undakan 1-voxel di x >= 8, y = 1
+        for vx in 8..16 {
+            for vz in 0..32 {
+                chunk.set_voxel(vx, 1, vz, VoxelBlock::new(MaterialId::STONE));
+            }
+        }
+        store.insert(chunk);
+
+        let iterations = 20_000;
+        let start = Instant::now();
+
+        for _ in 0..iterations {
+            let mut capsule = Capsule::new(Vec3::new(3.7, 0.5, 5.0), 1.8, 0.30);
+            let mut velocity = Vec3::new(5.0, 0.0, 0.0);
+            let delta = velocity * (1.0 / 30.0);
+            let stats = resolve_swept_step_with_stepup(
+                &mut capsule,
+                &mut velocity,
+                delta,
+                0.55,
+                true,
+                &store,
+                None,
+            );
+            std::hint::black_box(stats);
+            std::hint::black_box(capsule);
+        }
+
+        let elapsed = start.elapsed();
+        let us_per_step = elapsed.as_micros() as f64 / iterations as f64;
+        println!(
+            "[BENCHMARK 30] Auto-Step Traversal Solver: {:.3} µs/step ({:.1} steps/sec)",
+            us_per_step,
+            1_000_000.0 / us_per_step
+        );
+    }
+
+    // ========================================================================
+    // BENCHMARK 31: Airborne Glide Physics Simulation (8D.2)
+    // ========================================================================
+    {
+        use omnisia::player::{PlayerController, PlayerInput};
+
+        let mut store = omnisia::streaming::store::ChunkStore::new();
+        for cy in 0..=3 {
+            let mut chunk = Chunk::new(IVec3::new(0, cy, 0));
+            if cy == 0 {
+                for vx in 0..32 {
+                    for vz in 0..32 {
+                        chunk.set_voxel(vx, 0, vz, VoxelBlock::new(MaterialId::STONE));
+                    }
+                }
+            }
+            store.insert(chunk);
+        }
+
+        let mut player = PlayerController::new(Vec3::new(4.0, 50.0, 4.0));
+        player.state.grounded = false;
+        let input = PlayerInput {
+            move_forward: 1.0,
+            sprint: true,
+            ..Default::default()
+        };
+        player.set_input(input);
+
+        let iterations = 20_000;
+        let start = Instant::now();
+
+        for _ in 0..iterations {
+            player.step_simulation(1.0 / 30.0, &store, 0.0);
+            // Jaga ketinggian agar tetap melayang di udara selama iterasi
+            if player.state.position.y < 20.0 {
+                player.state.position.y = 50.0;
+                player.state.grounded = false;
+            }
+            std::hint::black_box(player.state.velocity);
+        }
+
+        let elapsed = start.elapsed();
+        let us_per_tick = elapsed.as_micros() as f64 / iterations as f64;
+        println!(
+            "[BENCHMARK 31] Airborne Glide Simulation: {:.3} µs/tick ({:.1} ticks/sec)",
+            us_per_tick,
+            1_000_000.0 / us_per_tick
+        );
+    }
+
     println!("============================================================");
     println!("             BENCHMARK SUITE COMPLETE                       ");
     println!("============================================================");
