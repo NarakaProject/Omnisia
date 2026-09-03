@@ -1,10 +1,10 @@
-use glam::{IVec3, Vec3};
+use glam::{IVec3, Mat3, Quat, Vec3};
 use omnisia::chunk::Chunk;
 use omnisia::material::MaterialId;
 use omnisia::physics::{
     world_pos_to_cell, Aabb, AabbError, BodyType, BroadphaseError, BroadphasePair, BroadphaseProxy,
-    CellCoord, PhysicsWorld, PhysicsWorldConfig, RigidBodyId, SpatialHashBroadphase,
-    StaticTerrainQuery,
+    CellCoord, MassProperties, PhysicsWorld, PhysicsWorldConfig, RigidBody, RigidBodyError,
+    RigidBodyId, SpatialHashBroadphase, StaticTerrainQuery,
 };
 use omnisia::streaming::store::ChunkStore;
 use omnisia::voxel::VoxelBlock;
@@ -604,4 +604,446 @@ fn test_9_1_broadphase_zero_voxel_iteration_contract() {
 
     let pairs = broadphase.generate_candidate_pairs();
     assert!(!pairs.is_empty());
+}
+
+// ============================================================================
+// 5. PHASE 9.2 — RIGIDBODY DATA MODEL & MASS PROPERTIES TESTS
+// ============================================================================
+
+#[test]
+fn test_9_2_dynamic_rigidbody_construction() {
+    let id = RigidBodyId(1);
+    let pos = Vec3::new(10.0, 5.0, -2.0);
+    let rot = Quat::from_rotation_y(std::f32::consts::FRAC_PI_4);
+    let mass = 15.0;
+    let inertia = Mat3::from_diagonal(Vec3::new(2.0, 3.0, 4.0));
+
+    let body = RigidBody::new_dynamic(id, pos, rot, mass, inertia).unwrap();
+
+    assert_eq!(body.id(), id);
+    assert_eq!(body.body_type(), BodyType::Dynamic);
+    assert!(body.is_dynamic());
+    assert!(!body.is_static());
+    assert!(!body.is_kinematic());
+    assert_eq!(body.position(), pos);
+    assert!((body.rotation().length() - 1.0).abs() < 1e-6);
+    assert_eq!(body.linear_velocity(), Vec3::ZERO);
+    assert_eq!(body.angular_velocity(), Vec3::ZERO);
+    assert_eq!(body.mass_properties().mass, 15.0);
+    assert!((body.mass_properties().inverse_mass - (1.0 / 15.0)).abs() < 1e-6);
+    assert_eq!(body.mass_properties().local_inertia, inertia);
+}
+
+#[test]
+fn test_9_2_static_rigidbody_construction() {
+    let id = RigidBodyId(2);
+    let pos = Vec3::new(-50.0, 0.0, 25.0);
+    let rot = Quat::IDENTITY;
+
+    let body = RigidBody::new_static(id, pos, rot).unwrap();
+
+    assert_eq!(body.id(), id);
+    assert_eq!(body.body_type(), BodyType::Static);
+    assert!(body.is_static());
+    assert!(!body.is_dynamic());
+    assert!(!body.is_kinematic());
+    assert_eq!(body.position(), pos);
+    assert_eq!(body.linear_velocity(), Vec3::ZERO);
+    assert_eq!(body.angular_velocity(), Vec3::ZERO);
+
+    // Massa dan inersia statis kanonikal (inverse = 0, mass = 0, BUKAN INFINITY)
+    assert_eq!(body.mass_properties().mass, 0.0);
+    assert_eq!(body.mass_properties().inverse_mass, 0.0);
+    assert_eq!(body.mass_properties().local_inertia, Mat3::ZERO);
+    assert_eq!(body.mass_properties().local_inverse_inertia, Mat3::ZERO);
+}
+
+#[test]
+fn test_9_2_kinematic_rigidbody_construction() {
+    let id = RigidBodyId(3);
+    let pos = Vec3::new(0.0, 10.0, 0.0);
+    let rot = Quat::IDENTITY;
+    let lin_vel = Vec3::new(2.5, 0.0, -1.0);
+    let ang_vel = Vec3::new(0.0, 1.57, 0.0);
+
+    let body = RigidBody::new_kinematic(id, pos, rot, lin_vel, ang_vel).unwrap();
+
+    assert_eq!(body.id(), id);
+    assert_eq!(body.body_type(), BodyType::Kinematic);
+    assert!(body.is_kinematic());
+    assert!(!body.is_dynamic());
+    assert!(!body.is_static());
+    assert_eq!(body.position(), pos);
+    assert_eq!(body.linear_velocity(), lin_vel);
+    assert_eq!(body.angular_velocity(), ang_vel);
+
+    // Invarian massa kinematik (inverse = 0)
+    assert_eq!(body.mass_properties().mass, 0.0);
+    assert_eq!(body.mass_properties().inverse_mass, 0.0);
+    assert_eq!(body.mass_properties().local_inertia, Mat3::ZERO);
+    assert_eq!(body.mass_properties().local_inverse_inertia, Mat3::ZERO);
+}
+
+#[test]
+fn test_9_2_position_preserved() {
+    let id = RigidBodyId(10);
+    let mut body = RigidBody::new_static(id, Vec3::new(1.0, 2.0, 3.0), Quat::IDENTITY).unwrap();
+    assert_eq!(body.position(), Vec3::new(1.0, 2.0, 3.0));
+
+    // set_position valid
+    assert!(body.set_position(Vec3::new(-100.5, 42.0, 0.0)).is_ok());
+    assert_eq!(body.position(), Vec3::new(-100.5, 42.0, 0.0));
+
+    // set_position dengan nilai non-finite ditolak
+    assert_eq!(
+        body.set_position(Vec3::new(f32::NAN, 0.0, 0.0))
+            .unwrap_err(),
+        RigidBodyError::NonFinitePosition
+    );
+    assert_eq!(
+        body.set_position(Vec3::new(0.0, f32::INFINITY, 0.0))
+            .unwrap_err(),
+        RigidBodyError::NonFinitePosition
+    );
+}
+
+#[test]
+fn test_9_2_rotation_normalized() {
+    let id = RigidBodyId(11);
+    // Masukkan quaternion non-unit (belum ternormalisasi)
+    let non_unit_rot = Quat::from_xyzw(1.0, 2.0, 3.0, 4.0);
+    assert!((non_unit_rot.length() - 1.0).abs() > 0.1);
+
+    let body = RigidBody::new_static(id, Vec3::ZERO, non_unit_rot).unwrap();
+    // Harus otomatis ternormalisasi
+    assert!((body.rotation().length() - 1.0).abs() < 1e-6);
+    assert_eq!(body.rotation(), non_unit_rot.normalize());
+
+    // Uji pada set_rotation mutator
+    let mut body_mut = body;
+    let non_unit_rot_2 = Quat::from_xyzw(0.0, 5.0, 0.0, 5.0);
+    assert!(body_mut.set_rotation(non_unit_rot_2).is_ok());
+    assert!((body_mut.rotation().length() - 1.0).abs() < 1e-6);
+    assert_eq!(body_mut.rotation(), non_unit_rot_2.normalize());
+}
+
+#[test]
+fn test_9_2_invalid_rotation_rejected() {
+    let id = RigidBodyId(12);
+
+    // Zero-length quaternion
+    let zero_quat = Quat::from_xyzw(0.0, 0.0, 0.0, 0.0);
+    assert_eq!(
+        RigidBody::new_static(id, Vec3::ZERO, zero_quat).unwrap_err(),
+        RigidBodyError::InvalidRotation
+    );
+
+    // Non-finite quaternion
+    let nan_quat = Quat::from_xyzw(f32::NAN, 1.0, 0.0, 0.0);
+    assert_eq!(
+        RigidBody::new_static(id, Vec3::ZERO, nan_quat).unwrap_err(),
+        RigidBodyError::InvalidRotation
+    );
+
+    let inf_quat = Quat::from_xyzw(0.0, f32::INFINITY, 0.0, 0.0);
+    assert_eq!(
+        RigidBody::new_static(id, Vec3::ZERO, inf_quat).unwrap_err(),
+        RigidBodyError::InvalidRotation
+    );
+}
+
+#[test]
+fn test_9_2_linear_velocity_preserved() {
+    let id = RigidBodyId(20);
+    let mut body = RigidBody::new_static(id, Vec3::ZERO, Quat::IDENTITY).unwrap();
+    assert_eq!(body.linear_velocity(), Vec3::ZERO);
+
+    assert!(body.set_linear_velocity(Vec3::new(12.5, -4.0, 0.2)).is_ok());
+    assert_eq!(body.linear_velocity(), Vec3::new(12.5, -4.0, 0.2));
+}
+
+#[test]
+fn test_9_2_angular_velocity_preserved() {
+    let id = RigidBodyId(21);
+    let mut body = RigidBody::new_static(id, Vec3::ZERO, Quat::IDENTITY).unwrap();
+    assert_eq!(body.angular_velocity(), Vec3::ZERO);
+
+    assert!(body
+        .set_angular_velocity(Vec3::new(0.0, std::f32::consts::PI, -1.0))
+        .is_ok());
+    assert_eq!(
+        body.angular_velocity(),
+        Vec3::new(0.0, std::f32::consts::PI, -1.0)
+    );
+}
+
+#[test]
+fn test_9_2_nonfinite_velocity_rejected() {
+    let id = RigidBodyId(22);
+    let mut body = RigidBody::new_static(id, Vec3::ZERO, Quat::IDENTITY).unwrap();
+
+    assert_eq!(
+        body.set_linear_velocity(Vec3::new(f32::NAN, 0.0, 0.0))
+            .unwrap_err(),
+        RigidBodyError::NonFiniteVelocity
+    );
+    assert_eq!(
+        body.set_angular_velocity(Vec3::new(0.0, f32::INFINITY, 0.0))
+            .unwrap_err(),
+        RigidBodyError::NonFiniteVelocity
+    );
+}
+
+#[test]
+fn test_9_2_dynamic_mass_inverse_mass() {
+    let mass_props =
+        MassProperties::new_dynamic(25.0, Mat3::from_diagonal(Vec3::splat(10.0))).unwrap();
+    assert_eq!(mass_props.mass, 25.0);
+    assert!((mass_props.inverse_mass - 0.04).abs() < 1e-6);
+}
+
+#[test]
+fn test_9_2_zero_mass_rejected() {
+    assert_eq!(
+        MassProperties::new_dynamic(0.0, Mat3::from_diagonal(Vec3::splat(1.0))).unwrap_err(),
+        RigidBodyError::InvalidMass
+    );
+}
+
+#[test]
+fn test_9_2_negative_mass_rejected() {
+    assert_eq!(
+        MassProperties::new_dynamic(-10.0, Mat3::from_diagonal(Vec3::splat(1.0))).unwrap_err(),
+        RigidBodyError::InvalidMass
+    );
+}
+
+#[test]
+fn test_9_2_nonfinite_mass_rejected() {
+    assert_eq!(
+        MassProperties::new_dynamic(f32::NAN, Mat3::from_diagonal(Vec3::splat(1.0))).unwrap_err(),
+        RigidBodyError::InvalidMass
+    );
+    assert_eq!(
+        MassProperties::new_dynamic(f32::INFINITY, Mat3::from_diagonal(Vec3::splat(1.0)))
+            .unwrap_err(),
+        RigidBodyError::InvalidMass
+    );
+}
+
+#[test]
+fn test_9_2_static_inverse_mass_zero() {
+    let static_props = MassProperties::new_static();
+    assert_eq!(static_props.mass, 0.0);
+    assert_eq!(static_props.inverse_mass, 0.0);
+    assert_eq!(static_props.local_inertia, Mat3::ZERO);
+    assert_eq!(static_props.local_inverse_inertia, Mat3::ZERO);
+}
+
+#[test]
+fn test_9_2_dynamic_inertia_properties() {
+    // Inersia kotak pejal seragam (dx=2, dy=4, dz=6)
+    let box_props = MassProperties::from_box(12.0, Vec3::new(2.0, 4.0, 6.0)).unwrap();
+    assert_eq!(box_props.mass, 12.0);
+    // Ixx = 12/12 * (16 + 36) = 52
+    // Iyy = 12/12 * (4 + 36) = 40
+    // Izz = 12/12 * (4 + 16) = 20
+    assert_eq!(
+        box_props.local_inertia,
+        Mat3::from_diagonal(Vec3::new(52.0, 40.0, 20.0))
+    );
+
+    // Inersia bola pejal beradius 2.0m, massa 10kg
+    let sphere_props = MassProperties::from_sphere(10.0, 2.0).unwrap();
+    // I = 0.4 * 10 * 4 = 16
+    assert_eq!(
+        sphere_props.local_inertia,
+        Mat3::from_diagonal(Vec3::splat(16.0))
+    );
+}
+
+#[test]
+fn test_9_2_inverse_inertia_properties() {
+    let inertia = Mat3::from_diagonal(Vec3::new(2.0, 4.0, 8.0));
+    let mass_props = MassProperties::new_dynamic(1.0, inertia).unwrap();
+
+    let product = mass_props.local_inertia * mass_props.local_inverse_inertia;
+    let diff = (product - Mat3::IDENTITY).abs_diff_eq(Mat3::ZERO, 1e-5);
+    assert!(diff, "I * I_inv harus mendekati Mat3::IDENTITY");
+}
+
+#[test]
+fn test_9_2_static_inverse_inertia_zero() {
+    let static_body = RigidBody::new_static(RigidBodyId(30), Vec3::ZERO, Quat::IDENTITY).unwrap();
+    assert_eq!(
+        static_body.mass_properties().local_inverse_inertia,
+        Mat3::ZERO
+    );
+}
+
+#[test]
+fn test_9_2_invalid_inertia_rejected() {
+    // 1. Matriks asimetris
+    let mut asym = Mat3::from_diagonal(Vec3::splat(5.0));
+    asym.x_axis.y = 10.0;
+    asym.y_axis.x = 0.0;
+    assert_eq!(
+        MassProperties::new_dynamic(1.0, asym).unwrap_err(),
+        RigidBodyError::InvalidInertia
+    );
+
+    // 2. Matriks singular / bukan definit positif (elemen diagonal negatif)
+    let neg_diag = Mat3::from_diagonal(Vec3::new(-2.0, 5.0, 5.0));
+    assert_eq!(
+        MassProperties::new_dynamic(1.0, neg_diag).unwrap_err(),
+        RigidBodyError::InvalidInertia
+    );
+
+    // 3. Matriks dengan komponen non-finite
+    let nan_mat = Mat3::from_diagonal(Vec3::new(f32::NAN, 5.0, 5.0));
+    assert_eq!(
+        MassProperties::new_dynamic(1.0, nan_mat).unwrap_err(),
+        RigidBodyError::InvalidInertia
+    );
+}
+
+#[test]
+fn test_9_2_rigidbody_identity_preserved() {
+    let id = RigidBodyId(42);
+    let body = RigidBody::new_static(id, Vec3::ZERO, Quat::IDENTITY).unwrap();
+    assert_eq!(body.id(), id);
+}
+
+#[test]
+fn test_9_2_rigidbody_ids_are_distinct() {
+    let id1 = RigidBodyId(101);
+    let id2 = RigidBodyId(102);
+    let b1 = RigidBody::new_static(id1, Vec3::ZERO, Quat::IDENTITY).unwrap();
+    let b2 = RigidBody::new_static(id2, Vec3::ZERO, Quat::IDENTITY).unwrap();
+    assert_ne!(b1.id(), b2.id());
+}
+
+#[test]
+fn test_9_2_rigidbody_zero_voxel_ownership_and_zero_gpu_contract() {
+    // Validasi struktural arsitektur bahwa RigidBody adalah pure value type
+    // tanpa kepemilikan heap array voxel, alokasi dinamis, atau WGPU buffer handle
+    assert_eq!(std::mem::size_of::<RigidBody>(), 144);
+    assert!(!std::mem::needs_drop::<RigidBody>());
+    assert!(!std::mem::needs_drop::<MassProperties>());
+}
+
+#[test]
+fn test_9_2_rigidbody_state_is_not_integrated() {
+    let id = RigidBodyId(50);
+    let initial_pos = Vec3::new(10.0, 20.0, 30.0);
+    let initial_lin_vel = Vec3::new(5.0, -2.0, 1.0);
+    let initial_ang_vel = Vec3::new(0.0, 3.0, 0.0);
+    let rot = Quat::IDENTITY;
+    let mass_props = MassProperties::from_diagonal(1.0, Vec3::ONE).unwrap();
+
+    let body = RigidBody::new(
+        id,
+        BodyType::Dynamic,
+        initial_pos,
+        rot,
+        initial_lin_vel,
+        initial_ang_vel,
+        mass_props,
+    )
+    .unwrap();
+
+    // Membaca state berulang-ulang membuktikan tidak ada simulasi atau mutasi tersembunyi
+    for _ in 0..10 {
+        assert_eq!(body.position(), initial_pos);
+        assert_eq!(body.linear_velocity(), initial_lin_vel);
+        assert_eq!(body.angular_velocity(), initial_ang_vel);
+        assert_eq!(body.rotation(), rot);
+    }
+}
+
+#[test]
+fn test_9_2_mass_property_mutation_validation() {
+    let id = RigidBodyId(60);
+    let mut static_body = RigidBody::new_static(id, Vec3::ZERO, Quat::IDENTITY).unwrap();
+
+    // Mencoba memasang properti dinamis ke badan statis harus ditolak
+    let dyn_props = MassProperties::from_diagonal(10.0, Vec3::ONE).unwrap();
+    assert_eq!(
+        static_body.set_mass_properties(dyn_props).unwrap_err(),
+        RigidBodyError::InvalidMass
+    );
+}
+
+#[test]
+fn test_9_2_physics_world_add_and_retrieve_rigidbody() {
+    let mut world = PhysicsWorld::default();
+
+    let id = RigidBodyId(100);
+    let body = RigidBody::new_static(id, Vec3::new(10.0, 0.0, 0.0), Quat::IDENTITY).unwrap();
+
+    let reg_id = world.add_rigid_body(body.clone(), None).unwrap();
+    assert_eq!(reg_id, id);
+    assert_eq!(world.body_count(), 1);
+    assert!(world.contains_body(id));
+
+    let retrieved = world.get_rigid_body(id).unwrap();
+    assert_eq!(retrieved, &body);
+
+    let retrieved_mut = world.get_rigid_body_mut(id).unwrap();
+    retrieved_mut
+        .set_position(Vec3::new(20.0, 0.0, 0.0))
+        .unwrap();
+    assert_eq!(
+        world.get_rigid_body(id).unwrap().position(),
+        Vec3::new(20.0, 0.0, 0.0)
+    );
+}
+
+#[test]
+fn test_9_2_physics_world_remove_rigidbody_cleans_broadphase() {
+    let mut world = PhysicsWorld::default();
+
+    let id = RigidBodyId(200);
+    let body = RigidBody::new_static(id, Vec3::new(5.0, 0.0, 0.0), Quat::IDENTITY).unwrap();
+    let aabb = Aabb::try_new(Vec3::new(4.0, -1.0, -1.0), Vec3::new(6.0, 1.0, 1.0)).unwrap();
+
+    world.add_rigid_body(body, Some(aabb)).unwrap();
+    assert_eq!(world.query_aabb(&aabb), vec![id]);
+
+    let removed = world.remove_rigid_body(id).unwrap();
+    assert_eq!(removed.id(), id);
+    assert_eq!(world.body_count(), 0);
+    assert!(!world.contains_body(id));
+
+    // Broadphase proksi wajib bersih setelah penghapusan
+    assert!(world.query_aabb(&aabb).is_empty());
+}
+
+#[test]
+fn test_9_2_physics_world_duplicate_id_rejected() {
+    let mut world = PhysicsWorld::default();
+
+    let id = RigidBodyId(300);
+    let b1 = RigidBody::new_static(id, Vec3::ZERO, Quat::IDENTITY).unwrap();
+    let b2 = RigidBody::new_static(id, Vec3::new(1.0, 0.0, 0.0), Quat::IDENTITY).unwrap();
+
+    assert!(world.add_rigid_body(b1, None).is_ok());
+    assert_eq!(
+        world.add_rigid_body(b2, None).unwrap_err(),
+        BroadphaseError::BodyAlreadyExists(id)
+    );
+}
+
+#[test]
+fn test_9_2_physics_world_single_authoritative_registry() {
+    let mut world = PhysicsWorld::default();
+
+    let aabb = Aabb::try_new(Vec3::ZERO, Vec3::ONE).unwrap();
+    let id = world.register_body(BodyType::Dynamic, aabb).unwrap();
+
+    // Memverifikasi bahwa registrasi menghasilkan RigidBody di otoritas tunggal world.rigid_bodies
+    assert!(world.rigid_bodies.contains_key(&id));
+    let rb = world.get_rigid_body(id).unwrap();
+    assert_eq!(rb.body_type(), BodyType::Dynamic);
+    assert_eq!(rb.position(), aabb.center());
 }

@@ -1262,6 +1262,58 @@ fn main() {
         );
     }
 
+    // ========================================================================
+    // BENCHMARK 39: RigidBody State Construction & Access (Phase 9.2)
+    // 1,000 Bodies In-Memory Construction, Storage & State Access
+    // ========================================================================
+    {
+        use glam::Quat;
+        use omnisia::physics::{MassProperties, RigidBody, RigidBodyId};
+        use std::collections::BTreeMap;
+
+        let iterations = 1_000;
+        let start = Instant::now();
+
+        for _ in 0..iterations {
+            let mut bodies = BTreeMap::new();
+            for i in 1..=1000 {
+                let id = RigidBodyId(i);
+                let pos = Vec3::new(i as f32 * 0.5, 10.0, -5.0);
+                let rot = Quat::from_rotation_y(0.01 * i as f32);
+                let mass = 10.0 + (i % 50) as f32;
+                let mass_props = MassProperties::from_sphere(mass, 0.5).unwrap();
+                let body = RigidBody::new(
+                    id,
+                    omnisia::physics::BodyType::Dynamic,
+                    pos,
+                    rot,
+                    Vec3::ZERO,
+                    Vec3::ZERO,
+                    mass_props,
+                )
+                .unwrap();
+                bodies.insert(id, body);
+            }
+
+            // Akses state badan
+            let mut checksum = 0.0f32;
+            for body in bodies.values() {
+                checksum += body.position().x + body.mass_properties().inverse_mass;
+            }
+            std::hint::black_box(checksum);
+        }
+
+        let elapsed = start.elapsed();
+        let us_per_batch = elapsed.as_micros() as f64 / iterations as f64;
+        let us_per_body = us_per_batch / 1000.0;
+        println!(
+            "[BENCHMARK 39] RigidBody State Construction & Access (1,000 bodies): {:.3} µs/batch ({:.3} µs/body, {:.1} bodies/sec)",
+            us_per_batch,
+            us_per_body,
+            1_000_000.0 / us_per_body
+        );
+    }
+
     println!("============================================================");
     println!("             BENCHMARK SUITE COMPLETE                       ");
     println!("============================================================");

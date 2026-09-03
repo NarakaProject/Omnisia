@@ -1,10 +1,11 @@
-use glam::Vec3;
+use glam::{Quat, Vec3};
 use std::collections::BTreeMap;
 
 use super::aabb::Aabb;
 use super::broadphase::{
     BodyType, BroadphaseError, BroadphasePair, BroadphaseProxy, RigidBodyId, SpatialHashBroadphase,
 };
+use super::rigid_body::{MassProperties, RigidBody};
 use crate::coord::world_pos_to_world_voxel;
 use crate::streaming::store::ChunkStore;
 use crate::voxel::VOXEL_SIZE;
@@ -32,9 +33,10 @@ impl Default for PhysicsWorldConfig {
 
 /// Abstraksi inti dunia fisika untuk Fase 9 (Rigid Body Physics).
 ///
-/// TANGGUNG JAWAB FASE 9.1:
+/// TANGGUNG JAWAB FASE 9.2:
+/// - Otoritas tunggal registri badan kaku (`rigid_bodies: BTreeMap<RigidBodyId, RigidBody>`).
 /// - Pendaftaran, pelacakan, dan penghapusan badan kaku (RigidBodyId).
-/// - Pembaruan bounding box dunia (Aabb).
+/// - Pembaruan bounding box dunia (Aabb) ke broadphase.
 /// - Pengindeksan spasial melalui SpatialHashBroadphase.
 /// - Kueri tumpang tindih AABB deterministik.
 /// - Generasi pasangan kandidat tabrakan kanonikal.
@@ -47,7 +49,7 @@ pub struct PhysicsWorld {
     pub config: PhysicsWorldConfig,
     pub broadphase: SpatialHashBroadphase,
     pub next_body_id: u64,
-    pub registered_bodies: BTreeMap<RigidBodyId, BodyType>,
+    pub rigid_bodies: BTreeMap<RigidBodyId, RigidBody>,
 }
 
 impl Default for PhysicsWorld {
@@ -64,11 +66,58 @@ impl PhysicsWorld {
             config,
             broadphase,
             next_body_id: 1,
-            registered_bodies: BTreeMap::new(),
+            rigid_bodies: BTreeMap::new(),
         }
     }
 
-    /// Mendaftarkan badan fisika baru dengan ID otomatis yang stabil dan unik.
+    /// Mendaftarkan `RigidBody` ke dalam dunia fisika dengan opsi proksi AABB broadphase.
+    ///
+    /// Menolak duplikasi ID jika badan dengan ID tersebut sudah terdaftar.
+    pub fn add_rigid_body(
+        &mut self,
+        body: RigidBody,
+        aabb: Option<Aabb>,
+    ) -> Result<RigidBodyId, BroadphaseError> {
+        let id = body.id();
+        if self.rigid_bodies.contains_key(&id) {
+            return Err(BroadphaseError::BodyAlreadyExists(id));
+        }
+
+        if let Some(box_bounds) = aabb {
+            let proxy = BroadphaseProxy::new(id, body.body_type(), box_bounds);
+            self.broadphase.insert(proxy)?;
+        }
+
+        if id.0 >= self.next_body_id {
+            self.next_body_id = id.0 + 1;
+        }
+
+        self.rigid_bodies.insert(id, body);
+        Ok(id)
+    }
+
+    /// Mengambil referensi tidak dapat diubah ke `RigidBody` berdasarkan ID.
+    #[inline(always)]
+    pub fn get_rigid_body(&self, id: RigidBodyId) -> Option<&RigidBody> {
+        self.rigid_bodies.get(&id)
+    }
+
+    /// Mengambil referensi mutabel ke `RigidBody` berdasarkan ID.
+    #[inline(always)]
+    pub fn get_rigid_body_mut(&mut self, id: RigidBodyId) -> Option<&mut RigidBody> {
+        self.rigid_bodies.get_mut(&id)
+    }
+
+    /// Menghapus badan dari registri fisik dan broadphase secara atomik.
+    pub fn remove_rigid_body(&mut self, id: RigidBodyId) -> Option<RigidBody> {
+        let body = self.rigid_bodies.remove(&id)?;
+        self.broadphase.remove(id);
+        Some(body)
+    }
+
+    /// Lapisan kompatibilitas Phase 9.1: mendaftarkan badan fisika baru dengan ID otomatis.
+    /// Membangun representasi `RigidBody` minimal sesuai kategori badan dan memasukkannya
+    /// ke otoritas tunggal `self.rigid_bodies`.
     pub fn register_body(
         &mut self,
         body_type: BodyType,
@@ -77,27 +126,89 @@ impl PhysicsWorld {
         let id = RigidBodyId(self.next_body_id);
         self.next_body_id += 1;
 
+        if !aabb.is_valid() {
+            return Err(BroadphaseError::InvalidAabb(
+                super::aabb::AabbError::NonFiniteCoordinates,
+            ));
+        }
+
+        let center = aabb.center();
+        let body = match body_type {
+            BodyType::Dynamic => {
+                let mass_props =
+                    MassProperties::from_box(1.0, aabb.extents().max(Vec3::splat(0.1)))
+                        .unwrap_or_else(|_| MassProperties::from_diagonal(1.0, Vec3::ONE).unwrap());
+                RigidBody::new(
+                    id,
+                    BodyType::Dynamic,
+                    center,
+                    Quat::IDENTITY,
+                    Vec3::ZERO,
+                    Vec3::ZERO,
+                    mass_props,
+                )
+                .expect("Valid default dynamic body")
+            }
+            BodyType::Static => RigidBody::new_static(id, center, Quat::IDENTITY)
+                .expect("Valid default static body"),
+            BodyType::Kinematic => {
+                RigidBody::new_kinematic(id, center, Quat::IDENTITY, Vec3::ZERO, Vec3::ZERO)
+                    .expect("Valid default kinematic body")
+            }
+        };
+
         let proxy = BroadphaseProxy::new(id, body_type, aabb);
         self.broadphase.insert(proxy)?;
-        self.registered_bodies.insert(id, body_type);
+        self.rigid_bodies.insert(id, body);
 
         Ok(id)
     }
 
-    /// Mendaftarkan badan fisika dengan ID eksplisit tertentu (misal untuk deserialisasi).
+    /// Lapisan kompatibilitas Phase 9.1: mendaftarkan badan fisika dengan ID eksplisit tertentu.
     pub fn register_body_with_id(
         &mut self,
         id: RigidBodyId,
         body_type: BodyType,
         aabb: Aabb,
     ) -> Result<(), BroadphaseError> {
-        if self.registered_bodies.contains_key(&id) {
+        if self.rigid_bodies.contains_key(&id) {
             return Err(BroadphaseError::BodyAlreadyExists(id));
         }
 
+        if !aabb.is_valid() {
+            return Err(BroadphaseError::InvalidAabb(
+                super::aabb::AabbError::NonFiniteCoordinates,
+            ));
+        }
+
+        let center = aabb.center();
+        let body = match body_type {
+            BodyType::Dynamic => {
+                let mass_props =
+                    MassProperties::from_box(1.0, aabb.extents().max(Vec3::splat(0.1)))
+                        .unwrap_or_else(|_| MassProperties::from_diagonal(1.0, Vec3::ONE).unwrap());
+                RigidBody::new(
+                    id,
+                    BodyType::Dynamic,
+                    center,
+                    Quat::IDENTITY,
+                    Vec3::ZERO,
+                    Vec3::ZERO,
+                    mass_props,
+                )
+                .expect("Valid default dynamic body")
+            }
+            BodyType::Static => RigidBody::new_static(id, center, Quat::IDENTITY)
+                .expect("Valid default static body"),
+            BodyType::Kinematic => {
+                RigidBody::new_kinematic(id, center, Quat::IDENTITY, Vec3::ZERO, Vec3::ZERO)
+                    .expect("Valid default kinematic body")
+            }
+        };
+
         let proxy = BroadphaseProxy::new(id, body_type, aabb);
         self.broadphase.insert(proxy)?;
-        self.registered_bodies.insert(id, body_type);
+        self.rigid_bodies.insert(id, body);
 
         if id.0 >= self.next_body_id {
             self.next_body_id = id.0 + 1;
@@ -106,14 +217,9 @@ impl PhysicsWorld {
         Ok(())
     }
 
-    /// Menghapus badan dari registri fisika dan broadphase.
+    /// Lapisan kompatibilitas Phase 9.1: menghapus badan dari registri fisika dan broadphase.
     pub fn unregister_body(&mut self, id: RigidBodyId) -> bool {
-        if self.registered_bodies.remove(&id).is_some() {
-            self.broadphase.remove(id);
-            true
-        } else {
-            false
-        }
+        self.remove_rigid_body(id).is_some()
     }
 
     /// Memperbarui AABB dunia dari suatu badan terdaftar.
@@ -134,19 +240,19 @@ impl PhysicsWorld {
     /// Mengambil kategori partisipasi fisik dari suatu badan terdaftar.
     #[inline(always)]
     pub fn get_body_type(&self, id: RigidBodyId) -> Option<BodyType> {
-        self.registered_bodies.get(&id).copied()
+        self.rigid_bodies.get(&id).map(|b| b.body_type())
     }
 
     /// Memeriksa apakah badan terdaftar dalam dunia fisika.
     #[inline(always)]
     pub fn contains_body(&self, id: RigidBodyId) -> bool {
-        self.registered_bodies.contains_key(&id)
+        self.rigid_bodies.contains_key(&id)
     }
 
     /// Jumlah total badan yang terdaftar.
     #[inline(always)]
     pub fn body_count(&self) -> usize {
-        self.registered_bodies.len()
+        self.rigid_bodies.len()
     }
 
     /// Kueri AABB spasial: menemukan seluruh badan yang AABB-nya bertumpukan dengan `aabb`.
@@ -163,7 +269,7 @@ impl PhysicsWorld {
 
     /// Mengosongkan seluruh badan dari dunia fisika dan broadphase.
     pub fn clear(&mut self) {
-        self.registered_bodies.clear();
+        self.rigid_bodies.clear();
         self.broadphase.clear();
     }
 }
