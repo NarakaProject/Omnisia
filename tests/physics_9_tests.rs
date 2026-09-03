@@ -2,13 +2,14 @@ use glam::{IVec3, Mat3, Quat, Vec3};
 use omnisia::chunk::Chunk;
 use omnisia::material::MaterialId;
 use omnisia::physics::{
-    collide, compute_world_inv_inertia, integrate_bodies, integrate_body, integrate_rotation,
-    integrate_transform, integrate_transforms, integrate_velocities, integrate_velocity,
-    solve_contacts, world_pos_to_cell, Aabb, AabbError, BodyType, BoxShape, BroadphaseError,
-    BroadphasePair, BroadphaseProxy, Capsule, CellCoord, Collider, ColliderId, Contact,
-    IntegrationConfig, IntegrationError, MassProperties, PhysicsWorld, PhysicsWorldConfig,
-    RigidBody, RigidBodyError, RigidBodyId, Shape, ShapeError, SolverConfig, SolverError,
-    SpatialHashBroadphase, Sphere, StaticTerrainQuery, Transform,
+    collide, combine_materials, compute_world_inv_inertia, integrate_bodies, integrate_body,
+    integrate_rotation, integrate_transform, integrate_transforms, integrate_velocities,
+    integrate_velocity, solve_contacts, world_pos_to_cell, Aabb, AabbError, BodyType, BoxShape,
+    BroadphaseError, BroadphasePair, BroadphaseProxy, Capsule, CellCoord, Collider, ColliderId,
+    Contact, IntegrationConfig, IntegrationError, MassProperties, MaterialError, PhysicsMaterial,
+    PhysicsWorld, PhysicsWorldConfig, RigidBody, RigidBodyError, RigidBodyId, Shape, ShapeError,
+    SolverConfig, SolverError, SpatialHashBroadphase, Sphere, StaticTerrainQuery, TangentBasis,
+    Transform,
 };
 use omnisia::streaming::store::ChunkStore;
 use omnisia::voxel::VoxelBlock;
@@ -2215,6 +2216,7 @@ fn test_9_5_dynamic_vs_static_approaching_resolves_normal_velocity() {
         iterations: 10,
         beta: 0.0, // tanpa bias posisi untuk menguji murni impuls kecepatan
         penetration_slop: 0.001,
+        ..Default::default()
     };
 
     solve_contacts(&mut bodies, &[contact], 1.0 / 30.0, &config).unwrap();
@@ -2323,6 +2325,7 @@ fn test_9_5_dynamic_vs_dynamic_equal_mass_head_on_momentum_conserved() {
         iterations: 10,
         beta: 0.0,
         penetration_slop: 0.001,
+        ..Default::default()
     };
     solve_contacts(&mut bodies, &[contact], 1.0 / 30.0, &config).unwrap();
 
@@ -2386,6 +2389,7 @@ fn test_9_5_dynamic_vs_dynamic_unequal_mass_momentum_conserved() {
         iterations: 10,
         beta: 0.0,
         penetration_slop: 0.001,
+        ..Default::default()
     };
     solve_contacts(&mut bodies, &[contact], 1.0 / 30.0, &config).unwrap();
 
@@ -2445,6 +2449,7 @@ fn test_9_5_dynamic_vs_kinematic_kinematic_unaffected() {
         iterations: 10,
         beta: 0.0,
         penetration_slop: 0.001,
+        ..Default::default()
     };
     solve_contacts(&mut bodies, &[contact], 1.0 / 30.0, &config).unwrap();
 
@@ -2541,6 +2546,7 @@ fn test_9_5_off_center_contact_produces_angular_response() {
         iterations: 10,
         beta: 0.2,
         penetration_slop: 0.001,
+        ..Default::default()
     };
     solve_contacts(&mut bodies, &[contact], 1.0 / 30.0, &config).unwrap();
 
@@ -2671,6 +2677,7 @@ fn test_9_5_baumgarte_positive_separating_impulse_when_zero_velocity() {
         iterations: 10,
         beta: 0.2,
         penetration_slop: 0.001,
+        ..Default::default()
     };
     solve_contacts(&mut bodies, &[contact], 1.0 / 30.0, &config).unwrap();
 
@@ -2717,6 +2724,7 @@ fn test_9_5_baumgarte_sign_regression_test() {
         iterations: 1,
         beta: 0.2,
         penetration_slop: 0.001,
+        ..Default::default()
     };
 
     solve_contacts(&mut bodies, &[contact], 1.0 / 30.0, &config).unwrap();
@@ -2759,6 +2767,7 @@ fn test_9_5_baumgarte_penetration_below_slop_zero_bias() {
         iterations: 10,
         beta: 0.2,
         penetration_slop: 0.001,
+        ..Default::default()
     };
     solve_contacts(&mut bodies, &[contact], 1.0 / 30.0, &config).unwrap();
 
@@ -2919,6 +2928,7 @@ fn test_9_5_multi_contact_two_points_floor() {
         iterations: 10,
         beta: 0.0,
         penetration_slop: 0.001,
+        ..Default::default()
     };
     solve_contacts(&mut bodies, &[c1, c2], 1.0 / 30.0, &config).unwrap();
 
@@ -2978,6 +2988,7 @@ fn test_9_5_multi_contact_convergence_iterations() {
             iterations: 1,
             beta: 0.2,
             penetration_slop: 0.001,
+            ..Default::default()
         },
     )
     .unwrap();
@@ -2989,6 +3000,7 @@ fn test_9_5_multi_contact_convergence_iterations() {
             iterations: 10,
             beta: 0.2,
             penetration_slop: 0.001,
+            ..Default::default()
         },
     )
     .unwrap();
@@ -3048,6 +3060,7 @@ fn test_9_5_multi_collider_body_affects_single_rigidbody() {
         iterations: 10,
         beta: 0.0,
         penetration_slop: 0.001,
+        ..Default::default()
     };
     solve_contacts(&mut bodies, &[c1, c2], 1.0 / 30.0, &config).unwrap();
 
@@ -3229,6 +3242,7 @@ fn test_9_5_validation_dt_and_config() {
         iterations: 0,
         beta: 0.2,
         penetration_slop: 0.001,
+        ..Default::default()
     };
     assert_eq!(
         solve_contacts(&mut bodies, &[contact], 1.0 / 30.0, &cfg_zero_iter),
@@ -3239,6 +3253,7 @@ fn test_9_5_validation_dt_and_config() {
         iterations: 10,
         beta: -0.1,
         penetration_slop: 0.001,
+        ..Default::default()
     };
     assert_eq!(
         solve_contacts(&mut bodies, &[contact], 1.0 / 30.0, &cfg_neg_beta),
@@ -3249,6 +3264,7 @@ fn test_9_5_validation_dt_and_config() {
         iterations: 10,
         beta: 0.2,
         penetration_slop: -0.001,
+        ..Default::default()
     };
     assert_eq!(
         solve_contacts(&mut bodies, &[contact], 1.0 / 30.0, &cfg_neg_slop),
@@ -4289,5 +4305,1976 @@ fn test_9_6_integration_does_not_mutate_local_inertia() {
     assert_eq!(
         body.mass_properties().local_inverse_inertia,
         initial_local_inv_inertia
+    );
+}
+
+// ============================================================================
+// 7. PHASE 9.7: FRICTION + RESTITUTION TESTS
+// ============================================================================
+
+#[test]
+fn test_9_7_restitution_zero_produces_non_bouncy_response() {
+    let mut bodies = std::collections::BTreeMap::new();
+    let dyn_id = RigidBodyId(1);
+    let floor_id = RigidBodyId(2);
+
+    let inertia = Mat3::from_diagonal(Vec3::ONE);
+    let mut body = RigidBody::new_dynamic(
+        dyn_id,
+        Vec3::new(0.0, 1.0, 0.0),
+        Quat::IDENTITY,
+        2.0,
+        inertia,
+    )
+    .unwrap();
+    body.set_linear_velocity(Vec3::new(0.0, -4.0, 0.0)).unwrap();
+    bodies.insert(dyn_id, body);
+    bodies.insert(
+        floor_id,
+        RigidBody::new_static(floor_id, Vec3::ZERO, Quat::IDENTITY).unwrap(),
+    );
+
+    let contact = Contact::new(
+        ColliderId(1),
+        ColliderId(2),
+        dyn_id,
+        floor_id,
+        Vec3::ZERO,
+        Vec3::NEG_Y, // A -> B (Dyn -> Floor)
+        0.0,
+    )
+    .with_coefficients(0.0, 0.0)
+    .unwrap();
+
+    let config = SolverConfig {
+        iterations: 10,
+        beta: 0.0,
+        penetration_slop: 0.001,
+        ..Default::default()
+    };
+
+    solve_contacts(&mut bodies, &[contact], 1.0 / 30.0, &config).unwrap();
+
+    let solved = bodies.get(&dyn_id).unwrap();
+    // Kecepatan normal netral (tidak memantul ke atas)
+    assert!(solved.linear_velocity().y.abs() < 1e-4);
+}
+
+#[test]
+fn test_9_7_restitution_one_produces_elastic_response() {
+    let mut bodies = std::collections::BTreeMap::new();
+    let dyn_id = RigidBodyId(1);
+    let floor_id = RigidBodyId(2);
+
+    let inertia = Mat3::from_diagonal(Vec3::ONE);
+    let mut body = RigidBody::new_dynamic(
+        dyn_id,
+        Vec3::new(0.0, 1.0, 0.0),
+        Quat::IDENTITY,
+        2.0,
+        inertia,
+    )
+    .unwrap();
+    body.set_linear_velocity(Vec3::new(0.0, -4.0, 0.0)).unwrap();
+    bodies.insert(dyn_id, body);
+    bodies.insert(
+        floor_id,
+        RigidBody::new_static(floor_id, Vec3::ZERO, Quat::IDENTITY).unwrap(),
+    );
+
+    let contact = Contact::new(
+        ColliderId(1),
+        ColliderId(2),
+        dyn_id,
+        floor_id,
+        Vec3::ZERO,
+        Vec3::NEG_Y,
+        0.0,
+    )
+    .with_coefficients(1.0, 0.0)
+    .unwrap();
+
+    let config = SolverConfig {
+        iterations: 10,
+        beta: 0.0,
+        penetration_slop: 0.001,
+        ..Default::default()
+    };
+
+    solve_contacts(&mut bodies, &[contact], 1.0 / 30.0, &config).unwrap();
+
+    let solved = bodies.get(&dyn_id).unwrap();
+    // Rebound elastis sempurna: v_y membalik tanda dari -4.0 ke +4.0
+    assert!(
+        (solved.linear_velocity().y - 4.0).abs() < 1e-3,
+        "Rebound elastis harus menghasilkan v_y ≈ 4.0, didapat {}",
+        solved.linear_velocity().y
+    );
+}
+
+#[test]
+fn test_9_7_restitution_fractional_proportional_bounce() {
+    let mut bodies = std::collections::BTreeMap::new();
+    let dyn_id = RigidBodyId(1);
+    let floor_id = RigidBodyId(2);
+
+    let inertia = Mat3::from_diagonal(Vec3::ONE);
+    let mut body = RigidBody::new_dynamic(
+        dyn_id,
+        Vec3::new(0.0, 1.0, 0.0),
+        Quat::IDENTITY,
+        2.0,
+        inertia,
+    )
+    .unwrap();
+    body.set_linear_velocity(Vec3::new(0.0, -4.0, 0.0)).unwrap();
+    bodies.insert(dyn_id, body);
+    bodies.insert(
+        floor_id,
+        RigidBody::new_static(floor_id, Vec3::ZERO, Quat::IDENTITY).unwrap(),
+    );
+
+    let contact = Contact::new(
+        ColliderId(1),
+        ColliderId(2),
+        dyn_id,
+        floor_id,
+        Vec3::ZERO,
+        Vec3::NEG_Y,
+        0.0,
+    )
+    .with_coefficients(0.5, 0.0)
+    .unwrap();
+
+    let config = SolverConfig {
+        iterations: 10,
+        beta: 0.0,
+        penetration_slop: 0.001,
+        ..Default::default()
+    };
+
+    solve_contacts(&mut bodies, &[contact], 1.0 / 30.0, &config).unwrap();
+
+    let solved = bodies.get(&dyn_id).unwrap();
+    // e = 0.5 menghasilkan pantulan separuh kecepatan masuk: v_y ≈ +2.0
+    assert!(
+        (solved.linear_velocity().y - 2.0).abs() < 1e-3,
+        "Rebound e=0.5 harus menghasilkan v_y ≈ 2.0, didapat {}",
+        solved.linear_velocity().y
+    );
+}
+
+#[test]
+fn test_9_7_separating_contact_produces_no_restitution_impulse() {
+    let mut bodies = std::collections::BTreeMap::new();
+    let dyn_id = RigidBodyId(1);
+    let floor_id = RigidBodyId(2);
+
+    let inertia = Mat3::from_diagonal(Vec3::ONE);
+    let mut body = RigidBody::new_dynamic(
+        dyn_id,
+        Vec3::new(0.0, 1.0, 0.0),
+        Quat::IDENTITY,
+        2.0,
+        inertia,
+    )
+    .unwrap();
+    body.set_linear_velocity(Vec3::new(0.0, 3.0, 0.0)).unwrap(); // Menjauh ke atas
+    bodies.insert(dyn_id, body);
+    bodies.insert(
+        floor_id,
+        RigidBody::new_static(floor_id, Vec3::ZERO, Quat::IDENTITY).unwrap(),
+    );
+
+    let contact = Contact::new(
+        ColliderId(1),
+        ColliderId(2),
+        dyn_id,
+        floor_id,
+        Vec3::ZERO,
+        Vec3::NEG_Y,
+        0.0,
+    )
+    .with_coefficients(1.0, 0.5)
+    .unwrap();
+
+    let config = SolverConfig::default();
+    solve_contacts(&mut bodies, &[contact], 1.0 / 30.0, &config).unwrap();
+
+    let solved = bodies.get(&dyn_id).unwrap();
+    // Kecepatan menjauh tidak terpengaruh impuls penarik
+    assert_eq!(solved.linear_velocity(), Vec3::new(0.0, 3.0, 0.0));
+}
+
+#[test]
+fn test_9_7_resting_contact_produces_no_artificial_bounce() {
+    let mut bodies = std::collections::BTreeMap::new();
+    let dyn_id = RigidBodyId(1);
+    let floor_id = RigidBodyId(2);
+
+    let inertia = Mat3::from_diagonal(Vec3::ONE);
+    let body = RigidBody::new_dynamic(
+        dyn_id,
+        Vec3::new(0.0, 1.0, 0.0),
+        Quat::IDENTITY,
+        2.0,
+        inertia,
+    )
+    .unwrap();
+    // Kecepatan awal 0 (istirahat)
+    bodies.insert(dyn_id, body);
+    bodies.insert(
+        floor_id,
+        RigidBody::new_static(floor_id, Vec3::ZERO, Quat::IDENTITY).unwrap(),
+    );
+
+    let contact = Contact::new(
+        ColliderId(1),
+        ColliderId(2),
+        dyn_id,
+        floor_id,
+        Vec3::ZERO,
+        Vec3::NEG_Y,
+        0.005, // sedikit penetrasi
+    )
+    .with_coefficients(1.0, 0.5) // e=1.0 pun tidak boleh memicu pantulan buatan pada resting contact!
+    .unwrap();
+
+    let config = SolverConfig {
+        iterations: 10,
+        beta: 0.0, // tanpa bias posisi
+        penetration_slop: 0.001,
+        ..Default::default()
+    };
+
+    solve_contacts(&mut bodies, &[contact], 1.0 / 30.0, &config).unwrap();
+
+    let solved = bodies.get(&dyn_id).unwrap();
+    assert_eq!(solved.linear_velocity(), Vec3::ZERO);
+}
+
+#[test]
+fn test_9_7_restitution_threshold_suppresses_micro_bounce() {
+    let mut bodies = std::collections::BTreeMap::new();
+    let dyn_id = RigidBodyId(1);
+    let floor_id = RigidBodyId(2);
+
+    let inertia = Mat3::from_diagonal(Vec3::ONE);
+    let mut body = RigidBody::new_dynamic(
+        dyn_id,
+        Vec3::new(0.0, 1.0, 0.0),
+        Quat::IDENTITY,
+        2.0,
+        inertia,
+    )
+    .unwrap();
+    // Kecepatan mendekat sangat lambat (-0.05 m/s) di bawah threshold 0.1 m/s
+    body.set_linear_velocity(Vec3::new(0.0, -0.05, 0.0))
+        .unwrap();
+    bodies.insert(dyn_id, body);
+    bodies.insert(
+        floor_id,
+        RigidBody::new_static(floor_id, Vec3::ZERO, Quat::IDENTITY).unwrap(),
+    );
+
+    let contact = Contact::new(
+        ColliderId(1),
+        ColliderId(2),
+        dyn_id,
+        floor_id,
+        Vec3::ZERO,
+        Vec3::NEG_Y,
+        0.0,
+    )
+    .with_coefficients(1.0, 0.0)
+    .unwrap();
+
+    let config = SolverConfig {
+        iterations: 10,
+        beta: 0.0,
+        penetration_slop: 0.001,
+        restitution_velocity_threshold: 0.1,
+    };
+
+    solve_contacts(&mut bodies, &[contact], 1.0 / 30.0, &config).unwrap();
+
+    let solved = bodies.get(&dyn_id).unwrap();
+    // Pantulan disupresi: kecepatan akhir dinetralkan ke 0.0, TIDAK memantul ke atas
+    assert!(solved.linear_velocity().y >= -0.001 && solved.linear_velocity().y <= 0.001);
+}
+
+#[test]
+fn test_9_7_exactly_at_threshold_behavior() {
+    let mut bodies = std::collections::BTreeMap::new();
+    let dyn_id = RigidBodyId(1);
+    let floor_id = RigidBodyId(2);
+
+    let inertia = Mat3::from_diagonal(Vec3::ONE);
+    let mut body = RigidBody::new_dynamic(
+        dyn_id,
+        Vec3::new(0.0, 1.0, 0.0),
+        Quat::IDENTITY,
+        2.0,
+        inertia,
+    )
+    .unwrap();
+    // Kecepatan tepat pada threshold (-0.1 m/s)
+    body.set_linear_velocity(Vec3::new(0.0, -0.1, 0.0)).unwrap();
+    bodies.insert(dyn_id, body);
+    bodies.insert(
+        floor_id,
+        RigidBody::new_static(floor_id, Vec3::ZERO, Quat::IDENTITY).unwrap(),
+    );
+
+    let contact = Contact::new(
+        ColliderId(1),
+        ColliderId(2),
+        dyn_id,
+        floor_id,
+        Vec3::ZERO,
+        Vec3::NEG_Y,
+        0.0,
+    )
+    .with_coefficients(1.0, 0.0)
+    .unwrap();
+
+    let config = SolverConfig {
+        iterations: 10,
+        beta: 0.0,
+        penetration_slop: 0.001,
+        restitution_velocity_threshold: 0.1,
+    };
+
+    solve_contacts(&mut bodies, &[contact], 1.0 / 30.0, &config).unwrap();
+
+    let solved = bodies.get(&dyn_id).unwrap();
+    // Karena v_n0 = -0.1 tidak memenuhi kondisi ketat v_n0 < -threshold (-0.1 < -0.1 adalah false),
+    // restitusi disupresi secara deterministik
+    assert!(solved.linear_velocity().y.abs() < 1e-4);
+}
+
+#[test]
+fn test_9_7_dynamic_vs_static_restitution() {
+    let mut bodies = std::collections::BTreeMap::new();
+    let dyn_id = RigidBodyId(1);
+    let static_id = RigidBodyId(2);
+
+    let inertia = Mat3::from_diagonal(Vec3::ONE);
+    let mut body = RigidBody::new_dynamic(
+        dyn_id,
+        Vec3::new(-1.0, 0.0, 0.0),
+        Quat::IDENTITY,
+        1.0,
+        inertia,
+    )
+    .unwrap();
+    body.set_linear_velocity(Vec3::new(5.0, 0.0, 0.0)).unwrap();
+    bodies.insert(dyn_id, body);
+    bodies.insert(
+        static_id,
+        RigidBody::new_static(static_id, Vec3::new(1.0, 0.0, 0.0), Quat::IDENTITY).unwrap(),
+    );
+
+    let contact = Contact::new(
+        ColliderId(1),
+        ColliderId(2),
+        dyn_id,
+        static_id,
+        Vec3::ZERO,
+        Vec3::X,
+        0.0,
+    )
+    .with_coefficients(0.8, 0.0)
+    .unwrap();
+
+    let config = SolverConfig {
+        iterations: 10,
+        beta: 0.0,
+        penetration_slop: 0.001,
+        ..Default::default()
+    };
+
+    solve_contacts(&mut bodies, &[contact], 1.0 / 30.0, &config).unwrap();
+
+    let solved_dyn = bodies.get(&dyn_id).unwrap();
+    let solved_static = bodies.get(&static_id).unwrap();
+
+    // Dinamis memantul: v_x ≈ -4.0 (-0.8 * 5.0)
+    assert!((solved_dyn.linear_velocity().x - (-4.0)).abs() < 1e-3);
+    // Statis tetap 0
+    assert_eq!(solved_static.linear_velocity(), Vec3::ZERO);
+}
+
+#[test]
+fn test_9_7_dynamic_vs_kinematic_restitution() {
+    let mut bodies = std::collections::BTreeMap::new();
+    let dyn_id = RigidBodyId(1);
+    let kin_id = RigidBodyId(2);
+
+    let inertia = Mat3::from_diagonal(Vec3::ONE);
+    let mut body_dyn = RigidBody::new_dynamic(
+        dyn_id,
+        Vec3::new(-1.0, 0.0, 0.0),
+        Quat::IDENTITY,
+        1.0,
+        inertia,
+    )
+    .unwrap();
+    body_dyn
+        .set_linear_velocity(Vec3::new(5.0, 0.0, 0.0))
+        .unwrap();
+    bodies.insert(dyn_id, body_dyn);
+
+    // Kinematik bergerak dengan kecepatan (1.0, 0.0, 0.0)
+    let body_kin = RigidBody::new_kinematic(
+        kin_id,
+        Vec3::new(1.0, 0.0, 0.0),
+        Quat::IDENTITY,
+        Vec3::new(1.0, 0.0, 0.0),
+        Vec3::ZERO,
+    )
+    .unwrap();
+    bodies.insert(kin_id, body_kin);
+
+    let contact = Contact::new(
+        ColliderId(1),
+        ColliderId(2),
+        dyn_id,
+        kin_id,
+        Vec3::ZERO,
+        Vec3::X,
+        0.0,
+    )
+    .with_coefficients(1.0, 0.0)
+    .unwrap();
+
+    let config = SolverConfig {
+        iterations: 10,
+        beta: 0.0,
+        penetration_slop: 0.001,
+        ..Default::default()
+    };
+
+    solve_contacts(&mut bodies, &[contact], 1.0 / 30.0, &config).unwrap();
+
+    let solved_dyn = bodies.get(&dyn_id).unwrap();
+    let solved_kin = bodies.get(&kin_id).unwrap();
+
+    // Kinematik KEBAL terhadap solver: kecepatannya tetap (1.0, 0.0, 0.0)
+    assert_eq!(solved_kin.linear_velocity(), Vec3::new(1.0, 0.0, 0.0));
+    // Kecepatan relatif awal: v_rel = 1.0 - 5.0 = -4.0.
+    // Pantulan e=1.0 membalik kecepatan relatif menjadi +4.0: v_dyn = 1.0 - 4.0 = -3.0.
+    assert!((solved_dyn.linear_velocity().x - (-3.0)).abs() < 1e-3);
+}
+
+#[test]
+fn test_9_7_dynamic_vs_dynamic_restitution() {
+    let mut bodies = std::collections::BTreeMap::new();
+    let b1_id = RigidBodyId(1);
+    let b2_id = RigidBodyId(2);
+
+    let inertia = Mat3::from_diagonal(Vec3::ONE);
+    let mut b1 = RigidBody::new_dynamic(
+        b1_id,
+        Vec3::new(-1.0, 0.0, 0.0),
+        Quat::IDENTITY,
+        2.0,
+        inertia,
+    )
+    .unwrap();
+    b1.set_linear_velocity(Vec3::new(3.0, 0.0, 0.0)).unwrap();
+    let mut b2 = RigidBody::new_dynamic(
+        b2_id,
+        Vec3::new(1.0, 0.0, 0.0),
+        Quat::IDENTITY,
+        2.0,
+        inertia,
+    )
+    .unwrap();
+    b2.set_linear_velocity(Vec3::new(-3.0, 0.0, 0.0)).unwrap();
+
+    bodies.insert(b1_id, b1);
+    bodies.insert(b2_id, b2);
+
+    let contact = Contact::new(
+        ColliderId(1),
+        ColliderId(2),
+        b1_id,
+        b2_id,
+        Vec3::ZERO,
+        Vec3::X,
+        0.0,
+    )
+    .with_coefficients(1.0, 0.0)
+    .unwrap();
+
+    let config = SolverConfig {
+        iterations: 10,
+        beta: 0.0,
+        penetration_slop: 0.001,
+        ..Default::default()
+    };
+
+    solve_contacts(&mut bodies, &[contact], 1.0 / 30.0, &config).unwrap();
+
+    let solved1 = bodies.get(&b1_id).unwrap();
+    let solved2 = bodies.get(&b2_id).unwrap();
+
+    // Tabrakan elastis massa sama berkecepatan berlawanan saling bertukar kecepatan
+    assert!((solved1.linear_velocity().x - (-3.0)).abs() < 1e-3);
+    assert!((solved2.linear_velocity().x - 3.0).abs() < 1e-3);
+
+    let total_p = 2.0 * solved1.linear_velocity() + 2.0 * solved2.linear_velocity();
+    assert!(total_p.length() < 1e-4);
+}
+
+#[test]
+fn test_9_7_material_restitution_combination_symmetry() {
+    let mat_a = PhysicsMaterial::new(0.3, 0.5).unwrap();
+    let mat_b = PhysicsMaterial::new(0.7, 0.2).unwrap();
+
+    let combined_ab = combine_materials(&mat_a, &mat_b).unwrap();
+    let combined_ba = combine_materials(&mat_b, &mat_a).unwrap();
+
+    assert_eq!(combined_ab, combined_ba);
+    assert_eq!(combined_ab.restitution, 0.7);
+}
+
+#[test]
+fn test_9_7_invalid_restitution_negative_rejected() {
+    assert_eq!(
+        PhysicsMaterial::new(-0.1, 0.0),
+        Err(MaterialError::InvalidRestitution)
+    );
+}
+
+#[test]
+fn test_9_7_invalid_restitution_greater_than_one_rejected() {
+    assert_eq!(
+        PhysicsMaterial::new(1.1, 0.0),
+        Err(MaterialError::InvalidRestitution)
+    );
+}
+
+#[test]
+fn test_9_7_invalid_restitution_nan_and_inf_rejected() {
+    assert_eq!(
+        PhysicsMaterial::new(f32::NAN, 0.0),
+        Err(MaterialError::InvalidRestitution)
+    );
+    assert_eq!(
+        PhysicsMaterial::new(f32::INFINITY, 0.0),
+        Err(MaterialError::InvalidRestitution)
+    );
+    assert_eq!(
+        PhysicsMaterial::new(f32::NEG_INFINITY, 0.0),
+        Err(MaterialError::InvalidRestitution)
+    );
+}
+
+#[test]
+fn test_9_7_zero_friction_produces_no_tangent_impulse() {
+    let mut bodies = std::collections::BTreeMap::new();
+    let dyn_id = RigidBodyId(1);
+    let floor_id = RigidBodyId(2);
+
+    let inertia = Mat3::from_diagonal(Vec3::ONE);
+    let mut body = RigidBody::new_dynamic(
+        dyn_id,
+        Vec3::new(0.0, 1.0, 0.0),
+        Quat::IDENTITY,
+        2.0,
+        inertia,
+    )
+    .unwrap();
+    // Kecepatan meluncur horizontal 5.0 dan jatuh 2.0
+    body.set_linear_velocity(Vec3::new(5.0, -2.0, 0.0)).unwrap();
+    bodies.insert(dyn_id, body);
+    bodies.insert(
+        floor_id,
+        RigidBody::new_static(floor_id, Vec3::ZERO, Quat::IDENTITY).unwrap(),
+    );
+
+    let contact = Contact::new(
+        ColliderId(1),
+        ColliderId(2),
+        dyn_id,
+        floor_id,
+        Vec3::ZERO,
+        Vec3::NEG_Y,
+        0.0,
+    )
+    .with_coefficients(0.0, 0.0) // mu = 0
+    .unwrap();
+
+    let config = SolverConfig {
+        iterations: 10,
+        beta: 0.0,
+        penetration_slop: 0.001,
+        ..Default::default()
+    };
+
+    solve_contacts(&mut bodies, &[contact], 1.0 / 30.0, &config).unwrap();
+
+    let solved = bodies.get(&dyn_id).unwrap();
+    // Komponen vertikal dinetralkan, komponen horizontal tetap murni 5.0 tanpa gesekan
+    assert!(solved.linear_velocity().y.abs() < 1e-4);
+    assert_eq!(solved.linear_velocity().x, 5.0);
+    assert_eq!(solved.linear_velocity().z, 0.0);
+}
+
+#[test]
+fn test_9_7_positive_friction_reduces_sliding_speed() {
+    let mut bodies = std::collections::BTreeMap::new();
+    let dyn_id = RigidBodyId(1);
+    let floor_id = RigidBodyId(2);
+
+    let inertia = Mat3::from_diagonal(Vec3::ONE);
+    let mut body = RigidBody::new_dynamic(
+        dyn_id,
+        Vec3::new(0.0, 1.0, 0.0),
+        Quat::IDENTITY,
+        2.0,
+        inertia,
+    )
+    .unwrap();
+    body.set_linear_velocity(Vec3::new(5.0, -2.0, 0.0)).unwrap();
+    bodies.insert(dyn_id, body);
+    bodies.insert(
+        floor_id,
+        RigidBody::new_static(floor_id, Vec3::ZERO, Quat::IDENTITY).unwrap(),
+    );
+
+    let contact = Contact::new(
+        ColliderId(1),
+        ColliderId(2),
+        dyn_id,
+        floor_id,
+        Vec3::ZERO,
+        Vec3::NEG_Y,
+        0.0,
+    )
+    .with_coefficients(0.0, 0.5) // mu = 0.5
+    .unwrap();
+
+    let config = SolverConfig {
+        iterations: 10,
+        beta: 0.0,
+        penetration_slop: 0.001,
+        ..Default::default()
+    };
+
+    solve_contacts(&mut bodies, &[contact], 1.0 / 30.0, &config).unwrap();
+
+    let solved = bodies.get(&dyn_id).unwrap();
+    // Kecepatan horizontal harus berkurang secara signifikan karena gesekan
+    assert!(
+        solved.linear_velocity().x < 5.0,
+        "Friksi harus mengurangi kecepatan luncur x, didapat {}",
+        solved.linear_velocity().x
+    );
+    assert!(solved.linear_velocity().x >= 0.0);
+}
+
+#[test]
+fn test_9_7_friction_never_accelerates_sliding() {
+    for initial_vx in [6.0, -6.0] {
+        let mut bodies = std::collections::BTreeMap::new();
+        let dyn_id = RigidBodyId(1);
+        let floor_id = RigidBodyId(2);
+
+        let inertia = Mat3::from_diagonal(Vec3::ONE);
+        let mut body = RigidBody::new_dynamic(
+            dyn_id,
+            Vec3::new(0.0, 1.0, 0.0),
+            Quat::IDENTITY,
+            2.0,
+            inertia,
+        )
+        .unwrap();
+        body.set_linear_velocity(Vec3::new(initial_vx, -2.0, 0.0))
+            .unwrap();
+        bodies.insert(dyn_id, body);
+        bodies.insert(
+            floor_id,
+            RigidBody::new_static(floor_id, Vec3::ZERO, Quat::IDENTITY).unwrap(),
+        );
+
+        let contact = Contact::new(
+            ColliderId(1),
+            ColliderId(2),
+            dyn_id,
+            floor_id,
+            Vec3::ZERO,
+            Vec3::NEG_Y,
+            0.0,
+        )
+        .with_coefficients(0.0, 0.4)
+        .unwrap();
+
+        let config = SolverConfig {
+            iterations: 10,
+            beta: 0.0,
+            penetration_slop: 0.001,
+            ..Default::default()
+        };
+
+        solve_contacts(&mut bodies, &[contact], 1.0 / 30.0, &config).unwrap();
+
+        let solved = bodies.get(&dyn_id).unwrap();
+        // Magnitudo kecepatan harus berkurang (tidak pernah terakselerasi)
+        assert!(
+            solved.linear_velocity().x.abs() < initial_vx.abs(),
+            "Friksi tidak boleh mempercepat gerakan meluncur, awal: {}, akhir: {}",
+            initial_vx,
+            solved.linear_velocity().x
+        );
+        // Arah tidak boleh berbalik melampaui nol (tidak berosilasi liar)
+        assert_eq!(solved.linear_velocity().x.signum(), initial_vx.signum());
+    }
+}
+
+#[test]
+fn test_9_7_static_surface_friction() {
+    let mut bodies = std::collections::BTreeMap::new();
+    let dyn_id = RigidBodyId(1);
+    let floor_id = RigidBodyId(2);
+
+    let inertia = Mat3::from_diagonal(Vec3::ONE);
+    let mut body = RigidBody::new_dynamic(
+        dyn_id,
+        Vec3::new(0.0, 1.0, 0.0),
+        Quat::IDENTITY,
+        2.0,
+        inertia,
+    )
+    .unwrap();
+    body.set_linear_velocity(Vec3::new(4.0, -2.0, 0.0)).unwrap();
+    bodies.insert(dyn_id, body);
+    bodies.insert(
+        floor_id,
+        RigidBody::new_static(floor_id, Vec3::ZERO, Quat::IDENTITY).unwrap(),
+    );
+
+    let contact = Contact::new(
+        ColliderId(1),
+        ColliderId(2),
+        dyn_id,
+        floor_id,
+        Vec3::ZERO,
+        Vec3::NEG_Y,
+        0.0,
+    )
+    .with_coefficients(0.0, 0.8)
+    .unwrap();
+
+    let config = SolverConfig::default();
+    solve_contacts(&mut bodies, &[contact], 1.0 / 30.0, &config).unwrap();
+
+    let solved_floor = bodies.get(&floor_id).unwrap();
+    assert_eq!(solved_floor.linear_velocity(), Vec3::ZERO);
+    assert_eq!(solved_floor.angular_velocity(), Vec3::ZERO);
+}
+
+#[test]
+fn test_9_7_dynamic_vs_dynamic_friction() {
+    let mut bodies = std::collections::BTreeMap::new();
+    let b1_id = RigidBodyId(1);
+    let b2_id = RigidBodyId(2);
+
+    let inertia = Mat3::from_diagonal(Vec3::ONE);
+    let mut b1 = RigidBody::new_dynamic(
+        b1_id,
+        Vec3::new(0.0, 1.0, 0.0),
+        Quat::IDENTITY,
+        2.0,
+        inertia,
+    )
+    .unwrap();
+    b1.set_linear_velocity(Vec3::new(4.0, -1.0, 0.0)).unwrap();
+    let mut b2 = RigidBody::new_dynamic(
+        b2_id,
+        Vec3::new(0.0, -1.0, 0.0),
+        Quat::IDENTITY,
+        2.0,
+        inertia,
+    )
+    .unwrap();
+    b2.set_linear_velocity(Vec3::new(0.0, 1.0, 0.0)).unwrap();
+
+    bodies.insert(b1_id, b1);
+    bodies.insert(b2_id, b2);
+
+    let contact = Contact::new(
+        ColliderId(1),
+        ColliderId(2),
+        b1_id,
+        b2_id,
+        Vec3::ZERO,
+        Vec3::NEG_Y,
+        0.0,
+    )
+    .with_coefficients(0.0, 0.5)
+    .unwrap();
+
+    let config = SolverConfig {
+        iterations: 10,
+        beta: 0.0,
+        penetration_slop: 0.001,
+        ..Default::default()
+    };
+
+    solve_contacts(&mut bodies, &[contact], 1.0 / 30.0, &config).unwrap();
+
+    let solved1 = bodies.get(&b1_id).unwrap();
+    let solved2 = bodies.get(&b2_id).unwrap();
+
+    // B1 melambat secara horizontal, B2 terdorong maju oleh gesekan
+    assert!(solved1.linear_velocity().x < 4.0);
+    assert!(solved2.linear_velocity().x > 0.0);
+
+    // Kekekalan momentum horizontal total
+    let total_px = 2.0 * solved1.linear_velocity().x + 2.0 * solved2.linear_velocity().x;
+    assert!((total_px - 8.0).abs() < 1e-4);
+}
+
+#[test]
+fn test_9_7_dynamic_vs_kinematic_friction() {
+    let mut bodies = std::collections::BTreeMap::new();
+    let dyn_id = RigidBodyId(1);
+    let kin_id = RigidBodyId(2);
+
+    let inertia = Mat3::from_diagonal(Vec3::ONE);
+    let mut body_dyn = RigidBody::new_dynamic(
+        dyn_id,
+        Vec3::new(0.0, 1.0, 0.0),
+        Quat::IDENTITY,
+        2.0,
+        inertia,
+    )
+    .unwrap();
+    body_dyn
+        .set_linear_velocity(Vec3::new(0.0, -1.0, 0.0))
+        .unwrap();
+    bodies.insert(dyn_id, body_dyn);
+
+    // Kinematik bergerak seperti sabuk konveyor di (3.0, 0.0, 0.0)
+    let body_kin = RigidBody::new_kinematic(
+        kin_id,
+        Vec3::ZERO,
+        Quat::IDENTITY,
+        Vec3::new(3.0, 0.0, 0.0),
+        Vec3::ZERO,
+    )
+    .unwrap();
+    bodies.insert(kin_id, body_kin);
+
+    let contact = Contact::new(
+        ColliderId(1),
+        ColliderId(2),
+        dyn_id,
+        kin_id,
+        Vec3::ZERO,
+        Vec3::NEG_Y,
+        0.0,
+    )
+    .with_coefficients(0.0, 0.5)
+    .unwrap();
+
+    let config = SolverConfig {
+        iterations: 10,
+        beta: 0.0,
+        penetration_slop: 0.001,
+        ..Default::default()
+    };
+
+    solve_contacts(&mut bodies, &[contact], 1.0 / 30.0, &config).unwrap();
+
+    let solved_dyn = bodies.get(&dyn_id).unwrap();
+    let solved_kin = bodies.get(&kin_id).unwrap();
+
+    // Kinematik kebal terhadap perubahan kecepatan
+    assert_eq!(solved_kin.linear_velocity(), Vec3::new(3.0, 0.0, 0.0));
+    // Dinamis terseret ke arah gerak sabuk konveyor (v_x > 0)
+    assert!(solved_dyn.linear_velocity().x > 0.1);
+}
+
+#[test]
+fn test_9_7_zero_tangent_velocity_produces_zero_friction() {
+    let mut bodies = std::collections::BTreeMap::new();
+    let dyn_id = RigidBodyId(1);
+    let floor_id = RigidBodyId(2);
+
+    let inertia = Mat3::from_diagonal(Vec3::ONE);
+    let mut body = RigidBody::new_dynamic(
+        dyn_id,
+        Vec3::new(0.0, 1.0, 0.0),
+        Quat::IDENTITY,
+        2.0,
+        inertia,
+    )
+    .unwrap();
+    // Jatuh murni vertikal (kecepatan tangensial persis nol)
+    body.set_linear_velocity(Vec3::new(0.0, -3.0, 0.0)).unwrap();
+    bodies.insert(dyn_id, body);
+    bodies.insert(
+        floor_id,
+        RigidBody::new_static(floor_id, Vec3::ZERO, Quat::IDENTITY).unwrap(),
+    );
+
+    let contact = Contact::new(
+        ColliderId(1),
+        ColliderId(2),
+        dyn_id,
+        floor_id,
+        Vec3::ZERO,
+        Vec3::NEG_Y,
+        0.0,
+    )
+    .with_coefficients(0.0, 0.8) // friksi tinggi
+    .unwrap();
+
+    let config = SolverConfig::default();
+    solve_contacts(&mut bodies, &[contact], 1.0 / 30.0, &config).unwrap();
+
+    let solved = bodies.get(&dyn_id).unwrap();
+    // Kecepatan horizontal harus tetap persis 0.0 (tidak ada pergeseran lateral artifisial)
+    assert_eq!(solved.linear_velocity().x, 0.0);
+    assert_eq!(solved.linear_velocity().z, 0.0);
+}
+
+#[test]
+fn test_9_7_near_zero_tangent_velocity_is_stable() {
+    let mut bodies = std::collections::BTreeMap::new();
+    let dyn_id = RigidBodyId(1);
+    let floor_id = RigidBodyId(2);
+
+    let inertia = Mat3::from_diagonal(Vec3::ONE);
+    let mut body = RigidBody::new_dynamic(
+        dyn_id,
+        Vec3::new(0.0, 1.0, 0.0),
+        Quat::IDENTITY,
+        2.0,
+        inertia,
+    )
+    .unwrap();
+    body.set_linear_velocity(Vec3::new(1e-8, -3.0, 1e-8))
+        .unwrap();
+    bodies.insert(dyn_id, body);
+    bodies.insert(
+        floor_id,
+        RigidBody::new_static(floor_id, Vec3::ZERO, Quat::IDENTITY).unwrap(),
+    );
+
+    let contact = Contact::new(
+        ColliderId(1),
+        ColliderId(2),
+        dyn_id,
+        floor_id,
+        Vec3::ZERO,
+        Vec3::NEG_Y,
+        0.0,
+    )
+    .with_coefficients(0.0, 0.8)
+    .unwrap();
+
+    let config = SolverConfig::default();
+    solve_contacts(&mut bodies, &[contact], 1.0 / 30.0, &config).unwrap();
+
+    let solved = bodies.get(&dyn_id).unwrap();
+    assert!(solved.linear_velocity().is_finite());
+}
+
+#[test]
+fn test_9_7_coulomb_magnitude_limit_strictly_respected() {
+    let mut bodies = std::collections::BTreeMap::new();
+    let dyn_id = RigidBodyId(1);
+    let floor_id = RigidBodyId(2);
+
+    let inertia = Mat3::from_diagonal(Vec3::ONE);
+    let mut body = RigidBody::new_dynamic(
+        dyn_id,
+        Vec3::new(0.0, 1.0, 0.0),
+        Quat::IDENTITY,
+        2.0,
+        inertia,
+    )
+    .unwrap();
+    // Kecepatan luncur sangat besar (100.0 m/s), tumbukan normal kecil (-1.0 m/s)
+    body.set_linear_velocity(Vec3::new(100.0, -1.0, 0.0))
+        .unwrap();
+    bodies.insert(dyn_id, body);
+    bodies.insert(
+        floor_id,
+        RigidBody::new_static(floor_id, Vec3::ZERO, Quat::IDENTITY).unwrap(),
+    );
+
+    let mu = 0.3;
+    let contact = Contact::new(
+        ColliderId(1),
+        ColliderId(2),
+        dyn_id,
+        floor_id,
+        Vec3::ZERO,
+        Vec3::NEG_Y,
+        0.0,
+    )
+    .with_coefficients(0.0, mu)
+    .unwrap();
+
+    let config = SolverConfig {
+        iterations: 10,
+        beta: 0.0,
+        penetration_slop: 0.001,
+        ..Default::default()
+    };
+
+    solve_contacts(&mut bodies, &[contact], 1.0 / 30.0, &config).unwrap();
+
+    let solved = bodies.get(&dyn_id).unwrap();
+    // Impuls normal: delta_vy = 0 - (-1) = 1.0. Massa = 2.0 -> J_n = 2.0 * 1.0 = 2.0.
+    // Batas friksi Coulomb maksimum: J_t_max = mu * J_n = 0.3 * 2.0 = 0.6.
+    // Perubahan kecepatan luncur: delta_vx = J_t_max / 2.0 = 0.3.
+    // v_x akhir harus sekitar 100.0 - 0.3 = 99.7.
+    let delta_vx = 100.0 - solved.linear_velocity().x;
+    assert!(
+        (delta_vx - 0.3).abs() < 1e-2,
+        "Pengurangan kecepatan friksi Coulomb harus tepat dibatasi oleh mu * J_n, didapat delta_vx = {}",
+        delta_vx
+    );
+}
+
+#[test]
+fn test_9_7_material_friction_combination_symmetry() {
+    let mat_a = PhysicsMaterial::new(0.5, 0.4).unwrap();
+    let mat_b = PhysicsMaterial::new(0.5, 0.9).unwrap();
+
+    let combined_ab = combine_materials(&mat_a, &mat_b).unwrap();
+    let combined_ba = combine_materials(&mat_b, &mat_a).unwrap();
+
+    assert_eq!(combined_ab, combined_ba);
+    // sqrt(0.4 * 0.9) = sqrt(0.36) = 0.6
+    assert!((combined_ab.friction - 0.6).abs() < 1e-5);
+}
+
+#[test]
+fn test_9_7_invalid_friction_negative_rejected() {
+    assert_eq!(
+        PhysicsMaterial::new(0.5, -0.2),
+        Err(MaterialError::InvalidFriction)
+    );
+}
+
+#[test]
+fn test_9_7_invalid_friction_nan_rejected() {
+    assert_eq!(
+        PhysicsMaterial::new(0.5, f32::NAN),
+        Err(MaterialError::InvalidFriction)
+    );
+}
+
+#[test]
+fn test_9_7_invalid_friction_inf_rejected() {
+    assert_eq!(
+        PhysicsMaterial::new(0.5, f32::INFINITY),
+        Err(MaterialError::InvalidFriction)
+    );
+    assert_eq!(
+        PhysicsMaterial::new(0.5, f32::NEG_INFINITY),
+        Err(MaterialError::InvalidFriction)
+    );
+}
+
+#[test]
+fn test_9_7_deterministic_tangent_basis() {
+    let normal = Vec3::new(0.0, 1.0, 0.0);
+    let b1 = TangentBasis::compute(normal);
+    let b2 = TangentBasis::compute(normal);
+
+    assert_eq!(b1, b2);
+}
+
+#[test]
+fn test_9_7_tangent_basis_orthonormality() {
+    let normals = [
+        Vec3::X,
+        Vec3::Y,
+        Vec3::Z,
+        Vec3::NEG_X,
+        Vec3::NEG_Y,
+        Vec3::NEG_Z,
+        Vec3::new(1.0, 1.0, 1.0).normalize(),
+        Vec3::new(-2.0, 3.0, -1.0).normalize(),
+    ];
+
+    for n in normals {
+        let basis = TangentBasis::compute(n);
+        assert!((basis.t1.length() - 1.0).abs() < 1e-5);
+        assert!((basis.t2.length() - 1.0).abs() < 1e-5);
+        assert!(basis.t1.dot(n).abs() < 1e-5);
+        assert!(basis.t2.dot(n).abs() < 1e-5);
+        assert!(basis.t1.dot(basis.t2).abs() < 1e-5);
+    }
+}
+
+#[test]
+fn test_9_7_tangent_basis_rotated_normals() {
+    let q = Quat::from_rotation_y(std::f32::consts::FRAC_PI_4);
+    let n = (q * Vec3::Z).normalize();
+
+    let basis = TangentBasis::compute(n);
+    assert!((basis.t1.length() - 1.0).abs() < 1e-5);
+    assert!((basis.t2.length() - 1.0).abs() < 1e-5);
+    assert!(basis.t1.dot(n).abs() < 1e-5);
+    assert!(basis.t2.dot(n).abs() < 1e-5);
+    assert!(basis.t1.dot(basis.t2).abs() < 1e-5);
+}
+
+#[test]
+fn test_9_7_tangent_vector_response_both_dimensions() {
+    let mut bodies = std::collections::BTreeMap::new();
+    let dyn_id = RigidBodyId(1);
+    let floor_id = RigidBodyId(2);
+
+    let inertia = Mat3::from_diagonal(Vec3::ONE);
+    let mut body = RigidBody::new_dynamic(
+        dyn_id,
+        Vec3::new(0.0, 1.0, 0.0),
+        Quat::IDENTITY,
+        2.0,
+        inertia,
+    )
+    .unwrap();
+    // Meluncur diagonal di bidang horizontal XZ: vx = 4.0, vz = 4.0, vy = -2.0
+    body.set_linear_velocity(Vec3::new(4.0, -2.0, 4.0)).unwrap();
+    bodies.insert(dyn_id, body);
+    bodies.insert(
+        floor_id,
+        RigidBody::new_static(floor_id, Vec3::ZERO, Quat::IDENTITY).unwrap(),
+    );
+
+    let contact = Contact::new(
+        ColliderId(1),
+        ColliderId(2),
+        dyn_id,
+        floor_id,
+        Vec3::ZERO,
+        Vec3::NEG_Y,
+        0.0,
+    )
+    .with_coefficients(0.0, 0.6)
+    .unwrap();
+
+    let config = SolverConfig {
+        iterations: 10,
+        beta: 0.0,
+        penetration_slop: 0.001,
+        ..Default::default()
+    };
+
+    solve_contacts(&mut bodies, &[contact], 1.0 / 30.0, &config).unwrap();
+
+    let solved = bodies.get(&dyn_id).unwrap();
+    // Kedua komponen tangensial X dan Z harus tereduksi secara simetris
+    assert!(solved.linear_velocity().x < 4.0);
+    assert!(solved.linear_velocity().z < 4.0);
+    assert!((solved.linear_velocity().x - solved.linear_velocity().z).abs() < 1e-4);
+}
+
+#[test]
+fn test_9_7_friction_with_friction_greater_than_one() {
+    let mut bodies = std::collections::BTreeMap::new();
+    let dyn_id = RigidBodyId(1);
+    let floor_id = RigidBodyId(2);
+
+    let inertia = Mat3::from_diagonal(Vec3::ONE);
+    let mut body = RigidBody::new_dynamic(
+        dyn_id,
+        Vec3::new(0.0, 1.0, 0.0),
+        Quat::IDENTITY,
+        2.0,
+        inertia,
+    )
+    .unwrap();
+    body.set_linear_velocity(Vec3::new(2.0, -4.0, 0.0)).unwrap();
+    bodies.insert(dyn_id, body);
+    bodies.insert(
+        floor_id,
+        RigidBody::new_static(floor_id, Vec3::ZERO, Quat::IDENTITY).unwrap(),
+    );
+
+    // Friksi mu = 2.5 (lebih besar dari 1.0 diperbolehkan)
+    let contact = Contact::new(
+        ColliderId(1),
+        ColliderId(2),
+        dyn_id,
+        floor_id,
+        Vec3::ZERO,
+        Vec3::NEG_Y,
+        0.0,
+    )
+    .with_coefficients(0.0, 2.5)
+    .unwrap();
+
+    let config = SolverConfig {
+        iterations: 10,
+        beta: 0.0,
+        penetration_slop: 0.001,
+        ..Default::default()
+    };
+
+    solve_contacts(&mut bodies, &[contact], 1.0 / 30.0, &config).unwrap();
+
+    let solved = bodies.get(&dyn_id).unwrap();
+    // Dengan kontak di r_a = (0, -1, 0) dan mu = 2.5, friksi menghentikan slip pada titik kontak
+    // menghasilkan kondisi rolling without slipping: v(P) = v_cm + w x r = 0.
+    let r_a = contact.point - solved.position();
+    let v_contact = solved.linear_velocity() + solved.angular_velocity().cross(r_a);
+    assert!(
+        v_contact.length() < 1e-3,
+        "Kecepatan relatif pada titik kontak harus nol (rolling without slipping), didapat: {:?}",
+        v_contact
+    );
+    // Kecepatan luncur berkurang dari 2.0 menjadi 4/3
+    assert!((solved.linear_velocity().x - 4.0 / 3.0).abs() < 1e-3);
+    assert!((solved.angular_velocity().z - (-4.0 / 3.0)).abs() < 1e-3);
+}
+
+#[test]
+fn test_9_7_off_center_friction_generates_torque() {
+    let mut bodies = std::collections::BTreeMap::new();
+    let dyn_id = RigidBodyId(1);
+    let floor_id = RigidBodyId(2);
+
+    let inertia = Mat3::from_diagonal(Vec3::ONE);
+    // Bola berpusat di (0, 0.5, 0)
+    let mut body = RigidBody::new_dynamic(
+        dyn_id,
+        Vec3::new(0.0, 0.5, 0.0),
+        Quat::IDENTITY,
+        2.0,
+        inertia,
+    )
+    .unwrap();
+    body.set_linear_velocity(Vec3::new(5.0, -2.0, 0.0)).unwrap();
+    bodies.insert(dyn_id, body);
+    bodies.insert(
+        floor_id,
+        RigidBody::new_static(floor_id, Vec3::ZERO, Quat::IDENTITY).unwrap(),
+    );
+
+    // Titik kontak berada di dasar bola (0, 0, 0) -> r_a = (0, -0.5, 0)
+    let contact = Contact::new(
+        ColliderId(1),
+        ColliderId(2),
+        dyn_id,
+        floor_id,
+        Vec3::ZERO,
+        Vec3::NEG_Y,
+        0.0,
+    )
+    .with_coefficients(0.0, 0.5)
+    .unwrap();
+
+    let config = SolverConfig::default();
+    solve_contacts(&mut bodies, &[contact], 1.0 / 30.0, &config).unwrap();
+
+    let solved = bodies.get(&dyn_id).unwrap();
+    // Friksi yang menahan luncuran +X pada titik r = (0, -0.5, 0) menimbulkan torsi pada sumbu Z!
+    assert!(
+        solved.angular_velocity().z.abs() > 0.01,
+        "Off-center friction harus menghasilkan respon sudut pada sumbu Z, didapat: {:?}",
+        solved.angular_velocity()
+    );
+}
+
+#[test]
+fn test_9_7_center_of_mass_friction_produces_no_angular_impulse() {
+    let mut bodies = std::collections::BTreeMap::new();
+    let dyn_id = RigidBodyId(1);
+    let floor_id = RigidBodyId(2);
+
+    let inertia = Mat3::from_diagonal(Vec3::ONE);
+    // Titik kontak persis di pusat massa (r_a = 0)
+    let mut body =
+        RigidBody::new_dynamic(dyn_id, Vec3::ZERO, Quat::IDENTITY, 2.0, inertia).unwrap();
+    body.set_linear_velocity(Vec3::new(5.0, -2.0, 0.0)).unwrap();
+    bodies.insert(dyn_id, body);
+    bodies.insert(
+        floor_id,
+        RigidBody::new_static(floor_id, Vec3::new(0.0, -1.0, 0.0), Quat::IDENTITY).unwrap(),
+    );
+
+    let contact = Contact::new(
+        ColliderId(1),
+        ColliderId(2),
+        dyn_id,
+        floor_id,
+        Vec3::ZERO,
+        Vec3::NEG_Y,
+        0.0,
+    )
+    .with_coefficients(0.0, 0.5)
+    .unwrap();
+
+    let config = SolverConfig::default();
+    solve_contacts(&mut bodies, &[contact], 1.0 / 30.0, &config).unwrap();
+
+    let solved = bodies.get(&dyn_id).unwrap();
+    // Kecepatan sudut tetap murni nol
+    assert_eq!(solved.angular_velocity(), Vec3::ZERO);
+}
+
+#[test]
+fn test_9_7_rotated_body_uses_world_inverse_inertia_correctly() {
+    let mut bodies = std::collections::BTreeMap::new();
+    let dyn_id = RigidBodyId(1);
+    let floor_id = RigidBodyId(2);
+
+    // Inersia asimetris: Ix=1, Iy=10, Iz=100
+    let inertia = Mat3::from_diagonal(Vec3::new(1.0, 10.0, 100.0));
+    // Rotasi 90 derajat sekitar sumbu Y
+    let rot = Quat::from_rotation_y(std::f32::consts::FRAC_PI_2);
+    let mut body =
+        RigidBody::new_dynamic(dyn_id, Vec3::new(0.0, 1.0, 0.0), rot, 2.0, inertia).unwrap();
+    body.set_linear_velocity(Vec3::new(4.0, -2.0, 0.0)).unwrap();
+    bodies.insert(dyn_id, body);
+    bodies.insert(
+        floor_id,
+        RigidBody::new_static(floor_id, Vec3::ZERO, Quat::IDENTITY).unwrap(),
+    );
+
+    let contact = Contact::new(
+        ColliderId(1),
+        ColliderId(2),
+        dyn_id,
+        floor_id,
+        Vec3::ZERO,
+        Vec3::NEG_Y,
+        0.0,
+    )
+    .with_coefficients(0.0, 0.5)
+    .unwrap();
+
+    let config = SolverConfig::default();
+    solve_contacts(&mut bodies, &[contact], 1.0 / 30.0, &config).unwrap();
+
+    let solved = bodies.get(&dyn_id).unwrap();
+    assert!(solved.linear_velocity().is_finite());
+    assert!(solved.angular_velocity().is_finite());
+}
+
+#[test]
+fn test_9_7_asymmetric_inertia_friction_behavior() {
+    let mut bodies = std::collections::BTreeMap::new();
+    let dyn_id = RigidBodyId(1);
+    let floor_id = RigidBodyId(2);
+
+    let inertia = Mat3::from_diagonal(Vec3::new(1.0, 5.0, 20.0));
+    let mut body = RigidBody::new_dynamic(
+        dyn_id,
+        Vec3::new(0.0, 1.0, 0.0),
+        Quat::IDENTITY,
+        2.0,
+        inertia,
+    )
+    .unwrap();
+    body.set_linear_velocity(Vec3::new(4.0, -2.0, 4.0)).unwrap();
+    bodies.insert(dyn_id, body);
+    bodies.insert(
+        floor_id,
+        RigidBody::new_static(floor_id, Vec3::ZERO, Quat::IDENTITY).unwrap(),
+    );
+
+    let contact = Contact::new(
+        ColliderId(1),
+        ColliderId(2),
+        dyn_id,
+        floor_id,
+        Vec3::new(0.0, 0.5, 0.0),
+        Vec3::NEG_Y,
+        0.0,
+    )
+    .with_coefficients(0.0, 0.5)
+    .unwrap();
+
+    let config = SolverConfig::default();
+    solve_contacts(&mut bodies, &[contact], 1.0 / 30.0, &config).unwrap();
+
+    let solved = bodies.get(&dyn_id).unwrap();
+    assert!(solved.angular_velocity().is_finite());
+}
+
+#[test]
+fn test_9_7_local_inertia_immutability_under_friction() {
+    let mut bodies = std::collections::BTreeMap::new();
+    let dyn_id = RigidBodyId(1);
+    let floor_id = RigidBodyId(2);
+
+    let inertia = Mat3::from_diagonal(Vec3::new(1.0, 2.0, 3.0));
+    let mut body = RigidBody::new_dynamic(
+        dyn_id,
+        Vec3::new(0.0, 1.0, 0.0),
+        Quat::IDENTITY,
+        2.0,
+        inertia,
+    )
+    .unwrap();
+    body.set_linear_velocity(Vec3::new(4.0, -2.0, 0.0)).unwrap();
+
+    let local_i_before = body.mass_properties().local_inertia;
+    let local_inv_i_before = body.mass_properties().local_inverse_inertia;
+
+    bodies.insert(dyn_id, body);
+    bodies.insert(
+        floor_id,
+        RigidBody::new_static(floor_id, Vec3::ZERO, Quat::IDENTITY).unwrap(),
+    );
+
+    let contact = Contact::new(
+        ColliderId(1),
+        ColliderId(2),
+        dyn_id,
+        floor_id,
+        Vec3::ZERO,
+        Vec3::NEG_Y,
+        0.0,
+    )
+    .with_coefficients(0.5, 0.5)
+    .unwrap();
+
+    let config = SolverConfig::default();
+    solve_contacts(&mut bodies, &[contact], 1.0 / 30.0, &config).unwrap();
+
+    let solved = bodies.get(&dyn_id).unwrap();
+    assert_eq!(solved.mass_properties().local_inertia, local_i_before);
+    assert_eq!(
+        solved.mass_properties().local_inverse_inertia,
+        local_inv_i_before
+    );
+}
+
+#[test]
+fn test_9_7_combined_normal_restitution_friction() {
+    let mut bodies = std::collections::BTreeMap::new();
+    let dyn_id = RigidBodyId(1);
+    let floor_id = RigidBodyId(2);
+
+    let inertia = Mat3::from_diagonal(Vec3::ONE);
+    let mut body = RigidBody::new_dynamic(
+        dyn_id,
+        Vec3::new(0.0, 1.0, 0.0),
+        Quat::IDENTITY,
+        2.0,
+        inertia,
+    )
+    .unwrap();
+    body.set_linear_velocity(Vec3::new(5.0, -4.0, 0.0)).unwrap();
+    bodies.insert(dyn_id, body);
+    bodies.insert(
+        floor_id,
+        RigidBody::new_static(floor_id, Vec3::ZERO, Quat::IDENTITY).unwrap(),
+    );
+
+    let contact = Contact::new(
+        ColliderId(1),
+        ColliderId(2),
+        dyn_id,
+        floor_id,
+        Vec3::ZERO,
+        Vec3::NEG_Y,
+        0.0,
+    )
+    .with_coefficients(0.6, 0.4) // e = 0.6, mu = 0.4
+    .unwrap();
+
+    let config = SolverConfig {
+        iterations: 10,
+        beta: 0.0,
+        penetration_slop: 0.001,
+        ..Default::default()
+    };
+
+    solve_contacts(&mut bodies, &[contact], 1.0 / 30.0, &config).unwrap();
+
+    let solved = bodies.get(&dyn_id).unwrap();
+    // Bounces up with v_y ≈ +2.4 (0.6 * 4.0)
+    assert!((solved.linear_velocity().y - 2.4).abs() < 1e-2);
+    // Decelerates horizontal sliding: v_x < 5.0
+    assert!(solved.linear_velocity().x < 5.0);
+    assert!(solved.linear_velocity().x > 0.0);
+}
+
+#[test]
+fn test_9_7_multiple_contacts_friction_and_restitution() {
+    let mut bodies = std::collections::BTreeMap::new();
+    let dyn_id = RigidBodyId(1);
+    let floor_id = RigidBodyId(2);
+
+    let inertia = Mat3::from_diagonal(Vec3::ONE);
+    let mut body = RigidBody::new_dynamic(
+        dyn_id,
+        Vec3::new(0.0, 1.0, 0.0),
+        Quat::IDENTITY,
+        2.0,
+        inertia,
+    )
+    .unwrap();
+    body.set_linear_velocity(Vec3::new(4.0, -2.0, 0.0)).unwrap();
+    bodies.insert(dyn_id, body);
+    bodies.insert(
+        floor_id,
+        RigidBody::new_static(floor_id, Vec3::ZERO, Quat::IDENTITY).unwrap(),
+    );
+
+    let c1 = Contact::new(
+        ColliderId(1),
+        ColliderId(2),
+        dyn_id,
+        floor_id,
+        Vec3::new(-0.5, 0.0, 0.0),
+        Vec3::NEG_Y,
+        0.0,
+    )
+    .with_coefficients(0.5, 0.3)
+    .unwrap();
+
+    let c2 = Contact::new(
+        ColliderId(3),
+        ColliderId(4),
+        dyn_id,
+        floor_id,
+        Vec3::new(0.5, 0.0, 0.0),
+        Vec3::NEG_Y,
+        0.0,
+    )
+    .with_coefficients(0.5, 0.3)
+    .unwrap();
+
+    let config = SolverConfig {
+        iterations: 10,
+        beta: 0.0,
+        penetration_slop: 0.001,
+        ..Default::default()
+    };
+
+    solve_contacts(&mut bodies, &[c1, c2], 1.0 / 30.0, &config).unwrap();
+
+    let solved = bodies.get(&dyn_id).unwrap();
+    assert!(solved.linear_velocity().y > 0.5);
+    assert!(solved.linear_velocity().x < 4.0);
+}
+
+#[test]
+fn test_9_7_multiple_colliders_distinct_materials() {
+    let shape = Shape::Sphere(Sphere::new(0.5).unwrap());
+    let col1 = Collider::new(
+        ColliderId(1),
+        RigidBodyId(1),
+        shape.clone(),
+        Transform::IDENTITY,
+    )
+    .with_material(PhysicsMaterial::new(0.2, 0.1).unwrap())
+    .unwrap();
+    let col2 = Collider::new(ColliderId(2), RigidBodyId(1), shape, Transform::IDENTITY)
+        .with_material(PhysicsMaterial::new(0.8, 0.9).unwrap())
+        .unwrap();
+
+    assert_eq!(col1.material().friction, 0.1);
+    assert_eq!(col2.material().friction, 0.9);
+}
+
+#[test]
+fn test_9_7_mixed_body_types_collection() {
+    let mut bodies = std::collections::BTreeMap::new();
+    let dyn_id = RigidBodyId(1);
+    let kin_id = RigidBodyId(2);
+    let static_id = RigidBodyId(3);
+
+    let inertia = Mat3::from_diagonal(Vec3::ONE);
+    let mut b_dyn =
+        RigidBody::new_dynamic(dyn_id, Vec3::ZERO, Quat::IDENTITY, 2.0, inertia).unwrap();
+    b_dyn.set_linear_velocity(Vec3::new(2.0, 0.0, 0.0)).unwrap();
+    bodies.insert(dyn_id, b_dyn);
+
+    let b_kin = RigidBody::new_kinematic(
+        kin_id,
+        Vec3::new(2.0, 0.0, 0.0),
+        Quat::IDENTITY,
+        Vec3::new(-1.0, 0.0, 0.0),
+        Vec3::ZERO,
+    )
+    .unwrap();
+    bodies.insert(kin_id, b_kin);
+
+    let b_static =
+        RigidBody::new_static(static_id, Vec3::new(-2.0, 0.0, 0.0), Quat::IDENTITY).unwrap();
+    bodies.insert(static_id, b_static);
+
+    let c = Contact::new(
+        ColliderId(1),
+        ColliderId(2),
+        dyn_id,
+        kin_id,
+        Vec3::new(1.0, 0.0, 0.0),
+        Vec3::X,
+        0.0,
+    )
+    .with_coefficients(0.5, 0.5)
+    .unwrap();
+
+    let config = SolverConfig::default();
+    solve_contacts(&mut bodies, &[c], 1.0 / 30.0, &config).unwrap();
+
+    assert_eq!(
+        bodies.get(&kin_id).unwrap().linear_velocity(),
+        Vec3::new(-1.0, 0.0, 0.0)
+    );
+    assert_eq!(
+        bodies.get(&static_id).unwrap().linear_velocity(),
+        Vec3::ZERO
+    );
+}
+
+#[test]
+fn test_9_7_deterministic_repeated_solve() {
+    let setup = || {
+        let mut bodies = std::collections::BTreeMap::new();
+        let dyn_id = RigidBodyId(1);
+        let floor_id = RigidBodyId(2);
+
+        let inertia = Mat3::from_diagonal(Vec3::ONE);
+        let mut body = RigidBody::new_dynamic(
+            dyn_id,
+            Vec3::new(0.0, 1.0, 0.0),
+            Quat::IDENTITY,
+            2.0,
+            inertia,
+        )
+        .unwrap();
+        body.set_linear_velocity(Vec3::new(3.0, -3.0, 2.0)).unwrap();
+        bodies.insert(dyn_id, body);
+        bodies.insert(
+            floor_id,
+            RigidBody::new_static(floor_id, Vec3::ZERO, Quat::IDENTITY).unwrap(),
+        );
+
+        let contact = Contact::new(
+            ColliderId(1),
+            ColliderId(2),
+            dyn_id,
+            floor_id,
+            Vec3::ZERO,
+            Vec3::NEG_Y,
+            0.0,
+        )
+        .with_coefficients(0.5, 0.4)
+        .unwrap();
+
+        (bodies, contact)
+    };
+
+    let (mut b1, c1) = setup();
+    let (mut b2, c2) = setup();
+
+    let config = SolverConfig::default();
+    solve_contacts(&mut b1, &[c1], 1.0 / 30.0, &config).unwrap();
+    solve_contacts(&mut b2, &[c2], 1.0 / 30.0, &config).unwrap();
+
+    let s1 = b1.get(&RigidBodyId(1)).unwrap();
+    let s2 = b2.get(&RigidBodyId(1)).unwrap();
+
+    assert_eq!(s1.linear_velocity(), s2.linear_velocity());
+    assert_eq!(s1.angular_velocity(), s2.angular_velocity());
+}
+
+#[test]
+fn test_9_7_reverse_contact_physical_symmetry() {
+    // KONTRAK MANDATORI SIMETRI TERBALIK (SECTION 25):
+    // Contact(A, B) vs Contact(B, A) harus menghasilkan respon fisik yang ekuivalen!
+    let setup = |is_reversed: bool| {
+        let mut bodies = std::collections::BTreeMap::new();
+        let b1_id = RigidBodyId(1);
+        let b2_id = RigidBodyId(2);
+
+        let inertia = Mat3::from_diagonal(Vec3::ONE);
+        let mut b1 = RigidBody::new_dynamic(
+            b1_id,
+            Vec3::new(-1.0, 0.0, 0.0),
+            Quat::IDENTITY,
+            2.0,
+            inertia,
+        )
+        .unwrap();
+        b1.set_linear_velocity(Vec3::new(3.0, 0.0, 2.0)).unwrap();
+        let mut b2 = RigidBody::new_dynamic(
+            b2_id,
+            Vec3::new(1.0, 0.0, 0.0),
+            Quat::IDENTITY,
+            2.0,
+            inertia,
+        )
+        .unwrap();
+        b2.set_linear_velocity(Vec3::new(-3.0, 0.0, -2.0)).unwrap();
+
+        bodies.insert(b1_id, b1);
+        bodies.insert(b2_id, b2);
+
+        let c_forward = Contact::new(
+            ColliderId(1),
+            ColliderId(2),
+            b1_id,
+            b2_id,
+            Vec3::ZERO,
+            Vec3::X,
+            0.0,
+        )
+        .with_coefficients(0.5, 0.4)
+        .unwrap();
+
+        let contact = if is_reversed {
+            c_forward.reverse_symmetry()
+        } else {
+            c_forward
+        };
+
+        (bodies, contact)
+    };
+
+    let (mut b_fwd, c_fwd) = setup(false);
+    let (mut b_rev, c_rev) = setup(true);
+
+    let config = SolverConfig {
+        iterations: 10,
+        beta: 0.0,
+        penetration_slop: 0.001,
+        ..Default::default()
+    };
+
+    solve_contacts(&mut b_fwd, &[c_fwd], 1.0 / 30.0, &config).unwrap();
+    solve_contacts(&mut b_rev, &[c_rev], 1.0 / 30.0, &config).unwrap();
+
+    let fwd_1 = b_fwd.get(&RigidBodyId(1)).unwrap();
+    let fwd_2 = b_fwd.get(&RigidBodyId(2)).unwrap();
+    let rev_1 = b_rev.get(&RigidBodyId(1)).unwrap();
+    let rev_2 = b_rev.get(&RigidBodyId(2)).unwrap();
+
+    // Kecepatan akhir kedua badan harus identik dalam toleransi numerik
+    assert!(
+        (fwd_1.linear_velocity() - rev_1.linear_velocity()).length() < 1e-4,
+        "Badan 1 forward vs reverse berbeda: fwd={:?}, rev={:?}",
+        fwd_1.linear_velocity(),
+        rev_1.linear_velocity()
+    );
+    assert!(
+        (fwd_2.linear_velocity() - rev_2.linear_velocity()).length() < 1e-4,
+        "Badan 2 forward vs reverse berbeda: fwd={:?}, rev={:?}",
+        fwd_2.linear_velocity(),
+        rev_2.linear_velocity()
+    );
+}
+
+#[test]
+fn test_9_7_no_nan_or_inf_under_extreme_inputs() {
+    let mut bodies = std::collections::BTreeMap::new();
+    let dyn_id = RigidBodyId(1);
+    let floor_id = RigidBodyId(2);
+
+    let inertia = Mat3::from_diagonal(Vec3::ONE);
+    let mut body = RigidBody::new_dynamic(
+        dyn_id,
+        Vec3::new(0.0, 1.0, 0.0),
+        Quat::IDENTITY,
+        2.0,
+        inertia,
+    )
+    .unwrap();
+    body.set_linear_velocity(Vec3::new(1e4, -1e4, 1e4)).unwrap();
+    bodies.insert(dyn_id, body);
+    bodies.insert(
+        floor_id,
+        RigidBody::new_static(floor_id, Vec3::ZERO, Quat::IDENTITY).unwrap(),
+    );
+
+    let contact = Contact::new(
+        ColliderId(1),
+        ColliderId(2),
+        dyn_id,
+        floor_id,
+        Vec3::ZERO,
+        Vec3::NEG_Y,
+        0.0,
+    )
+    .with_coefficients(0.9, 0.9)
+    .unwrap();
+
+    let config = SolverConfig::default();
+    solve_contacts(&mut bodies, &[contact], 1e-5, &config).unwrap();
+
+    let solved = bodies.get(&dyn_id).unwrap();
+    assert!(solved.linear_velocity().is_finite());
+    assert!(solved.angular_velocity().is_finite());
+}
+
+#[test]
+fn test_9_7_solver_convergence_with_iterations() {
+    let setup = || {
+        let mut bodies = std::collections::BTreeMap::new();
+        let dyn_id = RigidBodyId(1);
+        let floor_id = RigidBodyId(2);
+
+        let inertia = Mat3::from_diagonal(Vec3::ONE);
+        let mut body = RigidBody::new_dynamic(
+            dyn_id,
+            Vec3::new(0.0, 1.0, 0.0),
+            Quat::IDENTITY,
+            2.0,
+            inertia,
+        )
+        .unwrap();
+        body.set_linear_velocity(Vec3::new(4.0, -3.0, 0.0)).unwrap();
+        bodies.insert(dyn_id, body);
+        bodies.insert(
+            floor_id,
+            RigidBody::new_static(floor_id, Vec3::ZERO, Quat::IDENTITY).unwrap(),
+        );
+
+        let contact = Contact::new(
+            ColliderId(1),
+            ColliderId(2),
+            dyn_id,
+            floor_id,
+            Vec3::ZERO,
+            Vec3::NEG_Y,
+            0.0,
+        )
+        .with_coefficients(0.0, 1.0)
+        .unwrap();
+
+        (bodies, contact)
+    };
+
+    let (mut b1, c1) = setup();
+    let (mut b10, c10) = setup();
+
+    let cfg1 = SolverConfig {
+        iterations: 1,
+        beta: 0.0,
+        penetration_slop: 0.001,
+        ..Default::default()
+    };
+    let cfg10 = SolverConfig {
+        iterations: 10,
+        beta: 0.0,
+        penetration_slop: 0.001,
+        ..Default::default()
+    };
+
+    solve_contacts(&mut b1, &[c1], 1.0 / 30.0, &cfg1).unwrap();
+    solve_contacts(&mut b10, &[c10], 1.0 / 30.0, &cfg10).unwrap();
+
+    assert!(b1
+        .get(&RigidBodyId(1))
+        .unwrap()
+        .linear_velocity()
+        .is_finite());
+    assert!(b10
+        .get(&RigidBodyId(1))
+        .unwrap()
+        .linear_velocity()
+        .is_finite());
+}
+
+#[test]
+fn test_9_7_phase_9_5_normal_only_regression() {
+    // REGRESI KRITIS: Ketika restitution = 0 dan friction = 0,
+    // perilakunya identik dengan solver normal Phase 9.5!
+    let mut bodies = std::collections::BTreeMap::new();
+    let dyn_id = RigidBodyId(1);
+    let floor_id = RigidBodyId(2);
+
+    let inertia = Mat3::from_diagonal(Vec3::ONE);
+    let mut body = RigidBody::new_dynamic(
+        dyn_id,
+        Vec3::new(0.0, 1.0, 0.0),
+        Quat::IDENTITY,
+        2.0,
+        inertia,
+    )
+    .unwrap();
+    body.set_linear_velocity(Vec3::new(0.0, -3.0, 0.0)).unwrap();
+    bodies.insert(dyn_id, body);
+    bodies.insert(
+        floor_id,
+        RigidBody::new_static(floor_id, Vec3::ZERO, Quat::IDENTITY).unwrap(),
+    );
+
+    let contact = Contact::new(
+        ColliderId(1),
+        ColliderId(2),
+        dyn_id,
+        floor_id,
+        Vec3::ZERO,
+        Vec3::NEG_Y,
+        0.0,
+    )
+    .with_coefficients(0.0, 0.0)
+    .unwrap();
+
+    let config = SolverConfig {
+        iterations: 10,
+        beta: 0.0,
+        penetration_slop: 0.001,
+        ..Default::default()
+    };
+
+    solve_contacts(&mut bodies, &[contact], 1.0 / 30.0, &config).unwrap();
+
+    let solved = bodies.get(&dyn_id).unwrap();
+    assert_eq!(solved.linear_velocity(), Vec3::ZERO);
+}
+
+#[test]
+fn test_9_7_phase_9_6_integration_regression() {
+    let mut world = PhysicsWorld::new(PhysicsWorldConfig::default());
+    let body_id = RigidBodyId(1);
+    let inertia = Mat3::from_diagonal(Vec3::ONE);
+    let body = RigidBody::new_dynamic(
+        body_id,
+        Vec3::new(0.0, 10.0, 0.0),
+        Quat::IDENTITY,
+        1.0,
+        inertia,
+    )
+    .unwrap();
+    world.add_rigid_body(body, None).unwrap();
+
+    let contact = Contact::new(
+        ColliderId(1),
+        ColliderId(2),
+        body_id,
+        RigidBodyId(99),
+        Vec3::new(0.0, 10.0, 0.0),
+        Vec3::Y,
+        0.0,
+    )
+    .with_coefficients(0.5, 0.5)
+    .unwrap();
+
+    // Posisi sebelum integrasi
+    let pos_before = world.rigid_bodies.get(&body_id).unwrap().position();
+    let rot_before = world.rigid_bodies.get(&body_id).unwrap().rotation();
+
+    // Solver memutasi kecepatan, BUKAN posisi atau rotasi!
+    world.solve_contacts(&[contact]).unwrap_err(); // RigidBody 99 tidak ada, membuktikan validasi
+
+    // Posisi dan rotasi tetap tidak tersentuh oleh solver
+    assert_eq!(
+        world.rigid_bodies.get(&body_id).unwrap().position(),
+        pos_before
+    );
+    assert_eq!(
+        world.rigid_bodies.get(&body_id).unwrap().rotation(),
+        rot_before
     );
 }

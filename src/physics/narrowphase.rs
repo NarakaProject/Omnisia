@@ -24,6 +24,8 @@ pub enum NarrowphaseError {
     NonFiniteCoordinates,
     /// Transformasi tidak valid atau quaternion zero-length
     InvalidTransform,
+    /// Koefisien material collider tidak valid (non-finite, e di luar [0..1], mu < 0)
+    InvalidMaterial,
 }
 
 impl fmt::Display for NarrowphaseError {
@@ -34,6 +36,9 @@ impl fmt::Display for NarrowphaseError {
                 write!(f, "Koordinat narrowphase memuat nilai non-finite")
             }
             Self::InvalidTransform => write!(f, "Transformasi narrowphase tidak valid"),
+            Self::InvalidMaterial => {
+                write!(f, "Koefisien material collider narrowphase tidak valid")
+            }
         }
     }
 }
@@ -66,7 +71,7 @@ pub fn collide(
     let body_a = collider_a.rigid_body_id();
     let body_b = collider_b.rigid_body_id();
 
-    match (collider_a.shape(), collider_b.shape()) {
+    let contact_opt = match (collider_a.shape(), collider_b.shape()) {
         // --- 1. Sphere ↔ Sphere ---
         (Shape::Sphere(s_a), Shape::Sphere(s_b)) => collide_sphere_sphere(
             id_a,
@@ -180,6 +185,18 @@ pub fn collide(
             )?;
             Ok(c.map(|contact| contact.flipped()))
         }
+    }?;
+
+    if let Some(mut contact) = contact_opt {
+        let combined = collider_a
+            .material()
+            .combine(&collider_b.material())
+            .map_err(|_| NarrowphaseError::InvalidMaterial)?;
+        contact.restitution = combined.restitution;
+        contact.friction = combined.friction;
+        Ok(Some(contact))
+    } else {
+        Ok(None)
     }
 }
 

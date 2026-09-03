@@ -1519,6 +1519,7 @@ fn main() {
             iterations: 10,
             beta: 0.2,
             penetration_slop: 0.001,
+            ..Default::default()
         };
         let dt = 1.0 / 30.0;
 
@@ -1660,6 +1661,99 @@ fn main() {
                 "[BENCHMARK 43B] Mixed Linear + Angular Integration ({} bodies): {:.3} µs/batch ({:.4} µs/body)",
                 count, us_total, us_per_body,
             );
+        }
+    }
+
+    // ========================================================================
+    // BENCHMARK 44: Friction + Restitution Solver (Phase 9.7)
+    // 100, 500, 1,000 Contacts @ 10 Iterations (Normal, Restitution, Friction, Combined)
+    // ========================================================================
+    {
+        use glam::{Mat3, Quat};
+        use omnisia::physics::{
+            solve_contacts, ColliderId, Contact, RigidBody, RigidBodyId, SolverConfig,
+        };
+        use std::collections::BTreeMap;
+
+        let contact_counts = [100, 500, 1000];
+        let solver_config = SolverConfig {
+            iterations: 10,
+            beta: 0.2,
+            penetration_slop: 0.001,
+            restitution_velocity_threshold: 0.1,
+        };
+        let dt = 1.0 / 30.0;
+
+        let configurations = [
+            ("Normal-only (e=0, mu=0)", 0.0, 0.0),
+            ("Restitution-only (e=0.5, mu=0)", 0.5, 0.0),
+            ("Friction-only (e=0, mu=0.5)", 0.0, 0.5),
+            ("Combined (e=0.5, mu=0.5)", 0.5, 0.5),
+        ];
+
+        for &(cfg_name, restitution, friction) in &configurations {
+            for &num_contacts in &contact_counts {
+                let mut bodies_template = BTreeMap::new();
+                let body_a_id = RigidBodyId(1);
+                let body_b_id = RigidBodyId(2);
+
+                let inertia = Mat3::from_diagonal(Vec3::ONE);
+                let mut body_a = RigidBody::new_dynamic(
+                    body_a_id,
+                    Vec3::new(0.0, 1.0, 0.0),
+                    Quat::IDENTITY,
+                    2.0,
+                    inertia,
+                )
+                .unwrap();
+                body_a
+                    .set_linear_velocity(Vec3::new(3.0, -4.0, 3.0))
+                    .unwrap();
+                bodies_template.insert(body_a_id, body_a);
+
+                let body_b = RigidBody::new_static(body_b_id, Vec3::ZERO, Quat::IDENTITY).unwrap();
+                bodies_template.insert(body_b_id, body_b);
+
+                let mut contacts = Vec::with_capacity(num_contacts);
+                for i in 0..num_contacts {
+                    let point = Vec3::new((i as f32) * 0.01, 0.0, ((i % 10) as f32) * 0.01);
+                    let mut c = Contact::new(
+                        ColliderId(i as u64 * 2 + 1),
+                        ColliderId(i as u64 * 2 + 2),
+                        body_a_id,
+                        body_b_id,
+                        point,
+                        Vec3::NEG_Y,
+                        0.005,
+                    );
+                    c.restitution = restitution;
+                    c.friction = friction;
+                    contacts.push(c);
+                }
+
+                let num_runs = 100;
+                let start = Instant::now();
+
+                for _ in 0..num_runs {
+                    let mut b = bodies_template.clone();
+                    solve_contacts(&mut b, &contacts, dt, &solver_config).unwrap();
+                }
+
+                let elapsed = start.elapsed();
+                let us_total = elapsed.as_micros() as f64 / num_runs as f64;
+                let us_per_contact = us_total / num_contacts as f64;
+                let us_per_contact_iter = us_per_contact / solver_config.iterations as f64;
+
+                println!(
+                    "[BENCHMARK 44] {} ({} contacts, {} iters): {:.3} µs/batch ({:.4} µs/contact, {:.5} µs/contact/iter)",
+                    cfg_name,
+                    num_contacts,
+                    solver_config.iterations,
+                    us_total,
+                    us_per_contact,
+                    us_per_contact_iter
+                );
+            }
         }
     }
 
