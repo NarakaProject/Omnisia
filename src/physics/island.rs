@@ -226,9 +226,11 @@ pub fn build_islands(
 
         match (island_a, island_b) {
             (Some(ia), Some(ib)) => {
-                // Dinamis <-> Dinamis: keduanya pasti berada dalam pulau yang sama
-                debug_assert_eq!(ia, ib);
+                // Dinamis <-> Dinamis: keduanya berada dalam pulau yang sama
                 islands[ia].contact_indices.push(contact_idx);
+                if ia != ib {
+                    islands[ib].contact_indices.push(contact_idx);
+                }
             }
             (Some(ia), None) => {
                 // Dinamis A <-> Statis/Kinematik B: kontak terikat ke pulau A

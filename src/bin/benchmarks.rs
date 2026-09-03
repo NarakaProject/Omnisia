@@ -1864,6 +1864,170 @@ fn main() {
         }
     }
 
+    // ========================================================================
+    // BENCHMARK 46: Dynamic ↔ Static vs Dynamic ↔ Dynamic Solver (Phase 9.9)
+    // 100, 500, 1,000 Contacts @ 10 Iterations (Combined e=0.5, mu=0.5)
+    // ========================================================================
+    {
+        use glam::{Mat3, Quat, Vec3};
+        use omnisia::physics::{
+            solve_contacts, ColliderId, Contact, RigidBody, RigidBodyId, SolverConfig,
+        };
+        use std::collections::BTreeMap;
+
+        println!("------------------------------------------------------------");
+        println!(" [BENCHMARK 46] Dynamic ↔ Static vs Dynamic ↔ Dynamic (9.9) ");
+        println!("------------------------------------------------------------");
+
+        let contact_counts = [100, 500, 1000];
+        let solver_config = SolverConfig {
+            iterations: 10,
+            beta: 0.2,
+            penetration_slop: 0.001,
+            restitution_velocity_threshold: 0.1,
+        };
+        let dt = 1.0 / 30.0;
+        let num_runs = 100;
+        let inertia = Mat3::from_diagonal(Vec3::ONE);
+
+        for &num_contacts in &contact_counts {
+            // 1. Scenario A: Dynamic ↔ Static
+            let mut bodies_ds = BTreeMap::new();
+            let mut contacts_ds = Vec::with_capacity(num_contacts);
+            for i in 0..num_contacts {
+                let dyn_id = RigidBodyId((i * 2 + 1) as u64);
+                let static_id = RigidBodyId((i * 2 + 2) as u64);
+
+                let mut dyn_b = RigidBody::new_dynamic(
+                    dyn_id,
+                    Vec3::new(i as f32 * 0.1, 1.0, 0.0),
+                    Quat::IDENTITY,
+                    2.0,
+                    inertia,
+                )
+                .unwrap();
+                dyn_b
+                    .set_linear_velocity(Vec3::new(2.0, -3.0, 1.0))
+                    .unwrap();
+                dyn_b
+                    .set_angular_velocity(Vec3::new(0.5, 0.0, 0.5))
+                    .unwrap();
+                bodies_ds.insert(dyn_id, dyn_b);
+
+                let static_b = RigidBody::new_static(
+                    static_id,
+                    Vec3::new(i as f32 * 0.1, 0.0, 0.0),
+                    Quat::IDENTITY,
+                )
+                .unwrap();
+                bodies_ds.insert(static_id, static_b);
+
+                let mut c = Contact::new(
+                    ColliderId((i * 2 + 1) as u64),
+                    ColliderId((i * 2 + 2) as u64),
+                    dyn_id,
+                    static_id,
+                    Vec3::new(i as f32 * 0.1, 0.5, 0.0),
+                    Vec3::NEG_Y,
+                    0.005,
+                );
+                c.restitution = 0.5;
+                c.friction = 0.5;
+                contacts_ds.push(c);
+            }
+
+            let start_ds = Instant::now();
+            for _ in 0..num_runs {
+                let mut b = bodies_ds.clone();
+                solve_contacts(&mut b, &contacts_ds, dt, &solver_config).unwrap();
+            }
+            let us_ds_total = start_ds.elapsed().as_micros() as f64 / num_runs as f64;
+            let us_ds_per_contact = us_ds_total / num_contacts as f64;
+            let us_ds_per_iter = us_ds_per_contact / solver_config.iterations as f64;
+
+            // 2. Scenario B: Dynamic ↔ Dynamic
+            let mut bodies_dd = BTreeMap::new();
+            let mut contacts_dd = Vec::with_capacity(num_contacts);
+            for i in 0..num_contacts {
+                let dyn_a_id = RigidBodyId((i * 2 + 1) as u64);
+                let dyn_b_id = RigidBodyId((i * 2 + 2) as u64);
+
+                let mut dyn_a = RigidBody::new_dynamic(
+                    dyn_a_id,
+                    Vec3::new(i as f32 * 0.1, 1.0, 0.0),
+                    Quat::IDENTITY,
+                    2.0,
+                    inertia,
+                )
+                .unwrap();
+                dyn_a
+                    .set_linear_velocity(Vec3::new(2.0, -3.0, 1.0))
+                    .unwrap();
+                dyn_a
+                    .set_angular_velocity(Vec3::new(0.5, 0.0, 0.5))
+                    .unwrap();
+                bodies_dd.insert(dyn_a_id, dyn_a);
+
+                let mut dyn_b = RigidBody::new_dynamic(
+                    dyn_b_id,
+                    Vec3::new(i as f32 * 0.1, 0.0, 0.0),
+                    Quat::IDENTITY,
+                    3.0,
+                    inertia,
+                )
+                .unwrap();
+                dyn_b
+                    .set_linear_velocity(Vec3::new(-1.0, 2.0, -0.5))
+                    .unwrap();
+                dyn_b
+                    .set_angular_velocity(Vec3::new(0.0, 0.5, 0.0))
+                    .unwrap();
+                bodies_dd.insert(dyn_b_id, dyn_b);
+
+                let mut c = Contact::new(
+                    ColliderId((i * 2 + 1) as u64),
+                    ColliderId((i * 2 + 2) as u64),
+                    dyn_a_id,
+                    dyn_b_id,
+                    Vec3::new(i as f32 * 0.1, 0.5, 0.0),
+                    Vec3::NEG_Y,
+                    0.005,
+                );
+                c.restitution = 0.5;
+                c.friction = 0.5;
+                contacts_dd.push(c);
+            }
+
+            let start_dd = Instant::now();
+            for _ in 0..num_runs {
+                let mut b = bodies_dd.clone();
+                solve_contacts(&mut b, &contacts_dd, dt, &solver_config).unwrap();
+            }
+            let us_dd_total = start_dd.elapsed().as_micros() as f64 / num_runs as f64;
+            let us_dd_per_contact = us_dd_total / num_contacts as f64;
+            let us_dd_per_iter = us_dd_per_contact / solver_config.iterations as f64;
+
+            let ratio = if us_ds_total > 0.0 {
+                us_dd_total / us_ds_total
+            } else {
+                1.0
+            };
+
+            println!(
+                "[BM46] Dynamic ↔ Static ({} contacts): {:.3} µs/batch ({:.4} µs/contact, {:.5} µs/contact/iter)",
+                num_contacts, us_ds_total, us_ds_per_contact, us_ds_per_iter
+            );
+            println!(
+                "[BM46] Dynamic ↔ Dynamic ({} contacts): {:.3} µs/batch ({:.4} µs/contact, {:.5} µs/contact/iter)",
+                num_contacts, us_dd_total, us_dd_per_contact, us_dd_per_iter
+            );
+            println!(
+                "[BM46] Ratio Dynamic-Dynamic / Dynamic-Static: {:.2}x",
+                ratio
+            );
+        }
+    }
+
     println!("============================================================");
     println!("             BENCHMARK SUITE COMPLETE                       ");
     println!("============================================================");
