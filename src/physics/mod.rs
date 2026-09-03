@@ -10,6 +10,7 @@ pub mod reintegrate;
 pub mod rigid_body;
 pub mod runtime;
 pub mod shape;
+pub mod solver;
 pub mod transform;
 pub mod world;
 
@@ -28,5 +29,9 @@ pub use reintegrate::{ReintegrationError, ReintegrationPlan};
 pub use rigid_body::{MassProperties, RigidBody, RigidBodyError};
 pub use runtime::PhysicsRuntime;
 pub use shape::{BoxShape, Capsule, Shape, ShapeError, Sphere};
+pub use solver::{
+    compute_world_inv_inertia, solve_contacts, ContactConstraint, SolverConfig, SolverError,
+    SOLVER_MASS_EPSILON,
+};
 pub use transform::Transform;
 pub use world::{PhysicsWorld, PhysicsWorldConfig, StaticTerrainQuery};

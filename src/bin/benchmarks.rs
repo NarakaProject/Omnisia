@@ -1503,6 +1503,89 @@ fn main() {
         );
     }
 
+    // ========================================================================
+    // BENCHMARK 42: Sequential Impulse Contact Solver (Phase 9.5)
+    // 100, 500, 1,000 Contacts @ 10 Iterations
+    // ========================================================================
+    {
+        use glam::{Mat3, Quat};
+        use omnisia::physics::{
+            solve_contacts, ColliderId, Contact, RigidBody, RigidBodyId, SolverConfig,
+        };
+        use std::collections::BTreeMap;
+
+        let contact_counts = [100, 500, 1000];
+        let solver_config = SolverConfig {
+            iterations: 10,
+            beta: 0.2,
+            penetration_slop: 0.001,
+        };
+        let dt = 1.0 / 30.0;
+
+        for &num_contacts in &contact_counts {
+            // Setup dynamic body A and static floor body B with contacts
+            let mut bodies = BTreeMap::new();
+            let body_a_id = RigidBodyId(1);
+            let body_b_id = RigidBodyId(2);
+
+            let inertia = Mat3::from_diagonal(Vec3::ONE);
+            let body_a = RigidBody::new_dynamic(
+                body_a_id,
+                Vec3::new(0.0, 1.0, 0.0),
+                Quat::IDENTITY,
+                2.0,
+                inertia,
+            )
+            .unwrap();
+            let body_b = RigidBody::new_static(body_b_id, Vec3::ZERO, Quat::IDENTITY).unwrap();
+
+            bodies.insert(body_a_id, body_a);
+            bodies.insert(body_b_id, body_b);
+
+            let mut contacts = Vec::with_capacity(num_contacts);
+            for i in 0..num_contacts {
+                let x = (i as f32) * 0.01;
+                let contact = Contact::new(
+                    ColliderId((i * 2 + 1) as u64),
+                    ColliderId((i * 2 + 2) as u64),
+                    body_a_id,
+                    body_b_id,
+                    Vec3::new(x, 0.5, 0.0),
+                    Vec3::NEG_Y,
+                    0.02,
+                );
+                contacts.push(contact);
+            }
+
+            let num_runs = 500;
+            let start = Instant::now();
+
+            for _ in 0..num_runs {
+                // Reset velocity to simulate arriving at contact each step
+                bodies
+                    .get_mut(&body_a_id)
+                    .unwrap()
+                    .set_linear_velocity(Vec3::new(0.0, -2.0, 0.0))
+                    .unwrap();
+                solve_contacts(&mut bodies, &contacts, dt, &solver_config).unwrap();
+            }
+
+            let elapsed = start.elapsed();
+            let us_total = elapsed.as_micros() as f64 / num_runs as f64;
+            let us_per_contact = us_total / num_contacts as f64;
+            let us_per_contact_iter = us_per_contact / solver_config.iterations as f64;
+
+            println!(
+                "[BENCHMARK 42] Contact Solver ({} contacts, {} iters): {:.3} µs/batch ({:.3} µs/contact, {:.4} µs/contact/iter)",
+                num_contacts,
+                solver_config.iterations,
+                us_total,
+                us_per_contact,
+                us_per_contact_iter,
+            );
+        }
+    }
+
     println!("============================================================");
     println!("             BENCHMARK SUITE COMPLETE                       ");
     println!("============================================================");

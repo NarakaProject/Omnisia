@@ -10,6 +10,7 @@ use super::contact::Contact;
 use super::narrowphase::{collide, NarrowphaseError};
 use super::rigid_body::{MassProperties, RigidBody};
 use super::shape::Shape;
+use super::solver::{solve_contacts as solve_contacts_fn, SolverConfig, SolverError};
 use super::transform::Transform;
 use crate::coord::world_pos_to_world_voxel;
 use crate::streaming::store::ChunkStore;
@@ -24,6 +25,8 @@ pub struct PhysicsWorldConfig {
     pub world_gravity: Vec3,
     /// Ukuran sel spatial hash broadphase (meter). Default 4.0m.
     pub broadphase_cell_size: f32,
+    /// Konfigurasi solver sequential impulse (Phase 9.5).
+    pub solver_config: SolverConfig,
 }
 
 impl Default for PhysicsWorldConfig {
@@ -32,6 +35,7 @@ impl Default for PhysicsWorldConfig {
             fixed_dt: 1.0 / 30.0,
             world_gravity: Vec3::new(0.0, -9.81, 0.0),
             broadphase_cell_size: 4.0,
+            solver_config: SolverConfig::default(),
         }
     }
 }
@@ -447,6 +451,18 @@ impl PhysicsWorld {
         }
 
         Ok(contacts)
+    }
+
+    /// Menyelesaikan batasan kontak menggunakan Sequential Impulse Contact Solver (Phase 9.5).
+    ///
+    /// INVARIAN ARSITEKTURAL:
+    /// - Hanya memperbarui `linear_velocity` dan `angular_velocity` badan kaku Dinamis.
+    /// - **TIDAK PERNAH** memutasi `position` atau `rotation` (integrasi posisi/rotasi ditunda ke Phase 9.6).
+    /// - Menggunakan `fixed_dt` dan `solver_config` dari konfigurasi dunia.
+    pub fn solve_contacts(&mut self, contacts: &[Contact]) -> Result<(), SolverError> {
+        let dt = self.config.fixed_dt;
+        let solver_config = self.config.solver_config;
+        solve_contacts_fn(&mut self.rigid_bodies, contacts, dt, &solver_config)
     }
 
     /// Mengosongkan seluruh badan, collider, dan broadphase dari dunia fisika.
