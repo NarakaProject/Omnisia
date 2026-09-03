@@ -224,8 +224,16 @@ impl ApplicationHandler for AppState {
                                     } else {
                                         "No"
                                     };
+                                    let active_gravity = if !self.player.state.grounded
+                                        && self.player.state.gliding
+                                    {
+                                        self.player.config.gravity
+                                            * self.player.config.glide_gravity_multiplier
+                                    } else {
+                                        self.player.config.gravity
+                                    };
                                     format!(
-                                        "Omnisia [8B: Player] | Feet: ({:.1}, {:.1}, {:.1})m | Vel: ({:.1}, {:.1}, {:.1})m/s ({:.1}m/s) | Grd: {} | Crouch: {} | Sprint: {} | Coll[q:{}, h:{}, unk:{}] | Tick: {:.1}µs | FPS: {:.1} ({:.2}ms) | CPU: {} | GPU: {} | Vis: {}/{} | Mem: {:.1}MB",
+                                        "Omnisia [8D: Player] | Feet: ({:.1}, {:.1}, {:.1})m | Vel: ({:.1}, {:.1}, {:.1})m/s ({:.1}m/s) | Grd: {} | Crouch: {} | Sprint: {} | Glide: {} | Grav: {:.2} | AirCtrl: {:.2} | Coll[q:{}, h:{}, unk:{}] | Tick: {:.1}µs | FPS: {:.1} ({:.2}ms) | CPU: {} | GPU: {} | Vis: {}/{} | Mem: {:.1}MB",
                                         self.player.state.position.x,
                                         self.player.state.position.y,
                                         self.player.state.position.z,
@@ -236,6 +244,9 @@ impl ApplicationHandler for AppState {
                                         self.player.state.grounded,
                                         crouch_str,
                                         self.player.state.sprinting,
+                                        self.player.state.gliding,
+                                        active_gravity,
+                                        self.player.config.glide_air_control,
                                         self.player.collision_queries_total,
                                         self.player.collision_hits_total,
                                         self.player.unknown_blocked_total,
@@ -250,7 +261,7 @@ impl ApplicationHandler for AppState {
                                     )
                                 } else {
                                     format!(
-                                        "Omnisia [8B: FreeFlight] | Pos: ({:.1}, {:.1}, {:.1})m | Chunk: ({}, {}, {}) | Vox: ({}, {}, {}) | Speed: {:.0}m/s [{}] | FPS: {:.1} ({:.2}ms) | CPU: {} | GPU: {} | Vis: {}/{} | Culled: {} | Struct[Evt:{}, Pend:{}, Agg:{}] | Mem: {:.1}MB",
+                                        "Omnisia [8D: FreeFlight] | Pos: ({:.1}, {:.1}, {:.1})m | Chunk: ({}, {}, {}) | Vox: ({}, {}, {}) | Speed: {:.0}m/s [{}] | FPS: {:.1} ({:.2}ms) | CPU: {} | GPU: {} | Vis: {}/{} | Culled: {} | Struct[Evt:{}, Pend:{}, Agg:{}] | Mem: {:.1}MB",
                                         self.camera.position.x,
                                         self.camera.position.y,
                                         self.camera.position.z,

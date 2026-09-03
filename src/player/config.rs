@@ -30,6 +30,15 @@ pub struct PlayerConfig {
     /// Apakah auto-step traversal aktif saat pemain grounded (default: true)
     pub auto_step_enabled: bool,
 
+    /// Apakah mekanik melayang terikat (bounded glide) saat airborne aktif (default: true)
+    pub glide_enabled: bool,
+    /// Pengali akselerasi gravitasi saat meluncur/glide (default: 0.35)
+    pub glide_gravity_multiplier: f32,
+    /// Batas maksimum kecepatan jatuh ke bawah saat glide dalam m/s (default: 2.5 m/s)
+    pub glide_max_downward_speed: f32,
+    /// Pengali kontrol pergerakan horizontal di udara saat glide (default: 0.85)
+    pub glide_air_control: f32,
+
     /// Interval waktu simulasi tetap dalam detik (default: 1/30 detik)
     pub fixed_timestep: f32,
     /// Batas maksimal substep per frame render untuk mencegah spiral of death (default: 5)
@@ -60,6 +69,11 @@ impl Default for PlayerConfig {
             ground_contact_epsilon: 0.05,
             step_height: 0.55,
             auto_step_enabled: true,
+
+            glide_enabled: true,
+            glide_gravity_multiplier: 0.35,
+            glide_max_downward_speed: 2.5,
+            glide_air_control: 0.85,
 
             fixed_timestep: 1.0 / 30.0,
             max_substeps_per_frame: 5,

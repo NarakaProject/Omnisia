@@ -19,6 +19,8 @@ pub struct PlayerState {
     pub crouching: bool,
     /// Status aktif berlari cepat (sprint)
     pub sprinting: bool,
+    /// Status aktif melayang terikat saat di udara (airborne glide)
+    pub gliding: bool,
     /// Status tertahan jongkok karena langit-langit rendah (ceiling clearance check)
     pub forced_crouch: bool,
 
@@ -39,6 +41,7 @@ impl Default for PlayerState {
             ground_distance: 0.0,
             crouching: false,
             sprinting: false,
+            gliding: false,
             forced_crouch: false,
             jump_requested: false,
             ticks_stationary: 0,
