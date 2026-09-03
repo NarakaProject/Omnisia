@@ -1757,6 +1757,113 @@ fn main() {
         }
     }
 
+    // ========================================================================
+    // BENCHMARK 45: Physics Island & Sleeping Management (Phase 9.8)
+    // 100, 500, 1,000 Bodies: All Active vs 90% Sleeping
+    // ========================================================================
+    {
+        use glam::{Mat3, Quat, Vec3};
+        use omnisia::physics::{
+            PhysicsWorld, PhysicsWorldConfig, RigidBody, RigidBodyId, SleepConfig,
+        };
+
+        println!("------------------------------------------------------------");
+        println!(" [BENCHMARK 45] Physics Island & Sleeping Management (9.8)  ");
+        println!("------------------------------------------------------------");
+
+        let body_counts = [100, 500, 1000];
+
+        for &count in &body_counts {
+            // Setup PhysicsWorld dengan 1 static floor dan N dynamic boxes
+            let mut world = PhysicsWorld::new(PhysicsWorldConfig {
+                world_gravity: Vec3::ZERO,
+                sleep_config: SleepConfig {
+                    linear_velocity_threshold: 0.05,
+                    angular_velocity_threshold: 0.05,
+                    sleep_duration: 0.5,
+                },
+                ..Default::default()
+            });
+
+            let floor_id = RigidBodyId(0);
+            let floor_body = RigidBody::new_static(floor_id, Vec3::ZERO, Quat::IDENTITY).unwrap();
+            world.add_rigid_body(floor_body, None).unwrap();
+
+            let inertia = Mat3::from_diagonal(Vec3::splat(1.0));
+            let mut dynamic_ids = Vec::with_capacity(count);
+
+            for i in 1..=count {
+                let id = RigidBodyId(i as u64);
+                let x = ((i - 1) % 25) as f32 * 2.0;
+                let z = ((i - 1) / 25) as f32 * 2.0;
+                let pos = Vec3::new(x, 1.0, z);
+                let mut body =
+                    RigidBody::new_dynamic(id, pos, Quat::IDENTITY, 1.0, inertia).unwrap();
+                body.set_linear_velocity(Vec3::new(1.0, 0.0, 0.0)).unwrap();
+                world.add_rigid_body(body, None).unwrap();
+                dynamic_ids.push(id);
+            }
+
+            // 1. Ukur Waktu Konstruksi Pulau (build_islands)
+            let islands_runs = 200;
+            let start_islands = Instant::now();
+            for _ in 0..islands_runs {
+                let islands = world.build_islands(&[]).unwrap();
+                std::hint::black_box(islands);
+            }
+            let us_island = start_islands.elapsed().as_micros() as f64 / islands_runs as f64;
+            let us_island_per_body = us_island / count as f64;
+
+            // 2. Ukur Waktu Full Step: All Active (100% aktif)
+            let step_runs = 100;
+            let start_active = Instant::now();
+            for _ in 0..step_runs {
+                let _ = world.step().unwrap();
+            }
+            let us_active = start_active.elapsed().as_micros() as f64 / step_runs as f64;
+            let us_active_per_body = us_active / count as f64;
+
+            // 3. Konfigurasikan 90% Sleeping, 10% Active
+            let sleep_count = (count * 9) / 10;
+            for &id in dynamic_ids.iter().take(sleep_count) {
+                if let Some(b) = world.get_rigid_body_mut(id) {
+                    b.put_to_sleep();
+                }
+            }
+
+            // 4. Ukur Waktu Full Step: 90% Sleeping
+            let start_sleeping = Instant::now();
+            for _ in 0..step_runs {
+                let _ = world.step().unwrap();
+            }
+            let us_sleeping = start_sleeping.elapsed().as_micros() as f64 / step_runs as f64;
+            let us_sleeping_per_body = us_sleeping / count as f64;
+
+            let speedup = if us_sleeping > 0.0 {
+                us_active / us_sleeping
+            } else {
+                1.0
+            };
+
+            println!(
+                "[BM45] Island Build ({} bodies): {:.3} µs/build ({:.4} µs/body)",
+                count, us_island, us_island_per_body
+            );
+            println!(
+                "[BM45] Step 100% Active ({} bodies): {:.3} µs/step ({:.4} µs/body)",
+                count, us_active, us_active_per_body
+            );
+            println!(
+                "[BM45] Step 90% Sleeping ({} bodies): {:.3} µs/step ({:.4} µs/body)",
+                count, us_sleeping, us_sleeping_per_body
+            );
+            println!(
+                "[BM45] Sleeping Speedup Factor ({} bodies): {:.2}x",
+                count, speedup
+            );
+        }
+    }
+
     println!("============================================================");
     println!("             BENCHMARK SUITE COMPLETE                       ");
     println!("============================================================");

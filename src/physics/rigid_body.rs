@@ -178,11 +178,22 @@ impl MassProperties {
     }
 }
 
+/// Status tidur badan kaku dinamis (Phase 9.8).
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SleepState {
+    /// Badan aktif berpartisipasi dalam simulasi solver dan integrasi.
+    #[default]
+    Awake = 0,
+    /// Badan telah settled/tenang dan simulasi dilewati (skipped).
+    Sleeping = 1,
+}
+
 /// Representasi model data fisik murni (Pure Rigid-Body Physical State Model) untuk Phase 9.2.
 ///
 /// INVARIAN ARSITEKTURAL:
 /// 1. **Pure Physical State**: Hanya memuat identitas, tipe badan, transform dunia (posisi, rotasi),
-///    kecepatan (linier, angular), dan properti massa (massa, inersia).
+///    kecepatan (linier, angular), properti massa, dan status tidur (Phase 9.8).
 /// 2. **Zero Voxel Ownership**: Tidak memiliki data voxel, array voxel, atau referensi chunk.
 /// 3. **Zero GPU Resources**: Tidak memiliki mesh, buffer GPU, atau dependensi rendering (`wgpu`).
 /// 4. **Zero Colliders in Phase 9.2**: Tidak memuat bentuk tabrakan (bola, kapsul, kotak, mesh).
@@ -200,6 +211,8 @@ pub struct RigidBody {
     linear_velocity: Vec3,
     angular_velocity: Vec3,
     mass_properties: MassProperties,
+    sleep_state: SleepState,
+    sleep_timer: f32,
 }
 
 impl RigidBody {
@@ -309,6 +322,8 @@ impl RigidBody {
             linear_velocity,
             angular_velocity,
             mass_properties,
+            sleep_state: SleepState::Awake,
+            sleep_timer: 0.0,
         })
     }
 
@@ -360,10 +375,14 @@ impl RigidBody {
         self.linear_velocity
     }
 
-    /// Mengubah kecepatan linier translasi (memvalidasi nilai finite)
+    /// Mengubah kecepatan linier translasi (memvalidasi nilai finite).
+    /// Jika badan sedang tidur dan diberikan kecepatan non-nol, badan otomatis bangun.
     pub fn set_linear_velocity(&mut self, vel: Vec3) -> Result<(), RigidBodyError> {
         if !vel.is_finite() {
             return Err(RigidBodyError::NonFiniteVelocity);
+        }
+        if self.sleep_state == SleepState::Sleeping && vel.length_squared() > 1e-8 {
+            self.wake();
         }
         self.linear_velocity = vel;
         Ok(())
@@ -375,10 +394,14 @@ impl RigidBody {
         self.angular_velocity
     }
 
-    /// Mengubah kecepatan sudut rotasi (memvalidasi nilai finite)
+    /// Mengubah kecepatan sudut rotasi (memvalidasi nilai finite).
+    /// Jika badan sedang tidur dan diberikan kecepatan sudut non-nol, badan otomatis bangun.
     pub fn set_angular_velocity(&mut self, vel: Vec3) -> Result<(), RigidBodyError> {
         if !vel.is_finite() {
             return Err(RigidBodyError::NonFiniteVelocity);
+        }
+        if self.sleep_state == SleepState::Sleeping && vel.length_squared() > 1e-8 {
+            self.wake();
         }
         self.angular_velocity = vel;
         Ok(())
@@ -435,6 +458,59 @@ impl RigidBody {
         Transform {
             position: self.position,
             rotation: self.rotation,
+        }
+    }
+
+    /// Status tidur badan kaku (selalu Awake untuk Static dan Kinematic).
+    #[inline(always)]
+    pub fn sleep_state(&self) -> SleepState {
+        self.sleep_state
+    }
+
+    /// Apakah badan kaku sedang dalam status tidur (Sleeping).
+    #[inline(always)]
+    pub fn is_sleeping(&self) -> bool {
+        self.sleep_state == SleepState::Sleeping
+    }
+
+    /// Apakah badan kaku sedang dalam status aktif (Awake).
+    #[inline(always)]
+    pub fn is_awake(&self) -> bool {
+        self.sleep_state == SleepState::Awake
+    }
+
+    /// Waktu akumulasi kondisi tenang berturut-turut (detik).
+    #[inline(always)]
+    pub fn sleep_timer(&self) -> f32 {
+        self.sleep_timer
+    }
+
+    /// Membangunkan badan kaku dinamis dan mereset timer tidur ke 0.0.
+    pub fn wake(&mut self) {
+        self.sleep_state = SleepState::Awake;
+        self.sleep_timer = 0.0;
+    }
+
+    /// Menidurkan badan dinamis: mengkanonikan kecepatan linier dan angular ke nol.
+    /// Tidak memodifikasi posisi atau rotasi. Badan statis dan kinematik tidak pernah tidur.
+    pub fn put_to_sleep(&mut self) {
+        if self.body_type == BodyType::Dynamic {
+            self.sleep_state = SleepState::Sleeping;
+            self.linear_velocity = Vec3::ZERO;
+            self.angular_velocity = Vec3::ZERO;
+        }
+    }
+
+    /// Memperbarui timer tidur berdasarkan status tenang (is_quiet).
+    pub fn update_sleep_timer(&mut self, dt: f32, is_quiet: bool) {
+        if self.body_type != BodyType::Dynamic {
+            return;
+        }
+        if is_quiet {
+            self.sleep_timer += dt;
+        } else {
+            self.sleep_timer = 0.0;
+            self.sleep_state = SleepState::Awake;
         }
     }
 }

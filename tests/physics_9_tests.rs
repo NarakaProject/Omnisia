@@ -6,10 +6,10 @@ use omnisia::physics::{
     integrate_rotation, integrate_transform, integrate_transforms, integrate_velocities,
     integrate_velocity, solve_contacts, world_pos_to_cell, Aabb, AabbError, BodyType, BoxShape,
     BroadphaseError, BroadphasePair, BroadphaseProxy, Capsule, CellCoord, Collider, ColliderId,
-    Contact, IntegrationConfig, IntegrationError, MassProperties, MaterialError, PhysicsMaterial,
-    PhysicsWorld, PhysicsWorldConfig, RigidBody, RigidBodyError, RigidBodyId, Shape, ShapeError,
-    SolverConfig, SolverError, SpatialHashBroadphase, Sphere, StaticTerrainQuery, TangentBasis,
-    Transform,
+    Contact, IntegrationConfig, IntegrationError, IslandState, MassProperties, MaterialError,
+    PhysicsIslandId, PhysicsMaterial, PhysicsWorld, PhysicsWorldConfig, RigidBody, RigidBodyError,
+    RigidBodyId, Shape, ShapeError, SleepConfig, SleepError, SleepState, SolverConfig, SolverError,
+    SpatialHashBroadphase, Sphere, StaticTerrainQuery, TangentBasis, Transform,
 };
 use omnisia::streaming::store::ChunkStore;
 use omnisia::voxel::VoxelBlock;
@@ -932,7 +932,7 @@ fn test_9_2_rigidbody_ids_are_distinct() {
 fn test_9_2_rigidbody_zero_voxel_ownership_and_zero_gpu_contract() {
     // Validasi struktural arsitektur bahwa RigidBody adalah pure value type
     // tanpa kepemilikan heap array voxel, alokasi dinamis, atau WGPU buffer handle
-    assert_eq!(std::mem::size_of::<RigidBody>(), 144);
+    assert_eq!(std::mem::size_of::<RigidBody>(), 160);
     assert!(!std::mem::needs_drop::<RigidBody>());
     assert!(!std::mem::needs_drop::<MassProperties>());
 }
@@ -6277,4 +6277,1821 @@ fn test_9_7_phase_9_6_integration_regression() {
         world.rigid_bodies.get(&body_id).unwrap().rotation(),
         rot_before
     );
+}
+
+// ============================================================================
+// PHASE 9.8: SLEEPING / ISLAND MANAGEMENT TESTS
+// ============================================================================
+
+// ----------------------------------------------------------------------------
+// 1. BASIC SLEEPING TESTS (1-8)
+// ----------------------------------------------------------------------------
+
+#[test]
+fn test_9_8_01_dynamic_body_initially_awake() {
+    let id = RigidBodyId(1001);
+    let inertia = Mat3::from_diagonal(Vec3::splat(1.0));
+    let body = RigidBody::new_dynamic(id, Vec3::ZERO, Quat::IDENTITY, 1.0, inertia).unwrap();
+
+    assert_eq!(body.sleep_state(), SleepState::Awake);
+    assert!(body.is_awake());
+    assert!(!body.is_sleeping());
+    assert_eq!(body.sleep_timer(), 0.0);
+}
+
+#[test]
+fn test_9_8_02_below_threshold_velocity_accumulates_timer() {
+    let id = RigidBodyId(1002);
+    let inertia = Mat3::from_diagonal(Vec3::splat(1.0));
+    let mut body = RigidBody::new_dynamic(id, Vec3::ZERO, Quat::IDENTITY, 1.0, inertia).unwrap();
+    let dt = 1.0 / 30.0;
+
+    body.update_sleep_timer(dt, true);
+    assert!((body.sleep_timer() - dt).abs() < 1e-6);
+    assert!(body.is_awake());
+
+    body.update_sleep_timer(dt, true);
+    assert!((body.sleep_timer() - 2.0 * dt).abs() < 1e-6);
+}
+
+#[test]
+fn test_9_8_03_timer_uses_fixed_dt() {
+    let id = RigidBodyId(1003);
+    let inertia = Mat3::from_diagonal(Vec3::splat(1.0));
+    let mut body = RigidBody::new_dynamic(id, Vec3::ZERO, Quat::IDENTITY, 1.0, inertia).unwrap();
+    let dt = 1.0 / 30.0;
+
+    for _ in 0..10 {
+        body.update_sleep_timer(dt, true);
+    }
+    assert!((body.sleep_timer() - 10.0 * dt).abs() < 1e-5);
+}
+
+#[test]
+fn test_9_8_04_body_does_not_sleep_before_duration() {
+    let id = RigidBodyId(1004);
+    let inertia = Mat3::from_diagonal(Vec3::splat(1.0));
+    let mut body = RigidBody::new_dynamic(id, Vec3::ZERO, Quat::IDENTITY, 1.0, inertia).unwrap();
+    let dt = 1.0 / 30.0;
+    let duration = 0.5; // 15 ticks
+
+    // 14 ticks = 0.466s < 0.5s
+    for _ in 0..14 {
+        body.update_sleep_timer(dt, true);
+    }
+    assert!(body.sleep_timer() < duration);
+    assert!(body.is_awake());
+}
+
+#[test]
+fn test_9_8_05_body_sleeps_after_duration() {
+    let mut world = PhysicsWorld::new(PhysicsWorldConfig {
+        world_gravity: Vec3::ZERO,
+        sleep_config: SleepConfig {
+            linear_velocity_threshold: 0.05,
+            angular_velocity_threshold: 0.05,
+            sleep_duration: 0.5,
+        },
+        ..Default::default()
+    });
+
+    let id = RigidBodyId(1005);
+    let inertia = Mat3::from_diagonal(Vec3::splat(1.0));
+    let body = RigidBody::new_dynamic(id, Vec3::new(0.0, 10.0, 0.0), Quat::IDENTITY, 1.0, inertia)
+        .unwrap();
+    world.add_rigid_body(body, None).unwrap();
+
+    // 15 ticks = 0.5s: body with 0 velocity should transition to sleeping on tick 15
+    for _ in 0..14 {
+        let _ = world.step().unwrap();
+        assert!(world.get_rigid_body(id).unwrap().is_awake());
+    }
+
+    let step_res = world.step().unwrap();
+    assert_eq!(step_res.sleeping_islands_count, 1);
+    assert!(world.get_rigid_body(id).unwrap().is_sleeping());
+}
+
+#[test]
+fn test_9_8_06_sleep_canonicalizes_linear_velocity() {
+    let id = RigidBodyId(1006);
+    let inertia = Mat3::from_diagonal(Vec3::splat(1.0));
+    let mut body = RigidBody::new_dynamic(id, Vec3::ZERO, Quat::IDENTITY, 1.0, inertia).unwrap();
+    body.set_linear_velocity(Vec3::new(0.01, 0.02, 0.01))
+        .unwrap();
+
+    body.put_to_sleep();
+    assert!(body.is_sleeping());
+    assert_eq!(body.linear_velocity(), Vec3::ZERO);
+}
+
+#[test]
+fn test_9_8_07_sleep_canonicalizes_angular_velocity() {
+    let id = RigidBodyId(1007);
+    let inertia = Mat3::from_diagonal(Vec3::splat(1.0));
+    let mut body = RigidBody::new_dynamic(id, Vec3::ZERO, Quat::IDENTITY, 1.0, inertia).unwrap();
+    body.set_angular_velocity(Vec3::new(0.01, 0.02, 0.01))
+        .unwrap();
+
+    body.put_to_sleep();
+    assert!(body.is_sleeping());
+    assert_eq!(body.angular_velocity(), Vec3::ZERO);
+}
+
+#[test]
+fn test_9_8_08_position_and_rotation_remain_unchanged_on_sleep() {
+    let id = RigidBodyId(1008);
+    let inertia = Mat3::from_diagonal(Vec3::splat(1.0));
+    let pos = Vec3::new(12.34, 56.78, 90.12);
+    let rot = Quat::from_rotation_y(0.785);
+    let mut body = RigidBody::new_dynamic(id, pos, rot, 1.0, inertia).unwrap();
+
+    let rot_before = body.rotation();
+    body.put_to_sleep();
+    assert_eq!(body.position(), pos);
+    assert_eq!(body.rotation(), rot_before);
+}
+
+// ----------------------------------------------------------------------------
+// 2. STATIC & KINEMATIC SEMANTICS (9-12)
+// ----------------------------------------------------------------------------
+
+#[test]
+fn test_9_8_09_static_never_sleeps() {
+    let id = RigidBodyId(1009);
+    let mut body = RigidBody::new_static(id, Vec3::ZERO, Quat::IDENTITY).unwrap();
+
+    assert!(body.is_awake());
+    assert!(!body.is_sleeping());
+    body.put_to_sleep();
+    assert!(body.is_awake());
+    assert!(!body.is_sleeping());
+}
+
+#[test]
+fn test_9_8_10_static_remains_immutable_during_sleep_steps() {
+    let mut world = PhysicsWorld::default();
+    let id = RigidBodyId(1010);
+    let pos = Vec3::new(0.0, 5.0, 0.0);
+    let body = RigidBody::new_static(id, pos, Quat::IDENTITY).unwrap();
+    world.add_rigid_body(body, None).unwrap();
+
+    for _ in 0..20 {
+        let _ = world.step().unwrap();
+    }
+
+    let b = world.get_rigid_body(id).unwrap();
+    assert_eq!(b.position(), pos);
+    assert_eq!(b.linear_velocity(), Vec3::ZERO);
+    assert!(b.is_awake());
+}
+
+#[test]
+fn test_9_8_11_kinematic_remains_awake() {
+    let id = RigidBodyId(1011);
+    let mut body = RigidBody::new_kinematic(
+        id,
+        Vec3::ZERO,
+        Quat::IDENTITY,
+        Vec3::new(1.0, 0.0, 0.0),
+        Vec3::ZERO,
+    )
+    .unwrap();
+
+    assert!(body.is_awake());
+    assert!(!body.is_sleeping());
+    body.put_to_sleep();
+    assert!(body.is_awake());
+    assert!(!body.is_sleeping());
+}
+
+#[test]
+fn test_9_8_12_kinematic_velocity_remains_externally_authoritative() {
+    let mut world = PhysicsWorld::default();
+    let id = RigidBodyId(1012);
+    let vel = Vec3::new(2.5, 0.0, -1.0);
+    let body = RigidBody::new_kinematic(id, Vec3::ZERO, Quat::IDENTITY, vel, Vec3::ZERO).unwrap();
+    world.add_rigid_body(body, None).unwrap();
+
+    for _ in 0..20 {
+        let _ = world.step().unwrap();
+    }
+
+    let b = world.get_rigid_body(id).unwrap();
+    assert_eq!(b.linear_velocity(), vel);
+    assert!(b.is_awake());
+}
+
+// ----------------------------------------------------------------------------
+// 3. ISLAND CONSTRUCTION & DETERMINISM (13-21)
+// ----------------------------------------------------------------------------
+
+#[test]
+fn test_9_8_13_isolated_dynamic_body_forms_one_island() {
+    let mut world = PhysicsWorld::default();
+    let id = RigidBodyId(1013);
+    let inertia = Mat3::from_diagonal(Vec3::splat(1.0));
+    world
+        .add_rigid_body(
+            RigidBody::new_dynamic(id, Vec3::ZERO, Quat::IDENTITY, 1.0, inertia).unwrap(),
+            None,
+        )
+        .unwrap();
+
+    let islands = world.build_islands(&[]).unwrap();
+    assert_eq!(islands.len(), 1);
+    assert_eq!(islands[0].id, PhysicsIslandId(1013));
+    assert_eq!(islands[0].bodies, vec![RigidBodyId(1013)]);
+    assert!(islands[0].contact_indices.is_empty());
+}
+
+#[test]
+fn test_9_8_14_dynamic_pair_forms_one_island() {
+    let mut world = PhysicsWorld::default();
+    let id1 = RigidBodyId(1014);
+    let id2 = RigidBodyId(1015);
+    let inertia = Mat3::from_diagonal(Vec3::splat(1.0));
+    world
+        .add_rigid_body(
+            RigidBody::new_dynamic(id1, Vec3::ZERO, Quat::IDENTITY, 1.0, inertia).unwrap(),
+            None,
+        )
+        .unwrap();
+    world
+        .add_rigid_body(
+            RigidBody::new_dynamic(id2, Vec3::X, Quat::IDENTITY, 1.0, inertia).unwrap(),
+            None,
+        )
+        .unwrap();
+
+    let contact = Contact::new(
+        ColliderId(1),
+        ColliderId(2),
+        id1,
+        id2,
+        Vec3::ZERO,
+        Vec3::X,
+        0.01,
+    );
+    let islands = world.build_islands(&[contact]).unwrap();
+
+    assert_eq!(islands.len(), 1);
+    assert_eq!(islands[0].id, PhysicsIslandId(1014));
+    assert_eq!(islands[0].bodies, vec![id1, id2]);
+    assert_eq!(islands[0].contact_indices, vec![0]);
+}
+
+#[test]
+fn test_9_8_15_dynamic_chain_forms_one_island() {
+    let mut world = PhysicsWorld::default();
+    let id1 = RigidBodyId(1016);
+    let id2 = RigidBodyId(1017);
+    let id3 = RigidBodyId(1018);
+    let inertia = Mat3::from_diagonal(Vec3::splat(1.0));
+    world
+        .add_rigid_body(
+            RigidBody::new_dynamic(id1, Vec3::ZERO, Quat::IDENTITY, 1.0, inertia).unwrap(),
+            None,
+        )
+        .unwrap();
+    world
+        .add_rigid_body(
+            RigidBody::new_dynamic(id2, Vec3::X, Quat::IDENTITY, 1.0, inertia).unwrap(),
+            None,
+        )
+        .unwrap();
+    world
+        .add_rigid_body(
+            RigidBody::new_dynamic(id3, Vec3::new(2.0, 0.0, 0.0), Quat::IDENTITY, 1.0, inertia)
+                .unwrap(),
+            None,
+        )
+        .unwrap();
+
+    let c1 = Contact::new(
+        ColliderId(1),
+        ColliderId(2),
+        id1,
+        id2,
+        Vec3::ZERO,
+        Vec3::X,
+        0.01,
+    );
+    let c2 = Contact::new(
+        ColliderId(2),
+        ColliderId(3),
+        id2,
+        id3,
+        Vec3::X,
+        Vec3::X,
+        0.01,
+    );
+    let islands = world.build_islands(&[c1, c2]).unwrap();
+
+    assert_eq!(islands.len(), 1);
+    assert_eq!(islands[0].id, PhysicsIslandId(1016));
+    assert_eq!(islands[0].bodies, vec![id1, id2, id3]);
+    assert_eq!(islands[0].contact_indices, vec![0, 1]);
+}
+
+#[test]
+fn test_9_8_16_multiple_disjoint_islands() {
+    let mut world = PhysicsWorld::default();
+    let id1 = RigidBodyId(1019);
+    let id2 = RigidBodyId(1020);
+    let id3 = RigidBodyId(1021);
+    let id4 = RigidBodyId(1022);
+    let inertia = Mat3::from_diagonal(Vec3::splat(1.0));
+    world
+        .add_rigid_body(
+            RigidBody::new_dynamic(id1, Vec3::ZERO, Quat::IDENTITY, 1.0, inertia).unwrap(),
+            None,
+        )
+        .unwrap();
+    world
+        .add_rigid_body(
+            RigidBody::new_dynamic(id2, Vec3::X, Quat::IDENTITY, 1.0, inertia).unwrap(),
+            None,
+        )
+        .unwrap();
+    world
+        .add_rigid_body(
+            RigidBody::new_dynamic(id3, Vec3::new(10.0, 0.0, 0.0), Quat::IDENTITY, 1.0, inertia)
+                .unwrap(),
+            None,
+        )
+        .unwrap();
+    world
+        .add_rigid_body(
+            RigidBody::new_dynamic(id4, Vec3::new(11.0, 0.0, 0.0), Quat::IDENTITY, 1.0, inertia)
+                .unwrap(),
+            None,
+        )
+        .unwrap();
+
+    let c1 = Contact::new(
+        ColliderId(1),
+        ColliderId(2),
+        id1,
+        id2,
+        Vec3::ZERO,
+        Vec3::X,
+        0.01,
+    );
+    let c2 = Contact::new(
+        ColliderId(3),
+        ColliderId(4),
+        id3,
+        id4,
+        Vec3::new(10.5, 0.0, 0.0),
+        Vec3::X,
+        0.01,
+    );
+    let islands = world.build_islands(&[c1, c2]).unwrap();
+
+    assert_eq!(islands.len(), 2);
+    assert_eq!(islands[0].id, PhysicsIslandId(1019));
+    assert_eq!(islands[0].bodies, vec![id1, id2]);
+    assert_eq!(islands[0].contact_indices, vec![0]);
+
+    assert_eq!(islands[1].id, PhysicsIslandId(1021));
+    assert_eq!(islands[1].bodies, vec![id3, id4]);
+    assert_eq!(islands[1].contact_indices, vec![1]);
+}
+
+#[test]
+fn test_9_8_17_multiple_contacts_deduplicate_connectivity() {
+    let mut world = PhysicsWorld::default();
+    let id1 = RigidBodyId(1023);
+    let id2 = RigidBodyId(1024);
+    let inertia = Mat3::from_diagonal(Vec3::splat(1.0));
+    world
+        .add_rigid_body(
+            RigidBody::new_dynamic(id1, Vec3::ZERO, Quat::IDENTITY, 1.0, inertia).unwrap(),
+            None,
+        )
+        .unwrap();
+    world
+        .add_rigid_body(
+            RigidBody::new_dynamic(id2, Vec3::X, Quat::IDENTITY, 1.0, inertia).unwrap(),
+            None,
+        )
+        .unwrap();
+
+    // 4 kontak antara pasangan yang sama
+    let mut contacts = Vec::new();
+    for i in 0..4 {
+        contacts.push(Contact::new(
+            ColliderId(1),
+            ColliderId(2),
+            id1,
+            id2,
+            Vec3::splat(i as f32),
+            Vec3::X,
+            0.01,
+        ));
+    }
+    let islands = world.build_islands(&contacts).unwrap();
+
+    assert_eq!(islands.len(), 1);
+    assert_eq!(islands[0].bodies, vec![id1, id2]);
+    assert_eq!(islands[0].contact_indices, vec![0, 1, 2, 3]);
+}
+
+#[test]
+fn test_9_8_18_deterministic_body_ordering() {
+    let mut world = PhysicsWorld::default();
+    let inertia = Mat3::from_diagonal(Vec3::splat(1.0));
+    // Masukkan badan dengan urutan acak
+    for &id in &[
+        RigidBodyId(1050),
+        RigidBodyId(1020),
+        RigidBodyId(1040),
+        RigidBodyId(1030),
+    ] {
+        world
+            .add_rigid_body(
+                RigidBody::new_dynamic(id, Vec3::ZERO, Quat::IDENTITY, 1.0, inertia).unwrap(),
+                None,
+            )
+            .unwrap();
+    }
+
+    // Hubungkan semuanya dalam satu pulau
+    let c1 = Contact::new(
+        ColliderId(1),
+        ColliderId(2),
+        RigidBodyId(1050),
+        RigidBodyId(1020),
+        Vec3::ZERO,
+        Vec3::X,
+        0.01,
+    );
+    let c2 = Contact::new(
+        ColliderId(2),
+        ColliderId(3),
+        RigidBodyId(1020),
+        RigidBodyId(1040),
+        Vec3::ZERO,
+        Vec3::X,
+        0.01,
+    );
+    let c3 = Contact::new(
+        ColliderId(3),
+        ColliderId(4),
+        RigidBodyId(1040),
+        RigidBodyId(1030),
+        Vec3::ZERO,
+        Vec3::X,
+        0.01,
+    );
+
+    let islands = world.build_islands(&[c1, c2, c3]).unwrap();
+    assert_eq!(islands.len(), 1);
+    assert_eq!(
+        islands[0].bodies,
+        vec![
+            RigidBodyId(1020),
+            RigidBodyId(1030),
+            RigidBodyId(1040),
+            RigidBodyId(1050)
+        ]
+    );
+}
+
+#[test]
+fn test_9_8_19_deterministic_island_id() {
+    let mut world = PhysicsWorld::default();
+    let inertia = Mat3::from_diagonal(Vec3::splat(1.0));
+    let id_a = RigidBodyId(1088);
+    let id_b = RigidBodyId(1042);
+    world
+        .add_rigid_body(
+            RigidBody::new_dynamic(id_a, Vec3::ZERO, Quat::IDENTITY, 1.0, inertia).unwrap(),
+            None,
+        )
+        .unwrap();
+    world
+        .add_rigid_body(
+            RigidBody::new_dynamic(id_b, Vec3::X, Quat::IDENTITY, 1.0, inertia).unwrap(),
+            None,
+        )
+        .unwrap();
+
+    let contact = Contact::new(
+        ColliderId(1),
+        ColliderId(2),
+        id_a,
+        id_b,
+        Vec3::ZERO,
+        Vec3::X,
+        0.01,
+    );
+    let islands = world.build_islands(&[contact]).unwrap();
+
+    assert_eq!(islands[0].id, PhysicsIslandId(1042));
+}
+
+#[test]
+fn test_9_8_20_deterministic_island_ordering() {
+    let mut world = PhysicsWorld::default();
+    let inertia = Mat3::from_diagonal(Vec3::splat(1.0));
+    for &id in &[RigidBodyId(1099), RigidBodyId(1011), RigidBodyId(1055)] {
+        world
+            .add_rigid_body(
+                RigidBody::new_dynamic(id, Vec3::ZERO, Quat::IDENTITY, 1.0, inertia).unwrap(),
+                None,
+            )
+            .unwrap();
+    }
+
+    let islands = world.build_islands(&[]).unwrap();
+    assert_eq!(islands.len(), 3);
+    assert_eq!(islands[0].id, PhysicsIslandId(1011));
+    assert_eq!(islands[1].id, PhysicsIslandId(1055));
+    assert_eq!(islands[2].id, PhysicsIslandId(1099));
+}
+
+#[test]
+fn test_9_8_21_repeated_graph_construction_identical_result() {
+    let mut world = PhysicsWorld::default();
+    let inertia = Mat3::from_diagonal(Vec3::splat(1.0));
+    let id1 = RigidBodyId(1001);
+    let id2 = RigidBodyId(1002);
+    let id3 = RigidBodyId(1003);
+    world
+        .add_rigid_body(
+            RigidBody::new_dynamic(id1, Vec3::ZERO, Quat::IDENTITY, 1.0, inertia).unwrap(),
+            None,
+        )
+        .unwrap();
+    world
+        .add_rigid_body(
+            RigidBody::new_dynamic(id2, Vec3::X, Quat::IDENTITY, 1.0, inertia).unwrap(),
+            None,
+        )
+        .unwrap();
+    world
+        .add_rigid_body(
+            RigidBody::new_dynamic(id3, Vec3::Y, Quat::IDENTITY, 1.0, inertia).unwrap(),
+            None,
+        )
+        .unwrap();
+
+    let c = Contact::new(
+        ColliderId(1),
+        ColliderId(2),
+        id1,
+        id2,
+        Vec3::ZERO,
+        Vec3::X,
+        0.01,
+    );
+    let islands1 = world.build_islands(&[c]).unwrap();
+    let islands2 = world.build_islands(&[c]).unwrap();
+
+    assert_eq!(islands1, islands2);
+}
+
+// ----------------------------------------------------------------------------
+// 4. STATIC ANCHOR & ISLAND SEPARATION (22-25)
+// ----------------------------------------------------------------------------
+
+#[test]
+fn test_9_8_22_dynamic_body_on_static_floor_can_sleep() {
+    let mut world = PhysicsWorld::new(PhysicsWorldConfig {
+        world_gravity: Vec3::ZERO,
+        sleep_config: SleepConfig {
+            linear_velocity_threshold: 0.05,
+            angular_velocity_threshold: 0.05,
+            sleep_duration: 0.5,
+        },
+        ..Default::default()
+    });
+
+    let floor_id = RigidBodyId(1);
+    let box_id = RigidBodyId(2);
+    world
+        .add_rigid_body(
+            RigidBody::new_static(floor_id, Vec3::ZERO, Quat::IDENTITY).unwrap(),
+            None,
+        )
+        .unwrap();
+    let inertia = Mat3::from_diagonal(Vec3::splat(1.0));
+    world
+        .add_rigid_body(
+            RigidBody::new_dynamic(
+                box_id,
+                Vec3::new(0.0, 1.0, 0.0),
+                Quat::IDENTITY,
+                1.0,
+                inertia,
+            )
+            .unwrap(),
+            None,
+        )
+        .unwrap();
+
+    for _ in 0..15 {
+        let _ = world.step().unwrap();
+    }
+    assert!(world.get_rigid_body(box_id).unwrap().is_sleeping());
+}
+
+#[test]
+fn test_9_8_23_two_separate_bodies_on_same_static_floor_remain_separate_islands() {
+    let mut world = PhysicsWorld::default();
+    let floor_id = RigidBodyId(100);
+    let box_a = RigidBodyId(101);
+    let box_b = RigidBodyId(102);
+
+    world
+        .add_rigid_body(
+            RigidBody::new_static(floor_id, Vec3::ZERO, Quat::IDENTITY).unwrap(),
+            None,
+        )
+        .unwrap();
+    let inertia = Mat3::from_diagonal(Vec3::splat(1.0));
+    world
+        .add_rigid_body(
+            RigidBody::new_dynamic(
+                box_a,
+                Vec3::new(-5.0, 1.0, 0.0),
+                Quat::IDENTITY,
+                1.0,
+                inertia,
+            )
+            .unwrap(),
+            None,
+        )
+        .unwrap();
+    world
+        .add_rigid_body(
+            RigidBody::new_dynamic(
+                box_b,
+                Vec3::new(5.0, 1.0, 0.0),
+                Quat::IDENTITY,
+                1.0,
+                inertia,
+            )
+            .unwrap(),
+            None,
+        )
+        .unwrap();
+
+    // Box A kontak dengan Floor; Box B kontak dengan Floor
+    let c_a = Contact::new(
+        ColliderId(1),
+        ColliderId(2),
+        floor_id,
+        box_a,
+        Vec3::new(-5.0, 0.0, 0.0),
+        Vec3::Y,
+        0.01,
+    );
+    let c_b = Contact::new(
+        ColliderId(1),
+        ColliderId(3),
+        floor_id,
+        box_b,
+        Vec3::new(5.0, 0.0, 0.0),
+        Vec3::Y,
+        0.01,
+    );
+
+    let islands = world.build_islands(&[c_a, c_b]).unwrap();
+    // LANTAI STATIS TIDAK BOLEH MENGGABUNGKAN BOX A DAN BOX B!
+    assert_eq!(islands.len(), 2);
+    assert_eq!(islands[0].bodies, vec![box_a]);
+    assert_eq!(islands[1].bodies, vec![box_b]);
+}
+
+#[test]
+fn test_9_8_24_static_floor_does_not_bridge_dynamic_islands() {
+    let mut world = PhysicsWorld::default();
+    let floor_id = RigidBodyId(999);
+    world
+        .add_rigid_body(
+            RigidBody::new_static(floor_id, Vec3::ZERO, Quat::IDENTITY).unwrap(),
+            None,
+        )
+        .unwrap();
+
+    let inertia = Mat3::from_diagonal(Vec3::splat(1.0));
+    let mut contacts = Vec::new();
+    for i in 1..=3 {
+        let b_id = RigidBodyId(i);
+        world
+            .add_rigid_body(
+                RigidBody::new_dynamic(
+                    b_id,
+                    Vec3::new(i as f32 * 5.0, 1.0, 0.0),
+                    Quat::IDENTITY,
+                    1.0,
+                    inertia,
+                )
+                .unwrap(),
+                None,
+            )
+            .unwrap();
+        contacts.push(Contact::new(
+            ColliderId(10),
+            ColliderId(i),
+            floor_id,
+            b_id,
+            Vec3::ZERO,
+            Vec3::Y,
+            0.01,
+        ));
+    }
+
+    let islands = world.build_islands(&contacts).unwrap();
+    assert_eq!(islands.len(), 3);
+}
+
+#[test]
+fn test_9_8_25_large_collection_on_static_ground_does_not_become_one_island() {
+    let mut world = PhysicsWorld::default();
+    let floor_id = RigidBodyId(1);
+    world
+        .add_rigid_body(
+            RigidBody::new_static(floor_id, Vec3::ZERO, Quat::IDENTITY).unwrap(),
+            None,
+        )
+        .unwrap();
+
+    let inertia = Mat3::from_diagonal(Vec3::splat(1.0));
+    let mut contacts = Vec::new();
+    for i in 2..=11 {
+        let b_id = RigidBodyId(i);
+        world
+            .add_rigid_body(
+                RigidBody::new_dynamic(
+                    b_id,
+                    Vec3::new(i as f32 * 3.0, 1.0, 0.0),
+                    Quat::IDENTITY,
+                    1.0,
+                    inertia,
+                )
+                .unwrap(),
+                None,
+            )
+            .unwrap();
+        contacts.push(Contact::new(
+            ColliderId(1),
+            ColliderId(i),
+            floor_id,
+            b_id,
+            Vec3::ZERO,
+            Vec3::Y,
+            0.01,
+        ));
+    }
+
+    let islands = world.build_islands(&contacts).unwrap();
+    assert_eq!(islands.len(), 10);
+    for island in &islands {
+        assert_eq!(island.bodies.len(), 1);
+    }
+}
+
+// ----------------------------------------------------------------------------
+// 5. STACKS & RESTING STABILITY (26-30)
+// ----------------------------------------------------------------------------
+
+#[test]
+fn test_9_8_26_two_body_dynamic_stack_sleeps() {
+    let mut world = PhysicsWorld::new(PhysicsWorldConfig {
+        world_gravity: Vec3::ZERO,
+        sleep_config: SleepConfig {
+            linear_velocity_threshold: 0.05,
+            angular_velocity_threshold: 0.05,
+            sleep_duration: 0.5,
+        },
+        ..Default::default()
+    });
+
+    let floor_id = RigidBodyId(1);
+    let box_bottom = RigidBodyId(2);
+    let box_top = RigidBodyId(3);
+    world
+        .add_rigid_body(
+            RigidBody::new_static(floor_id, Vec3::ZERO, Quat::IDENTITY).unwrap(),
+            None,
+        )
+        .unwrap();
+    let inertia = Mat3::from_diagonal(Vec3::splat(1.0));
+    world
+        .add_rigid_body(
+            RigidBody::new_dynamic(
+                box_bottom,
+                Vec3::new(0.0, 1.0, 0.0),
+                Quat::IDENTITY,
+                1.0,
+                inertia,
+            )
+            .unwrap(),
+            None,
+        )
+        .unwrap();
+    world
+        .add_rigid_body(
+            RigidBody::new_dynamic(
+                box_top,
+                Vec3::new(0.0, 2.0, 0.0),
+                Quat::IDENTITY,
+                1.0,
+                inertia,
+            )
+            .unwrap(),
+            None,
+        )
+        .unwrap();
+
+    for _ in 0..15 {
+        let _ = world.step().unwrap();
+    }
+    assert!(world.get_rigid_body(box_bottom).unwrap().is_sleeping());
+    assert!(world.get_rigid_body(box_top).unwrap().is_sleeping());
+}
+
+#[test]
+fn test_9_8_27_multi_body_dynamic_stack_sleeps() {
+    let mut world = PhysicsWorld::new(PhysicsWorldConfig {
+        world_gravity: Vec3::ZERO,
+        sleep_config: SleepConfig {
+            linear_velocity_threshold: 0.05,
+            angular_velocity_threshold: 0.05,
+            sleep_duration: 0.5,
+        },
+        ..Default::default()
+    });
+
+    let inertia = Mat3::from_diagonal(Vec3::splat(1.0));
+    for i in 1..=4 {
+        let b_id = RigidBodyId(i);
+        world
+            .add_rigid_body(
+                RigidBody::new_dynamic(
+                    b_id,
+                    Vec3::new(0.0, i as f32, 0.0),
+                    Quat::IDENTITY,
+                    1.0,
+                    inertia,
+                )
+                .unwrap(),
+                None,
+            )
+            .unwrap();
+    }
+
+    for _ in 0..15 {
+        let _ = world.step().unwrap();
+    }
+    for i in 1..=4 {
+        assert!(world.get_rigid_body(RigidBodyId(i)).unwrap().is_sleeping());
+    }
+}
+
+#[test]
+fn test_9_8_28_connected_stack_sleeps_coherently() {
+    let mut world = PhysicsWorld::default();
+    let b1 = RigidBodyId(1);
+    let b2 = RigidBodyId(2);
+    let inertia = Mat3::from_diagonal(Vec3::splat(1.0));
+    world
+        .add_rigid_body(
+            RigidBody::new_dynamic(b1, Vec3::ZERO, Quat::IDENTITY, 1.0, inertia).unwrap(),
+            None,
+        )
+        .unwrap();
+    world
+        .add_rigid_body(
+            RigidBody::new_dynamic(b2, Vec3::Y, Quat::IDENTITY, 1.0, inertia).unwrap(),
+            None,
+        )
+        .unwrap();
+
+    let c = Contact::new(
+        ColliderId(1),
+        ColliderId(2),
+        b1,
+        b2,
+        Vec3::ZERO,
+        Vec3::Y,
+        0.01,
+    );
+    let islands = world.build_islands(&[c]).unwrap();
+    assert_eq!(islands.len(), 1);
+    assert_eq!(islands[0].state, IslandState::Awake);
+
+    world.get_rigid_body_mut(b1).unwrap().put_to_sleep();
+    world.get_rigid_body_mut(b2).unwrap().put_to_sleep();
+
+    let islands = world.build_islands(&[c]).unwrap();
+    assert_eq!(islands[0].state, IslandState::Sleeping);
+}
+
+#[test]
+fn test_9_8_29_connected_stack_does_not_partially_sleep() {
+    let mut world = PhysicsWorld::new(PhysicsWorldConfig {
+        sleep_config: SleepConfig {
+            linear_velocity_threshold: 0.05,
+            angular_velocity_threshold: 0.05,
+            sleep_duration: 0.5,
+        },
+        ..Default::default()
+    });
+
+    let b1 = RigidBodyId(1);
+    let b2 = RigidBodyId(2);
+    let inertia = Mat3::from_diagonal(Vec3::splat(1.0));
+    world
+        .add_rigid_body(
+            RigidBody::new_dynamic(b1, Vec3::ZERO, Quat::IDENTITY, 1.0, inertia).unwrap(),
+            None,
+        )
+        .unwrap();
+    world
+        .add_rigid_body(
+            RigidBody::new_dynamic(b2, Vec3::Y, Quat::IDENTITY, 1.0, inertia).unwrap(),
+            None,
+        )
+        .unwrap();
+
+    // Box 1 diam, Box 2 bergerak cepat
+    world
+        .get_rigid_body_mut(b2)
+        .unwrap()
+        .set_linear_velocity(Vec3::new(10.0, 0.0, 0.0))
+        .unwrap();
+
+    // Langkah 15 kali, tapi Box 2 selalu bergerak
+    for _ in 0..15 {
+        world
+            .get_rigid_body_mut(b2)
+            .unwrap()
+            .set_linear_velocity(Vec3::new(10.0, 0.0, 0.0))
+            .unwrap();
+        let _ = world.step().unwrap();
+    }
+
+    // Karena b2 bergerak, b1 tidak boleh tidur sebagian!
+    // Keduanya harus tetap Awake jika terhubung dalam pulau yang sama
+    let contact = Contact::new(
+        ColliderId(1),
+        ColliderId(2),
+        b1,
+        b2,
+        Vec3::ZERO,
+        Vec3::Y,
+        0.01,
+    );
+    let islands = world.build_islands(&[contact]).unwrap();
+    assert_eq!(islands[0].state, IslandState::Awake);
+}
+
+#[test]
+fn test_9_8_30_resting_contact_on_static_floor_does_not_cause_wake_loop() {
+    let mut world = PhysicsWorld::new(PhysicsWorldConfig {
+        world_gravity: Vec3::ZERO,
+        sleep_config: SleepConfig {
+            linear_velocity_threshold: 0.05,
+            angular_velocity_threshold: 0.05,
+            sleep_duration: 0.5,
+        },
+        ..Default::default()
+    });
+
+    let floor_id = RigidBodyId(1);
+    let box_id = RigidBodyId(2);
+    world
+        .add_rigid_body(
+            RigidBody::new_static(floor_id, Vec3::ZERO, Quat::IDENTITY).unwrap(),
+            None,
+        )
+        .unwrap();
+    let inertia = Mat3::from_diagonal(Vec3::splat(1.0));
+    world
+        .add_rigid_body(
+            RigidBody::new_dynamic(
+                box_id,
+                Vec3::new(0.0, 1.0, 0.0),
+                Quat::IDENTITY,
+                1.0,
+                inertia,
+            )
+            .unwrap(),
+            None,
+        )
+        .unwrap();
+
+    // 15 tick hingga tidur
+    for _ in 0..15 {
+        let _ = world.step().unwrap();
+    }
+    assert!(world.get_rigid_body(box_id).unwrap().is_sleeping());
+
+    // 30 tick berikutnya harus TETAP tidur (tidak boleh ada wake loop karena kontak dengan lantai)
+    for _ in 0..30 {
+        let res = world.step().unwrap();
+        assert_eq!(res.sleeping_islands_count, 1);
+        assert!(world.get_rigid_body(box_id).unwrap().is_sleeping());
+    }
+}
+
+// ----------------------------------------------------------------------------
+// 6. WAKE PROPAGATION & DISTURBANCE (31-37)
+// ----------------------------------------------------------------------------
+
+#[test]
+fn test_9_8_31_explicit_wake_wakes_body() {
+    let id = RigidBodyId(1031);
+    let inertia = Mat3::from_diagonal(Vec3::splat(1.0));
+    let mut body = RigidBody::new_dynamic(id, Vec3::ZERO, Quat::IDENTITY, 1.0, inertia).unwrap();
+
+    body.put_to_sleep();
+    assert!(body.is_sleeping());
+
+    body.wake();
+    assert!(body.is_awake());
+    assert_eq!(body.sleep_timer(), 0.0);
+}
+
+#[test]
+fn test_9_8_32_wake_propagates_across_dynamic_chain() {
+    let mut world = PhysicsWorld::default();
+    let id1 = RigidBodyId(1);
+    let id2 = RigidBodyId(2);
+    let id3 = RigidBodyId(3);
+    let inertia = Mat3::from_diagonal(Vec3::splat(1.0));
+
+    world
+        .add_rigid_body(
+            RigidBody::new_dynamic(id1, Vec3::ZERO, Quat::IDENTITY, 1.0, inertia).unwrap(),
+            None,
+        )
+        .unwrap();
+    world
+        .add_rigid_body(
+            RigidBody::new_dynamic(id2, Vec3::X, Quat::IDENTITY, 1.0, inertia).unwrap(),
+            None,
+        )
+        .unwrap();
+    world
+        .add_rigid_body(
+            RigidBody::new_dynamic(id3, Vec3::new(2.0, 0.0, 0.0), Quat::IDENTITY, 1.0, inertia)
+                .unwrap(),
+            None,
+        )
+        .unwrap();
+
+    world.get_rigid_body_mut(id1).unwrap().put_to_sleep();
+    world.get_rigid_body_mut(id2).unwrap().put_to_sleep();
+    world.get_rigid_body_mut(id3).unwrap().put_to_sleep();
+
+    let c1 = Contact::new(
+        ColliderId(1),
+        ColliderId(2),
+        id1,
+        id2,
+        Vec3::ZERO,
+        Vec3::X,
+        0.01,
+    );
+    let c2 = Contact::new(
+        ColliderId(2),
+        ColliderId(3),
+        id2,
+        id3,
+        Vec3::X,
+        Vec3::X,
+        0.01,
+    );
+
+    // Bangunkan badan pertama
+    world.wake_body(id1);
+
+    let islands = world.build_islands(&[c1, c2]).unwrap();
+    assert_eq!(islands[0].state, IslandState::Awake);
+
+    world.wake_island(&islands[0]);
+    assert!(world.get_rigid_body(id1).unwrap().is_awake());
+    assert!(world.get_rigid_body(id2).unwrap().is_awake());
+    assert!(world.get_rigid_body(id3).unwrap().is_awake());
+}
+
+#[test]
+fn test_9_8_33_middle_body_wake_propagates_both_directions() {
+    let mut world = PhysicsWorld::default();
+    let id1 = RigidBodyId(1);
+    let id2 = RigidBodyId(2);
+    let id3 = RigidBodyId(3);
+    let inertia = Mat3::from_diagonal(Vec3::splat(1.0));
+
+    world
+        .add_rigid_body(
+            RigidBody::new_dynamic(id1, Vec3::ZERO, Quat::IDENTITY, 1.0, inertia).unwrap(),
+            None,
+        )
+        .unwrap();
+    world
+        .add_rigid_body(
+            RigidBody::new_dynamic(id2, Vec3::X, Quat::IDENTITY, 1.0, inertia).unwrap(),
+            None,
+        )
+        .unwrap();
+    world
+        .add_rigid_body(
+            RigidBody::new_dynamic(id3, Vec3::new(2.0, 0.0, 0.0), Quat::IDENTITY, 1.0, inertia)
+                .unwrap(),
+            None,
+        )
+        .unwrap();
+
+    world.get_rigid_body_mut(id1).unwrap().put_to_sleep();
+    world.get_rigid_body_mut(id2).unwrap().put_to_sleep();
+    world.get_rigid_body_mut(id3).unwrap().put_to_sleep();
+
+    let c1 = Contact::new(
+        ColliderId(1),
+        ColliderId(2),
+        id1,
+        id2,
+        Vec3::ZERO,
+        Vec3::X,
+        0.01,
+    );
+    let c2 = Contact::new(
+        ColliderId(2),
+        ColliderId(3),
+        id2,
+        id3,
+        Vec3::X,
+        Vec3::X,
+        0.01,
+    );
+
+    // Bangunkan badan tengah (id2)
+    world.wake_body(id2);
+
+    let islands = world.build_islands(&[c1, c2]).unwrap();
+    assert_eq!(islands[0].state, IslandState::Awake);
+
+    world.wake_island(&islands[0]);
+    assert!(world.get_rigid_body(id1).unwrap().is_awake());
+    assert!(world.get_rigid_body(id2).unwrap().is_awake());
+    assert!(world.get_rigid_body(id3).unwrap().is_awake());
+}
+
+#[test]
+fn test_9_8_34_active_dynamic_disturbance_wakes_sleeping_body() {
+    let mut world = PhysicsWorld::default();
+    let id_sleep = RigidBodyId(1);
+    let id_active = RigidBodyId(2);
+    let inertia = Mat3::from_diagonal(Vec3::splat(1.0));
+
+    world
+        .add_rigid_body(
+            RigidBody::new_dynamic(id_sleep, Vec3::ZERO, Quat::IDENTITY, 1.0, inertia).unwrap(),
+            None,
+        )
+        .unwrap();
+    world
+        .add_rigid_body(
+            RigidBody::new_dynamic(id_active, Vec3::X, Quat::IDENTITY, 1.0, inertia).unwrap(),
+            None,
+        )
+        .unwrap();
+
+    world.get_rigid_body_mut(id_sleep).unwrap().put_to_sleep();
+    world
+        .get_rigid_body_mut(id_active)
+        .unwrap()
+        .set_linear_velocity(Vec3::new(-5.0, 0.0, 0.0))
+        .unwrap();
+
+    // Buat collider agar broadphase dan narrowphase menghasilkan kontak
+    world
+        .create_collider(
+            id_sleep,
+            Shape::Box(BoxShape::new(Vec3::splat(0.5)).unwrap()),
+            Transform::IDENTITY,
+        )
+        .unwrap();
+    world
+        .create_collider(
+            id_active,
+            Shape::Box(BoxShape::new(Vec3::splat(0.5)).unwrap()),
+            Transform::IDENTITY,
+        )
+        .unwrap();
+
+    // Eksekusi step: active body menabrak sleeping body -> harus bangun!
+    let _ = world.step().unwrap();
+    assert!(world.get_rigid_body(id_sleep).unwrap().is_awake());
+    assert!(world.get_rigid_body(id_active).unwrap().is_awake());
+}
+
+#[test]
+fn test_9_8_35_sleeping_body_wakes_before_solver_response() {
+    let mut world = PhysicsWorld::default();
+    let id_sleep = RigidBodyId(1);
+    let id_active = RigidBodyId(2);
+    let inertia = Mat3::from_diagonal(Vec3::splat(1.0));
+
+    world
+        .add_rigid_body(
+            RigidBody::new_dynamic(id_sleep, Vec3::ZERO, Quat::IDENTITY, 1.0, inertia).unwrap(),
+            None,
+        )
+        .unwrap();
+    world
+        .add_rigid_body(
+            RigidBody::new_dynamic(
+                id_active,
+                Vec3::new(0.8, 0.0, 0.0),
+                Quat::IDENTITY,
+                1.0,
+                inertia,
+            )
+            .unwrap(),
+            None,
+        )
+        .unwrap();
+
+    world.get_rigid_body_mut(id_sleep).unwrap().put_to_sleep();
+    world
+        .get_rigid_body_mut(id_active)
+        .unwrap()
+        .set_linear_velocity(Vec3::new(-2.0, 0.0, 0.0))
+        .unwrap();
+
+    world
+        .create_collider(
+            id_sleep,
+            Shape::Sphere(Sphere::new(0.5).unwrap()),
+            Transform::IDENTITY,
+        )
+        .unwrap();
+    world
+        .create_collider(
+            id_active,
+            Shape::Sphere(Sphere::new(0.5).unwrap()),
+            Transform::IDENTITY,
+        )
+        .unwrap();
+
+    let step_res = world.step().unwrap();
+    assert!(step_res.active_contacts_solved > 0);
+    assert!(world.get_rigid_body(id_sleep).unwrap().is_awake());
+    // Badan yang tidur harus menerima impuls pemisahan normal
+    assert!(world.get_rigid_body(id_sleep).unwrap().linear_velocity().x < 0.0);
+}
+
+#[test]
+fn test_9_8_36_moving_kinematic_platform_wakes_contacted_sleeping_body() {
+    let mut world = PhysicsWorld::default();
+    let id_kin = RigidBodyId(1);
+    let id_sleep = RigidBodyId(2);
+    let inertia = Mat3::from_diagonal(Vec3::splat(1.0));
+
+    world
+        .add_rigid_body(
+            RigidBody::new_kinematic(
+                id_kin,
+                Vec3::ZERO,
+                Quat::IDENTITY,
+                Vec3::new(2.0, 0.0, 0.0),
+                Vec3::ZERO,
+            )
+            .unwrap(),
+            None,
+        )
+        .unwrap();
+    world
+        .add_rigid_body(
+            RigidBody::new_dynamic(
+                id_sleep,
+                Vec3::new(0.8, 0.0, 0.0),
+                Quat::IDENTITY,
+                1.0,
+                inertia,
+            )
+            .unwrap(),
+            None,
+        )
+        .unwrap();
+
+    world.get_rigid_body_mut(id_sleep).unwrap().put_to_sleep();
+
+    world
+        .create_collider(
+            id_kin,
+            Shape::Box(BoxShape::new(Vec3::splat(0.5)).unwrap()),
+            Transform::IDENTITY,
+        )
+        .unwrap();
+    world
+        .create_collider(
+            id_sleep,
+            Shape::Box(BoxShape::new(Vec3::splat(0.5)).unwrap()),
+            Transform::IDENTITY,
+        )
+        .unwrap();
+
+    let _ = world.step().unwrap();
+    assert!(world.get_rigid_body(id_sleep).unwrap().is_awake());
+    assert!(world.get_rigid_body(id_kin).unwrap().is_kinematic());
+}
+
+#[test]
+fn test_9_8_37_stationary_kinematic_contact_does_not_cause_perpetual_wake_loop() {
+    let mut world = PhysicsWorld::new(PhysicsWorldConfig {
+        world_gravity: Vec3::ZERO,
+        sleep_config: SleepConfig {
+            linear_velocity_threshold: 0.05,
+            angular_velocity_threshold: 0.05,
+            sleep_duration: 0.5,
+        },
+        ..Default::default()
+    });
+
+    let id_kin = RigidBodyId(1);
+    let id_dyn = RigidBodyId(2);
+    let inertia = Mat3::from_diagonal(Vec3::splat(1.0));
+
+    world
+        .add_rigid_body(
+            RigidBody::new_kinematic(id_kin, Vec3::ZERO, Quat::IDENTITY, Vec3::ZERO, Vec3::ZERO)
+                .unwrap(),
+            None,
+        )
+        .unwrap();
+    world
+        .add_rigid_body(
+            RigidBody::new_dynamic(
+                id_dyn,
+                Vec3::new(0.0, 1.0, 0.0),
+                Quat::IDENTITY,
+                1.0,
+                inertia,
+            )
+            .unwrap(),
+            None,
+        )
+        .unwrap();
+
+    world
+        .create_collider(
+            id_kin,
+            Shape::Box(BoxShape::new(Vec3::new(1.0, 0.5, 1.0)).unwrap()),
+            Transform::IDENTITY,
+        )
+        .unwrap();
+    world
+        .create_collider(
+            id_dyn,
+            Shape::Box(BoxShape::new(Vec3::splat(0.5)).unwrap()),
+            Transform::IDENTITY,
+        )
+        .unwrap();
+
+    // Jalankan 15 langkah sampai dyn tidur
+    for _ in 0..15 {
+        let _ = world.step().unwrap();
+    }
+    assert!(world.get_rigid_body(id_dyn).unwrap().is_sleeping());
+
+    // 20 langkah berikutnya platform tetap diam -> dyn tidak boleh bangun!
+    for _ in 0..20 {
+        let res = world.step().unwrap();
+        assert_eq!(res.sleeping_islands_count, 1);
+        assert!(world.get_rigid_body(id_dyn).unwrap().is_sleeping());
+    }
+}
+
+// ----------------------------------------------------------------------------
+// 7. ISLAND SPLIT (38-40)
+// ----------------------------------------------------------------------------
+
+#[test]
+fn test_9_8_38_contact_disappearance_splits_island() {
+    let mut world = PhysicsWorld::default();
+    let id1 = RigidBodyId(1);
+    let id2 = RigidBodyId(2);
+    let id3 = RigidBodyId(3);
+    let inertia = Mat3::from_diagonal(Vec3::splat(1.0));
+
+    world
+        .add_rigid_body(
+            RigidBody::new_dynamic(id1, Vec3::ZERO, Quat::IDENTITY, 1.0, inertia).unwrap(),
+            None,
+        )
+        .unwrap();
+    world
+        .add_rigid_body(
+            RigidBody::new_dynamic(id2, Vec3::X, Quat::IDENTITY, 1.0, inertia).unwrap(),
+            None,
+        )
+        .unwrap();
+    world
+        .add_rigid_body(
+            RigidBody::new_dynamic(id3, Vec3::new(2.0, 0.0, 0.0), Quat::IDENTITY, 1.0, inertia)
+                .unwrap(),
+            None,
+        )
+        .unwrap();
+
+    // Awal: 1-2 dan 2-3 tersambung (1 pulau)
+    let c1 = Contact::new(
+        ColliderId(1),
+        ColliderId(2),
+        id1,
+        id2,
+        Vec3::ZERO,
+        Vec3::X,
+        0.01,
+    );
+    let c2 = Contact::new(
+        ColliderId(2),
+        ColliderId(3),
+        id2,
+        id3,
+        Vec3::X,
+        Vec3::X,
+        0.01,
+    );
+    let islands_before = world.build_islands(&[c1, c2]).unwrap();
+    assert_eq!(islands_before.len(), 1);
+
+    // Kontak 2-3 putus: hanya tersisa c1 (terpisah menjadi 2 pulau: {1, 2} dan {3})
+    let islands_after = world.build_islands(&[c1]).unwrap();
+    assert_eq!(islands_after.len(), 2);
+    assert_eq!(islands_after[0].bodies, vec![id1, id2]);
+    assert_eq!(islands_after[1].bodies, vec![id3]);
+}
+
+#[test]
+fn test_9_8_39_split_islands_remain_independently_sleepable() {
+    let mut world = PhysicsWorld::default();
+    let id1 = RigidBodyId(1);
+    let id2 = RigidBodyId(2);
+    let id3 = RigidBodyId(3);
+    let inertia = Mat3::from_diagonal(Vec3::splat(1.0));
+
+    world
+        .add_rigid_body(
+            RigidBody::new_dynamic(id1, Vec3::ZERO, Quat::IDENTITY, 1.0, inertia).unwrap(),
+            None,
+        )
+        .unwrap();
+    world
+        .add_rigid_body(
+            RigidBody::new_dynamic(id2, Vec3::X, Quat::IDENTITY, 1.0, inertia).unwrap(),
+            None,
+        )
+        .unwrap();
+    world
+        .add_rigid_body(
+            RigidBody::new_dynamic(id3, Vec3::new(5.0, 0.0, 0.0), Quat::IDENTITY, 1.0, inertia)
+                .unwrap(),
+            None,
+        )
+        .unwrap();
+
+    // id1 dan id2 tidur, id3 aktif
+    world.get_rigid_body_mut(id1).unwrap().put_to_sleep();
+    world.get_rigid_body_mut(id2).unwrap().put_to_sleep();
+
+    let c = Contact::new(
+        ColliderId(1),
+        ColliderId(2),
+        id1,
+        id2,
+        Vec3::ZERO,
+        Vec3::X,
+        0.01,
+    );
+    let islands = world.build_islands(&[c]).unwrap();
+
+    assert_eq!(islands.len(), 2);
+    assert_eq!(islands[0].state, IslandState::Sleeping);
+    assert_eq!(islands[1].state, IslandState::Awake);
+}
+
+#[test]
+fn test_9_8_40_deterministic_split_membership() {
+    let mut world = PhysicsWorld::default();
+    let inertia = Mat3::from_diagonal(Vec3::splat(1.0));
+    for i in 1..=4 {
+        world
+            .add_rigid_body(
+                RigidBody::new_dynamic(
+                    RigidBodyId(i),
+                    Vec3::new(i as f32, 0.0, 0.0),
+                    Quat::IDENTITY,
+                    1.0,
+                    inertia,
+                )
+                .unwrap(),
+                None,
+            )
+            .unwrap();
+    }
+
+    // Sambungkan 1-2 dan 3-4
+    let c1 = Contact::new(
+        ColliderId(1),
+        ColliderId(2),
+        RigidBodyId(1),
+        RigidBodyId(2),
+        Vec3::ZERO,
+        Vec3::X,
+        0.01,
+    );
+    let c2 = Contact::new(
+        ColliderId(3),
+        ColliderId(4),
+        RigidBodyId(3),
+        RigidBodyId(4),
+        Vec3::ZERO,
+        Vec3::X,
+        0.01,
+    );
+
+    let islands = world.build_islands(&[c1, c2]).unwrap();
+    assert_eq!(islands.len(), 2);
+    assert_eq!(islands[0].id, PhysicsIslandId(1));
+    assert_eq!(islands[0].bodies, vec![RigidBodyId(1), RigidBodyId(2)]);
+    assert_eq!(islands[1].id, PhysicsIslandId(3));
+    assert_eq!(islands[1].bodies, vec![RigidBodyId(3), RigidBodyId(4)]);
+}
+
+// ----------------------------------------------------------------------------
+// 8. NUMERICAL SAFETY & EDGE CASES (41-44)
+// ----------------------------------------------------------------------------
+
+#[test]
+fn test_9_8_41_invalid_sleep_config_rejected() {
+    let cfg1 = SleepConfig {
+        linear_velocity_threshold: -0.1,
+        ..Default::default()
+    };
+    assert_eq!(cfg1.validate().unwrap_err(), SleepError::InvalidConfig);
+
+    let cfg2 = SleepConfig {
+        angular_velocity_threshold: f32::NAN,
+        ..Default::default()
+    };
+    assert_eq!(cfg2.validate().unwrap_err(), SleepError::InvalidConfig);
+
+    let cfg3 = SleepConfig {
+        sleep_duration: 0.0,
+        ..Default::default()
+    };
+    assert_eq!(cfg3.validate().unwrap_err(), SleepError::InvalidConfig);
+
+    let cfg4 = SleepConfig {
+        sleep_duration: -1.0,
+        ..Default::default()
+    };
+    assert_eq!(cfg4.validate().unwrap_err(), SleepError::InvalidConfig);
+}
+
+#[test]
+fn test_9_8_42_nan_velocity_does_not_cause_false_sleep() {
+    let mut world = PhysicsWorld::default();
+    let id = RigidBodyId(1);
+    let inertia = Mat3::from_diagonal(Vec3::splat(1.0));
+    world
+        .add_rigid_body(
+            RigidBody::new_dynamic(id, Vec3::ZERO, Quat::IDENTITY, 1.0, inertia).unwrap(),
+            None,
+        )
+        .unwrap();
+
+    // Update sleep timer dengan kondisi tidak tenang (false)
+    let b = world.get_rigid_body_mut(id).unwrap();
+    b.update_sleep_timer(1.0 / 30.0, false);
+    assert_eq!(b.sleep_timer(), 0.0);
+    assert!(b.is_awake());
+}
+
+#[test]
+fn test_9_8_43_inf_velocity_does_not_cause_false_sleep() {
+    let id = RigidBodyId(1);
+    let inertia = Mat3::from_diagonal(Vec3::splat(1.0));
+    let mut body = RigidBody::new_dynamic(id, Vec3::ZERO, Quat::IDENTITY, 1.0, inertia).unwrap();
+
+    body.update_sleep_timer(1.0 / 30.0, false);
+    assert_eq!(body.sleep_timer(), 0.0);
+    assert!(body.is_awake());
+}
+
+#[test]
+fn test_9_8_44_finite_zero_velocity_remains_valid() {
+    let id = RigidBodyId(1);
+    let inertia = Mat3::from_diagonal(Vec3::splat(1.0));
+    let mut body = RigidBody::new_dynamic(id, Vec3::ZERO, Quat::IDENTITY, 1.0, inertia).unwrap();
+
+    for _ in 0..15 {
+        body.update_sleep_timer(1.0 / 30.0, true);
+    }
+    assert!((body.sleep_timer() - 0.5).abs() < 1e-5);
+}
+
+// ----------------------------------------------------------------------------
+// 9. REGRESSIONS & BROADPHASE PRESERVATION (45-50)
+// ----------------------------------------------------------------------------
+
+#[test]
+fn test_9_8_45_phase_9_5_normal_solver_regression() {
+    let mut world = PhysicsWorld::default();
+    let b1 = RigidBodyId(1);
+    let b2 = RigidBodyId(2);
+    let inertia = Mat3::from_diagonal(Vec3::splat(1.0));
+
+    let mut body1 = RigidBody::new_dynamic(b1, Vec3::ZERO, Quat::IDENTITY, 1.0, inertia).unwrap();
+    let mut body2 = RigidBody::new_dynamic(b2, Vec3::X, Quat::IDENTITY, 1.0, inertia).unwrap();
+    body1.set_linear_velocity(Vec3::new(2.0, 0.0, 0.0)).unwrap();
+    body2
+        .set_linear_velocity(Vec3::new(-2.0, 0.0, 0.0))
+        .unwrap();
+
+    world.add_rigid_body(body1, None).unwrap();
+    world.add_rigid_body(body2, None).unwrap();
+
+    let contact = Contact::new(
+        ColliderId(1),
+        ColliderId(2),
+        b1,
+        b2,
+        Vec3::ZERO,
+        Vec3::X,
+        0.0,
+    );
+    world.solve_contacts(&[contact]).unwrap();
+
+    // Kecepatan normal harus terpecahkan secara memisahkan
+    let v1 = world.get_rigid_body(b1).unwrap().linear_velocity();
+    let v2 = world.get_rigid_body(b2).unwrap().linear_velocity();
+    assert!(v1.x <= 0.0);
+    assert!(v2.x >= 0.0);
+}
+
+#[test]
+fn test_9_8_46_phase_9_6_integration_regression() {
+    let mut world = PhysicsWorld::default();
+    let b1 = RigidBodyId(1);
+    let b2 = RigidBodyId(2);
+    let inertia = Mat3::from_diagonal(Vec3::splat(1.0));
+
+    let body1 = RigidBody::new_dynamic(b1, Vec3::new(0.0, 10.0, 0.0), Quat::IDENTITY, 1.0, inertia)
+        .unwrap();
+    let mut body2 =
+        RigidBody::new_dynamic(b2, Vec3::new(0.0, 20.0, 0.0), Quat::IDENTITY, 1.0, inertia)
+            .unwrap();
+    body2.put_to_sleep();
+
+    world.add_rigid_body(body1, None).unwrap();
+    world.add_rigid_body(body2, None).unwrap();
+
+    world.integrate().unwrap();
+
+    // Body 1 (Awake) menerima akselerasi gravitasi dan integrasi posisi
+    assert!(world.get_rigid_body(b1).unwrap().linear_velocity().y < 0.0);
+    assert!(world.get_rigid_body(b1).unwrap().position().y < 10.0);
+
+    // Body 2 (Sleeping) MELEWATI gravitasi dan integrasi posisi
+    assert_eq!(
+        world.get_rigid_body(b2).unwrap().linear_velocity(),
+        Vec3::ZERO
+    );
+    assert_eq!(world.get_rigid_body(b2).unwrap().position().y, 20.0);
+}
+
+#[test]
+fn test_9_8_47_phase_9_7_restitution_and_friction_regression() {
+    let mut world = PhysicsWorld::default();
+    let b1 = RigidBodyId(1);
+    let floor_id = RigidBodyId(2);
+    let inertia = Mat3::from_diagonal(Vec3::splat(1.0));
+
+    let mut body1 = RigidBody::new_dynamic(b1, Vec3::ZERO, Quat::IDENTITY, 1.0, inertia).unwrap();
+    body1
+        .set_linear_velocity(Vec3::new(3.0, -5.0, 0.0))
+        .unwrap();
+    let floor = RigidBody::new_static(floor_id, Vec3::ZERO, Quat::IDENTITY).unwrap();
+
+    world.add_rigid_body(body1, None).unwrap();
+    world.add_rigid_body(floor, None).unwrap();
+
+    let contact = Contact::new(
+        ColliderId(1),
+        ColliderId(2),
+        b1,
+        floor_id,
+        Vec3::ZERO,
+        Vec3::NEG_Y,
+        0.0,
+    )
+    .with_coefficients(0.5, 0.4)
+    .unwrap();
+
+    world.solve_contacts(&[contact]).unwrap();
+
+    let v1 = world.get_rigid_body(b1).unwrap().linear_velocity();
+    // Restitusi memantulkan Y ke atas
+    assert!(v1.y > 0.0);
+    // Friksi memperlambat translasi X
+    assert!(v1.x < 3.0);
+}
+
+#[test]
+fn test_9_8_48_broadphase_proxy_preserved_during_sleep() {
+    let mut world = PhysicsWorld::default();
+    let id = RigidBodyId(1);
+    let inertia = Mat3::from_diagonal(Vec3::splat(1.0));
+    let aabb = Aabb::try_new(Vec3::new(-1.0, -1.0, -1.0), Vec3::new(1.0, 1.0, 1.0)).unwrap();
+    let body = RigidBody::new_dynamic(id, Vec3::ZERO, Quat::IDENTITY, 1.0, inertia).unwrap();
+
+    world.add_rigid_body(body, Some(aabb)).unwrap();
+    world.get_rigid_body_mut(id).unwrap().put_to_sleep();
+
+    // Proksi broadphase harus TETAP ADA
+    assert!(world.broadphase.get_proxy(id).is_some());
+    assert_eq!(world.broadphase.get_proxy(id).unwrap().aabb, aabb);
+}
+
+#[test]
+fn test_9_8_49_sleeping_body_remains_collision_discoverable() {
+    let mut world = PhysicsWorld::default();
+    let id_sleep = RigidBodyId(1);
+    let id_active = RigidBodyId(2);
+    let inertia = Mat3::from_diagonal(Vec3::splat(1.0));
+
+    let body_sleep =
+        RigidBody::new_dynamic(id_sleep, Vec3::ZERO, Quat::IDENTITY, 1.0, inertia).unwrap();
+    let body_active = RigidBody::new_dynamic(
+        id_active,
+        Vec3::new(0.5, 0.0, 0.0),
+        Quat::IDENTITY,
+        1.0,
+        inertia,
+    )
+    .unwrap();
+
+    world.add_rigid_body(body_sleep, None).unwrap();
+    world.add_rigid_body(body_active, None).unwrap();
+
+    world
+        .create_collider(
+            id_sleep,
+            Shape::Sphere(Sphere::new(0.5).unwrap()),
+            Transform::IDENTITY,
+        )
+        .unwrap();
+    world
+        .create_collider(
+            id_active,
+            Shape::Sphere(Sphere::new(0.5).unwrap()),
+            Transform::IDENTITY,
+        )
+        .unwrap();
+
+    world.get_rigid_body_mut(id_sleep).unwrap().put_to_sleep();
+
+    // Broadphase candidate pairs harus tetap mendeteksi pasangan!
+    let pairs = world.generate_candidate_pairs();
+    assert_eq!(pairs.len(), 1);
+    assert_eq!(pairs[0].body_a, id_sleep);
+    assert_eq!(pairs[0].body_b, id_active);
+
+    // Narrowphase harus tetap menghasilkan kontak
+    let contacts = world.generate_contacts().unwrap();
+    assert_eq!(contacts.len(), 1);
+}
+
+#[test]
+fn test_9_8_50_external_velocity_mutation_wakes_sleeping_body() {
+    let id = RigidBodyId(1050);
+    let inertia = Mat3::from_diagonal(Vec3::splat(1.0));
+    let mut body = RigidBody::new_dynamic(id, Vec3::ZERO, Quat::IDENTITY, 1.0, inertia).unwrap();
+
+    body.put_to_sleep();
+    assert!(body.is_sleeping());
+
+    // Berikan kecepatan linier non-nol -> otomatis bangun!
+    body.set_linear_velocity(Vec3::new(1.0, 0.0, 0.0)).unwrap();
+    assert!(body.is_awake());
+    assert!(!body.is_sleeping());
+
+    body.put_to_sleep();
+    assert!(body.is_sleeping());
+
+    // Berikan kecepatan angular non-nol -> otomatis bangun!
+    body.set_angular_velocity(Vec3::new(0.0, 2.0, 0.0)).unwrap();
+    assert!(body.is_awake());
+    assert!(!body.is_sleeping());
 }

@@ -1,5 +1,5 @@
 use glam::{Quat, Vec3};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use super::aabb::Aabb;
 use super::broadphase::{
@@ -8,6 +8,9 @@ use super::broadphase::{
 use super::collider::{Collider, ColliderId};
 use super::contact::Contact;
 use super::integration::IntegrationError;
+use super::island::{
+    build_islands, IslandState, PhysicsIsland, PhysicsIslandId, SleepConfig, SleepError,
+};
 use super::narrowphase::{collide, NarrowphaseError};
 use super::rigid_body::{MassProperties, RigidBody};
 use super::shape::Shape;
@@ -28,6 +31,8 @@ pub struct PhysicsWorldConfig {
     pub broadphase_cell_size: f32,
     /// Konfigurasi solver sequential impulse (Phase 9.5).
     pub solver_config: SolverConfig,
+    /// Konfigurasi ambang batas dan durasi sleeping (Phase 9.8).
+    pub sleep_config: SleepConfig,
 }
 
 impl Default for PhysicsWorldConfig {
@@ -37,6 +42,7 @@ impl Default for PhysicsWorldConfig {
             world_gravity: Vec3::new(0.0, -9.81, 0.0),
             broadphase_cell_size: 4.0,
             solver_config: SolverConfig::default(),
+            sleep_config: SleepConfig::default(),
         }
     }
 }
@@ -511,16 +517,17 @@ impl PhysicsWorld {
         super::integration::integrate_velocities(&mut self.rigid_bodies, dt, gravity)
     }
 
-    /// Mengintegrasikan posisi dan rotasi seluruh badan kaku serta menyinkronkan broadphase (Phase 9.6).
+    /// Mengintegrasikan posisi dan rotasi seluruh badan kaku serta menyinkronkan broadphase (Phase 9.6 & 9.8).
+    /// Hanya menyinkronkan broadphase untuk badan non-static yang tidak sedang tidur (non-sleeping).
     pub fn integrate_transforms(&mut self) -> Result<(), IntegrationError> {
         let dt = self.config.fixed_dt;
         super::integration::integrate_transforms(&mut self.rigid_bodies, dt)?;
 
-        // Sinkronisasi proksi broadphase untuk badan yang bergerak (non-static)
+        // Sinkronisasi proksi broadphase untuk badan yang bergerak (non-static dan non-sleeping)
         let moved_body_ids: Vec<RigidBodyId> = self
             .rigid_bodies
             .iter()
-            .filter(|(_, b)| b.body_type() != BodyType::Static)
+            .filter(|(_, b)| b.body_type() != BodyType::Static && !b.is_sleeping())
             .map(|(id, _)| *id)
             .collect();
 
@@ -538,11 +545,295 @@ impl PhysicsWorld {
         Ok(())
     }
 
+    /// Membangun partisi Physics Island secara deterministik dari kumpulan kontak narrowphase saat ini.
+    pub fn build_islands(&self, contacts: &[Contact]) -> Result<Vec<PhysicsIsland>, SleepError> {
+        build_islands(&self.rigid_bodies, contacts)
+    }
+
+    /// Membangunkan badan kaku dinamis tertentu berdasarkan ID.
+    pub fn wake_body(&mut self, id: RigidBodyId) -> bool {
+        if let Some(body) = self.rigid_bodies.get_mut(&id) {
+            body.wake();
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Membangunkan seluruh badan kaku dinamis anggota suatu Physics Island.
+    pub fn wake_island(&mut self, island: &PhysicsIsland) {
+        for &body_id in &island.bodies {
+            if let Some(body) = self.rigid_bodies.get_mut(&body_id) {
+                body.wake();
+            }
+        }
+    }
+
+    /// Membangunkan seluruh badan kaku dinamis anggota Physics Island berdasarkan ID pulau.
+    pub fn wake_island_by_id(
+        &mut self,
+        island_id: PhysicsIslandId,
+        islands: &[PhysicsIsland],
+    ) -> bool {
+        if let Some(island) = islands.iter().find(|i| i.id == island_id) {
+            self.wake_island(island);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Mengeksekusi satu fixed step simulasi fisika terpadu (Phase 9.8 Pipeline Orchestration).
+    ///
+    /// TAHAPAN EKSEKUSI DETERMINISTIK:
+    /// 1. Deteksi kontak geometris narrowphase dari pasangan kandidat broadphase.
+    /// 2. Konstruksi graf kontak dan partisi ke dalam Physics Island deterministik.
+    /// 3. Deteksi pemicu gangguan (wake seeds) dan propagasi status bangun (wake) ke seluruh pulau.
+    /// 4. Penyelesaian batasan kontak aktif (Sequential Impulse Solver) HANYA untuk pulau aktif (Awake).
+    /// 5. Integrasi kecepatan (gravitasi) dan transform untuk badan aktif (Awake).
+    /// 6. Evaluasi kondisi tenang dan akumulasi timer tidur untuk badan dinamis aktif.
+    /// 7. Transisi atomik pulau yang seluruh anggotanya settled ke status tidur (Sleeping),
+    ///    dengan kanonisasi kecepatan residual ke nol (tanpa memodifikasi transform).
+    /// 8. Sinkronisasi broadphase selektif hanya untuk badan yang transform-nya bergerak.
+    pub fn step(&mut self) -> Result<StepResult, PhysicsStepError> {
+        // Validasi konfigurasi sleep
+        self.config.sleep_config.validate()?;
+
+        // Tahap 1: Generasi kontak narrowphase
+        let contacts = self.generate_contacts()?;
+
+        // Tahap 2: Konstruksi pulau fisika
+        let mut islands = self.build_islands(&contacts)?;
+
+        // Tahap 3: Deteksi pemicu gangguan bangun (wake seeds)
+        let mut bodies_to_wake: BTreeSet<RigidBodyId> = BTreeSet::new();
+        for contact in &contacts {
+            let body_a = match self.rigid_bodies.get(&contact.body_a) {
+                Some(b) => b,
+                None => continue,
+            };
+            let body_b = match self.rigid_bodies.get(&contact.body_b) {
+                Some(b) => b,
+                None => continue,
+            };
+
+            // Dynamic <-> Dynamic
+            if body_a.is_dynamic() && body_b.is_dynamic() {
+                if body_a.is_awake() && body_b.is_sleeping() {
+                    let v_sq = body_a.linear_velocity().length_squared()
+                        + body_a.angular_velocity().length_squared();
+                    if v_sq > 1e-6 || contact.penetration > 1e-4 {
+                        bodies_to_wake.insert(contact.body_b);
+                    }
+                } else if body_b.is_awake() && body_a.is_sleeping() {
+                    let v_sq = body_b.linear_velocity().length_squared()
+                        + body_b.angular_velocity().length_squared();
+                    if v_sq > 1e-6 || contact.penetration > 1e-4 {
+                        bodies_to_wake.insert(contact.body_a);
+                    }
+                }
+            }
+            // Kinematic <-> Dynamic Sleeping
+            else if body_a.is_kinematic() && body_b.is_dynamic() && body_b.is_sleeping() {
+                let v_sq = body_a.linear_velocity().length_squared()
+                    + body_a.angular_velocity().length_squared();
+                if v_sq > 1e-6 || contact.penetration > 1e-4 {
+                    bodies_to_wake.insert(contact.body_b);
+                }
+            } else if body_b.is_kinematic() && body_a.is_dynamic() && body_a.is_sleeping() {
+                let v_sq = body_b.linear_velocity().length_squared()
+                    + body_b.angular_velocity().length_squared();
+                if v_sq > 1e-6 || contact.penetration > 1e-4 {
+                    bodies_to_wake.insert(contact.body_a);
+                }
+            }
+        }
+
+        // Propagasi bangun ke seluruh anggota pulau terkait
+        for island in &mut islands {
+            let has_disturbance = island.bodies.iter().any(|id| bodies_to_wake.contains(id));
+            let has_awake = island
+                .bodies
+                .iter()
+                .any(|id| self.rigid_bodies.get(id).is_some_and(|b| b.is_awake()));
+            let has_sleeping = island
+                .bodies
+                .iter()
+                .any(|id| self.rigid_bodies.get(id).is_some_and(|b| b.is_sleeping()));
+
+            if has_disturbance || (has_awake && has_sleeping) {
+                island.state = IslandState::Awake;
+                for &id in &island.bodies {
+                    if let Some(b) = self.rigid_bodies.get_mut(&id) {
+                        if b.is_sleeping() {
+                            b.wake();
+                        }
+                    }
+                }
+            }
+        }
+
+        // Tahap 4: Integrasi kecepatan (gravitasi) untuk badan aktif (semi-implicit Euler)
+        self.integrate_velocities()?;
+
+        // Tahap 5: Penyelesaian batasan kontak aktif (Sequential Impulse Solver)
+        let mut active_contacts: Vec<Contact> = Vec::new();
+        let mut solved_contact_indices: BTreeSet<usize> = BTreeSet::new();
+        for island in &islands {
+            if island.state == IslandState::Awake {
+                for &contact_idx in &island.contact_indices {
+                    if solved_contact_indices.insert(contact_idx) {
+                        active_contacts.push(contacts[contact_idx]);
+                    }
+                }
+            }
+        }
+
+        if !active_contacts.is_empty() {
+            self.solve_contacts(&active_contacts)?;
+        }
+
+        // Tahap 6: Integrasi transform untuk badan aktif
+        self.integrate_transforms()?;
+
+        // Tahap 6 & 7: Evaluasi kondisi tenang dan transisi tidur pulau
+        let dt = self.config.fixed_dt;
+        let lin_thresh_sq = self.config.sleep_config.linear_velocity_threshold
+            * self.config.sleep_config.linear_velocity_threshold;
+        let ang_thresh_sq = self.config.sleep_config.angular_velocity_threshold
+            * self.config.sleep_config.angular_velocity_threshold;
+        let sleep_duration = self.config.sleep_config.sleep_duration;
+
+        // Perbarui timer tidur untuk badan dinamis yang aktif
+        for body in self.rigid_bodies.values_mut() {
+            if body.is_dynamic() && body.is_awake() {
+                let v_sq = body.linear_velocity().length_squared();
+                let w_sq = body.angular_velocity().length_squared();
+                let is_quiet = v_sq.is_finite()
+                    && w_sq.is_finite()
+                    && v_sq <= lin_thresh_sq
+                    && w_sq <= ang_thresh_sq;
+                body.update_sleep_timer(dt, is_quiet);
+            }
+        }
+
+        // Transisi atomik pulau yang seluruh anggotanya settled
+        for island in &mut islands {
+            if island.state == IslandState::Awake {
+                let all_eligible = island.bodies.iter().all(|id| {
+                    if let Some(b) = self.rigid_bodies.get(id) {
+                        let v_sq = b.linear_velocity().length_squared();
+                        let w_sq = b.angular_velocity().length_squared();
+                        let is_quiet = v_sq.is_finite()
+                            && w_sq.is_finite()
+                            && v_sq <= lin_thresh_sq
+                            && w_sq <= ang_thresh_sq;
+                        is_quiet && b.sleep_timer() >= sleep_duration
+                    } else {
+                        false
+                    }
+                });
+
+                if all_eligible && !island.bodies.is_empty() {
+                    island.state = IslandState::Sleeping;
+                    for &id in &island.bodies {
+                        if let Some(b) = self.rigid_bodies.get_mut(&id) {
+                            b.put_to_sleep();
+                        }
+                    }
+                }
+            }
+        }
+
+        let awake_islands_count = islands
+            .iter()
+            .filter(|i| i.state == IslandState::Awake)
+            .count();
+        let sleeping_islands_count = islands.len() - awake_islands_count;
+
+        Ok(StepResult {
+            contacts_generated: contacts.len(),
+            active_contacts_solved: active_contacts.len(),
+            islands_count: islands.len(),
+            awake_islands_count,
+            sleeping_islands_count,
+        })
+    }
+
     /// Mengosongkan seluruh badan, collider, dan broadphase dari dunia fisika.
     pub fn clear(&mut self) {
         self.rigid_bodies.clear();
         self.colliders.clear();
         self.broadphase.clear();
+    }
+}
+
+/// Hasil ringkasan langkah simulasi fisika (PhysicsWorld::step).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StepResult {
+    /// Jumlah total kontak geometris narrowphase yang terdeteksi
+    pub contacts_generated: usize,
+    /// Jumlah batasan kontak yang diselesaikan oleh solver (hanya pulau aktif)
+    pub active_contacts_solved: usize,
+    /// Jumlah total Physics Island yang dipartisi
+    pub islands_count: usize,
+    /// Jumlah pulau berstatus aktif (Awake)
+    pub awake_islands_count: usize,
+    /// Jumlah pulau berstatus tidur (Sleeping)
+    pub sleeping_islands_count: usize,
+}
+
+/// Kesalahan dalam eksekusi langkah simulasi fisika terpadu (PhysicsWorld::step).
+#[derive(Debug)]
+pub enum PhysicsStepError {
+    Narrowphase(NarrowphaseError),
+    Island(SleepError),
+    Solver(SolverError),
+    Integration(IntegrationError),
+    Broadphase(BroadphaseError),
+}
+
+impl std::fmt::Display for PhysicsStepError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Narrowphase(e) => write!(f, "Narrowphase error: {}", e),
+            Self::Island(e) => write!(f, "Island error: {}", e),
+            Self::Solver(e) => write!(f, "Solver error: {}", e),
+            Self::Integration(e) => write!(f, "Integration error: {}", e),
+            Self::Broadphase(e) => write!(f, "Broadphase error: {}", e),
+        }
+    }
+}
+
+impl std::error::Error for PhysicsStepError {}
+
+impl From<NarrowphaseError> for PhysicsStepError {
+    fn from(e: NarrowphaseError) -> Self {
+        Self::Narrowphase(e)
+    }
+}
+
+impl From<SleepError> for PhysicsStepError {
+    fn from(e: SleepError) -> Self {
+        Self::Island(e)
+    }
+}
+
+impl From<SolverError> for PhysicsStepError {
+    fn from(e: SolverError) -> Self {
+        Self::Solver(e)
+    }
+}
+
+impl From<IntegrationError> for PhysicsStepError {
+    fn from(e: IntegrationError) -> Self {
+        Self::Integration(e)
+    }
+}
+
+impl From<BroadphaseError> for PhysicsStepError {
+    fn from(e: BroadphaseError) -> Self {
+        Self::Broadphase(e)
     }
 }
 

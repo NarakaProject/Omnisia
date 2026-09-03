@@ -109,7 +109,7 @@ pub fn integrate_velocity(
         return Err(IntegrationError::InvalidGravity);
     }
 
-    if body.body_type() != BodyType::Dynamic {
+    if body.body_type() != BodyType::Dynamic || body.is_sleeping() {
         return Ok(());
     }
 
@@ -128,13 +128,13 @@ pub fn integrate_velocity(
 /// SEMANTIK TIPE BADAN:
 /// - Static: Posisi dan rotasi tidak pernah berubah.
 /// - Kinematic: Posisi dan rotasi maju berdasarkan kecepatan eksternal.
-/// - Dynamic: Posisi dan rotasi maju berdasarkan kecepatan hasil simulasi.
+/// - Dynamic: Posisi dan rotasi maju berdasarkan kecepatan hasil simulasi (dilewati jika Sleeping).
 pub fn integrate_transform(body: &mut RigidBody, dt: f32) -> Result<(), IntegrationError> {
     if !dt.is_finite() || dt <= 0.0 {
         return Err(IntegrationError::InvalidTimestep);
     }
 
-    if body.body_type() == BodyType::Static {
+    if body.body_type() == BodyType::Static || body.is_sleeping() {
         return Ok(());
     }
 
@@ -166,7 +166,7 @@ pub fn integrate_body(
         return Err(IntegrationError::InvalidGravity);
     }
 
-    if body.body_type() == BodyType::Static {
+    if body.body_type() == BodyType::Static || body.is_sleeping() {
         return Ok(());
     }
 
@@ -217,7 +217,7 @@ pub fn integrate_velocities(
 
     // PASS 1: Evaluasi & Validasi Seluruh Kandidat
     for body in bodies.values() {
-        if body.body_type() == BodyType::Dynamic {
+        if body.body_type() == BodyType::Dynamic && !body.is_sleeping() {
             let cand_v = body.linear_velocity() + gravity * dt;
             if !cand_v.is_finite() {
                 return Err(IntegrationError::NonFiniteState);
@@ -227,7 +227,7 @@ pub fn integrate_velocities(
 
     // PASS 2: Komit
     for body in bodies.values_mut() {
-        if body.body_type() == BodyType::Dynamic {
+        if body.body_type() == BodyType::Dynamic && !body.is_sleeping() {
             let cand_v = body.linear_velocity() + gravity * dt;
             let _ = body.set_linear_velocity(cand_v);
         }
@@ -247,7 +247,7 @@ pub fn integrate_transforms(
 
     // PASS 1: Evaluasi & Validasi Seluruh Kandidat Transform
     for body in bodies.values() {
-        if body.body_type() != BodyType::Static {
+        if body.body_type() != BodyType::Static && !body.is_sleeping() {
             let cand_pos = body.position() + body.linear_velocity() * dt;
             if !cand_pos.is_finite() {
                 return Err(IntegrationError::NonFiniteState);
@@ -258,7 +258,7 @@ pub fn integrate_transforms(
 
     // PASS 2: Komit
     for body in bodies.values_mut() {
-        if body.body_type() != BodyType::Static {
+        if body.body_type() != BodyType::Static && !body.is_sleeping() {
             let cand_pos = body.position() + body.linear_velocity() * dt;
             let cand_rot = integrate_rotation(body.rotation(), body.angular_velocity(), dt)?;
             let _ = body.set_position(cand_pos);
@@ -284,7 +284,7 @@ pub fn integrate_bodies(
 
     // PASS 1: Validasi seluruh kandidat sebelum mutasi apa pun
     for body in bodies.values() {
-        if body.body_type() != BodyType::Static {
+        if body.body_type() != BodyType::Static && !body.is_sleeping() {
             let cand_v = if body.body_type() == BodyType::Dynamic {
                 let v = body.linear_velocity() + gravity * dt;
                 if !v.is_finite() {
@@ -306,7 +306,7 @@ pub fn integrate_bodies(
 
     // PASS 2: Komit perubahan
     for body in bodies.values_mut() {
-        if body.body_type() != BodyType::Static {
+        if body.body_type() != BodyType::Static && !body.is_sleeping() {
             if body.body_type() == BodyType::Dynamic {
                 let cand_v = body.linear_velocity() + gravity * dt;
                 let _ = body.set_linear_velocity(cand_v);

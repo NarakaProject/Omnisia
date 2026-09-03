@@ -6,6 +6,7 @@ pub mod collision;
 pub mod config;
 pub mod contact;
 pub mod integration;
+pub mod island;
 pub mod narrowphase;
 pub mod reintegrate;
 pub mod rigid_body;
@@ -30,9 +31,12 @@ pub use integration::{
     integrate_transforms, integrate_velocities, integrate_velocity, IntegrationConfig,
     IntegrationError,
 };
+pub use island::{
+    build_islands, IslandState, PhysicsIsland, PhysicsIslandId, SleepConfig, SleepError,
+};
 pub use narrowphase::{collide, NarrowphaseError, CONTACT_EPSILON, NORMAL_EPSILON, SAT_EPSILON};
 pub use reintegrate::{ReintegrationError, ReintegrationPlan};
-pub use rigid_body::{MassProperties, RigidBody, RigidBodyError};
+pub use rigid_body::{MassProperties, RigidBody, RigidBodyError, SleepState};
 pub use runtime::PhysicsRuntime;
 pub use shape::{BoxShape, Capsule, Shape, ShapeError, Sphere};
 pub use solver::{
@@ -40,4 +44,6 @@ pub use solver::{
     TangentBasis, SOLVER_MASS_EPSILON,
 };
 pub use transform::Transform;
-pub use world::{PhysicsWorld, PhysicsWorldConfig, StaticTerrainQuery};
+pub use world::{
+    PhysicsStepError, PhysicsWorld, PhysicsWorldConfig, StaticTerrainQuery, StepResult,
+};
