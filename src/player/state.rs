@@ -1,5 +1,29 @@
 use glam::Vec3;
 
+/// State pergerakan otoritatif pemain dalam simulasi kinematik (Phase 8D.5)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MovementState {
+    #[default]
+    Grounded,
+    Sprinting,
+    JumpAscending,
+    JumpDescending,
+    Falling,
+    Gliding,
+}
+
+/// Asal muasal status di udara (airborne sequence origin) (Phase 8D.5)
+/// INVARIAN: Tidak dapat bermutasi di tengah urutan airborne kecuali saat mendarat atau external displacement.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AirborneOrigin {
+    #[default]
+    None,
+    NormalJump,
+    SprintJump,
+    FellFromEdge,
+    ExternalDisplacement,
+}
+
 /// State runtime lengkap pemain dalam simulasi kinematik
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PlayerState {
@@ -7,6 +31,11 @@ pub struct PlayerState {
     pub position: Vec3,
     /// Kecepatan linier pemain dalam meter per detik (m/s)
     pub velocity: Vec3,
+
+    /// State pergerakan tingkat tinggi otoritatif (Phase 8D.5)
+    pub movement_state: MovementState,
+    /// Asal muasal mengapa pemain berada di udara (Phase 8D.5)
+    pub airborne_origin: AirborneOrigin,
 
     /// Apakah pemain saat ini bertumpu stabil di atas tanah solid yang dimuat
     pub grounded: bool,
@@ -36,6 +65,8 @@ impl Default for PlayerState {
         Self {
             position: Vec3::ZERO,
             velocity: Vec3::ZERO,
+            movement_state: MovementState::Grounded,
+            airborne_origin: AirborneOrigin::None,
             grounded: false,
             ground_normal: Vec3::Y,
             ground_distance: 0.0,

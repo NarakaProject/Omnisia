@@ -232,21 +232,28 @@ impl ApplicationHandler for AppState {
                                     } else {
                                         self.player.config.gravity
                                     };
+                                    let glide_str = if self.player.state.gliding {
+                                        "Active"
+                                    } else if self.player.state.airborne_origin
+                                        == omnisia::player::AirborneOrigin::SprintJump
+                                    {
+                                        "Eligible"
+                                    } else {
+                                        "Ineligible"
+                                    };
                                     format!(
-                                        "Omnisia [8D: Player] | Feet: ({:.1}, {:.1}, {:.1})m | Vel: ({:.1}, {:.1}, {:.1})m/s ({:.1}m/s) | Grd: {} | Crouch: {} | Sprint: {} | Glide: {} | Grav: {:.2} | AirCtrl: {:.2} | Coll[q:{}, h:{}, unk:{}] | Tick: {:.1}µs | FPS: {:.1} ({:.2}ms) | CPU: {} | GPU: {} | Vis: {}/{} | Mem: {:.1}MB",
+                                        "Omnisia [8D: Player] | State: {:?} | Origin: {:?} | Glide: {} | HSpd: {:.2}m/s | VSpd: {:.2}m/s | Feet: ({:.1}, {:.1}, {:.1})m | Grd: {} | Crouch: {} | Grav: {:.2} | Coll[q:{}, h:{}, unk:{}] | Tick: {:.1}µs | FPS: {:.1} ({:.2}ms) | CPU: {} | GPU: {} | Vis: {}/{} | Mem: {:.1}MB",
+                                        self.player.state.movement_state,
+                                        self.player.state.airborne_origin,
+                                        glide_str,
+                                        self.player.state.horizontal_speed(),
+                                        self.player.state.velocity.y,
                                         self.player.state.position.x,
                                         self.player.state.position.y,
                                         self.player.state.position.z,
-                                        self.player.state.velocity.x,
-                                        self.player.state.velocity.y,
-                                        self.player.state.velocity.z,
-                                        self.player.state.speed(),
                                         self.player.state.grounded,
                                         crouch_str,
-                                        self.player.state.sprinting,
-                                        self.player.state.gliding,
                                         active_gravity,
-                                        self.player.config.glide_air_control,
                                         self.player.collision_queries_total,
                                         self.player.collision_hits_total,
                                         self.player.unknown_blocked_total,

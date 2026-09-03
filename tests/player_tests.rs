@@ -15,9 +15,9 @@ fn test_player_config_defaults_and_validation() {
     assert_eq!(config.standing_height, 1.8);
     assert_eq!(config.crouching_height, 1.2);
     assert_eq!(config.capsule_radius, 0.30);
-    assert_eq!(config.walk_speed, 5.0);
-    assert_eq!(config.sprint_speed, 9.0);
-    assert_eq!(config.crouch_speed, 2.5);
+    assert_eq!(config.walk_speed, 3.0);
+    assert_eq!(config.sprint_speed, 6.0);
+    assert_eq!(config.crouch_speed, 1.6);
     assert_eq!(config.jump_velocity, 6.0);
     assert_eq!(config.gravity, -9.81);
     assert_eq!(config.ground_contact_epsilon, 0.05);
@@ -319,7 +319,7 @@ fn test_diagonal_movement_normalized_not_sqrt2() {
     ));
     let intent_w = controller.compute_horizontal_intent(0.0);
     let speed_w = intent_w.length() * controller.current_target_speed();
-    assert!((speed_w - 5.0).abs() < 1e-4);
+    assert!((speed_w - 3.0).abs() < 1e-4);
 
     // Tekan W + D (diagonal)
     controller.set_input(PlayerInput::from_raw(
@@ -328,10 +328,10 @@ fn test_diagonal_movement_normalized_not_sqrt2() {
     let intent_diagonal = controller.compute_horizontal_intent(0.0);
     let speed_diagonal = intent_diagonal.length() * controller.current_target_speed();
 
-    // INVARIAN KANONIKAL: Kecepatan diagonal TIDAK BOLEH melebihi walk_speed (tidak ada speed exploit 5 * sqrt(2))!
+    // INVARIAN KANONIKAL: Kecepatan diagonal TIDAK BOLEH melebihi walk_speed (tidak ada speed exploit 3 * sqrt(2))!
     assert!(
-        (speed_diagonal - 5.0).abs() < 1e-4,
-        "Kecepatan diagonal harus dinormalisasi menjadi tepat 5.0 m/s, terukur: {}",
+        (speed_diagonal - 3.0).abs() < 1e-4,
+        "Kecepatan diagonal harus dinormalisasi menjadi tepat 3.0 m/s, terukur: {}",
         speed_diagonal
     );
     assert!(
@@ -368,8 +368,9 @@ fn test_sprint_speed_and_activation() {
     use omnisia::player::{PlayerController, PlayerInput};
 
     let mut controller = PlayerController::new(Vec3::ZERO);
+    controller.state.grounded = true;
 
-    // 1. Shift + W -> Sprint aktif (9.0 m/s)
+    // 1. Shift + W -> Sprint aktif (6.0 m/s)
     controller.set_input(PlayerInput::from_raw(
         true, false, false, false, true, false, false,
     ));
@@ -378,7 +379,7 @@ fn test_sprint_speed_and_activation() {
         controller.state.sprinting,
         "Shift + W harus mengaktifkan sprint!"
     );
-    assert_eq!(controller.current_target_speed(), 9.0);
+    assert_eq!(controller.current_target_speed(), 6.0);
 
     // 2. Shift saja tanpa WASD -> TIDAK boleh sprint (Section 13: Shift alone does not move)
     controller.set_input(PlayerInput::from_raw(
@@ -389,7 +390,7 @@ fn test_sprint_speed_and_activation() {
         !controller.state.sprinting,
         "Shift tanpa input gerak tidak boleh mengaktifkan sprint!"
     );
-    assert_eq!(controller.current_target_speed(), 5.0);
+    assert_eq!(controller.current_target_speed(), 3.0);
     assert_eq!(controller.compute_horizontal_intent(0.0), Vec3::ZERO);
 }
 
@@ -398,6 +399,7 @@ fn test_crouching_suppresses_sprint_precedence() {
     use omnisia::player::{PlayerController, PlayerInput};
 
     let mut controller = PlayerController::new(Vec3::ZERO);
+    controller.state.grounded = true;
 
     // Input menekan W + Shift (sprint) + C (crouch)
     controller.set_input(PlayerInput::from_raw(
@@ -414,8 +416,8 @@ fn test_crouching_suppresses_sprint_precedence() {
     );
     assert_eq!(
         controller.current_target_speed(),
-        2.5,
-        "Kecepatan target saat jongkok harus crouch_speed (2.5 m/s), bukan sprint!"
+        1.6,
+        "Kecepatan target saat jongkok harus crouch_speed (1.6 m/s), bukan sprint!"
     );
 }
 

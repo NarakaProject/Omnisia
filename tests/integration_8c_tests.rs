@@ -71,15 +71,15 @@ fn test_8c1_player_walking_across_static_terrain() {
         true, false, false, false, false, false, false,
     ));
 
-    // Jalankan 15 tick (0.5 detik) -> jarak teoritis: 5.0 m/s * 0.5s = 2.5m
+    // Jalankan 15 tick (0.5 detik) -> jarak teoritis: 3.0 m/s * 0.5s = 1.5m (posisi x: 2.0 + 1.5 = 3.5m)
     for _ in 0..15 {
         world.update_player(&mut player, 1.0 / 30.0, 0.0);
     }
 
     // INVARIAN 8C.1: Pemain harus maju secara stabil tanpa jatuh atau keluar dari ground
     assert!(
-        (player.state.position.x - 4.5).abs() < 0.05,
-        "Pemain harus menempuh ~2.5m di sumbu X, terukur x = {}",
+        (player.state.position.x - 3.5).abs() < 0.05,
+        "Pemain harus menempuh ~1.5m di sumbu X, terukur x = {}",
         player.state.position.x
     );
     assert_eq!(player.state.position.y, 0.5);

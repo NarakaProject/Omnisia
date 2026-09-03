@@ -2,7 +2,7 @@ use glam::{Vec2, Vec3};
 
 use super::collider::Capsule;
 use super::config::PlayerConfig;
-use super::state::PlayerState;
+use super::state::{AirborneOrigin, MovementState, PlayerState};
 
 /// Input pergerakan pemain yang disampel pada cadence render / window event
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
@@ -164,18 +164,27 @@ impl PlayerController {
         (forward_xz * input_dir.y + right_xz * input_dir.x).normalize_or_zero()
     }
 
-    /// Menghitung kecepatan target horizontal saat ini berdasarkan status jalan / lari / jongkok / glide
+    /// Menghitung kecepatan target horizontal saat ini berdasarkan status jalan / lari / jongkok / glide (Phase 8D.5)
     pub fn current_target_speed(&self) -> f32 {
         if self.state.crouching {
             // Prioritas: Crouching > Sprinting
             self.config.crouch_speed
         } else if self.state.gliding {
-            // AMENDMENT 14: Kecepatan horizontal terkendali di udara saat glide
+            // AMENDMENT 14 & 8D.5: Kecepatan horizontal terkendali di udara saat glide
             self.config.sprint_speed * self.config.glide_air_control
-        } else if self.input.sprint && self.input_has_movement() {
-            self.config.sprint_speed
+        } else if self.state.grounded {
+            if self.state.sprinting {
+                self.config.sprint_speed
+            } else {
+                self.config.walk_speed
+            }
         } else {
-            self.config.walk_speed
+            // Di udara (airborne) tanpa glide: pertahankan momentum sprint jika berasal dari SprintJump
+            if self.state.airborne_origin == AirborneOrigin::SprintJump {
+                self.config.sprint_speed
+            } else {
+                self.config.walk_speed
+            }
         }
     }
 
@@ -185,32 +194,61 @@ impl PlayerController {
         (self.input.move_forward.abs() > 0.01) || (self.input.move_right.abs() > 0.01)
     }
 
-    /// Memperbarui state sprinting dan gliding berdasarkan input, status grounded, dan prioritas (8B.4 & 8D.2).
+    /// Memperbarui state pergerakan otoritatif dan gliding berdasarkan input, fase gerak, dan asal airborne (8D.5).
     ///
     /// INVARIANTS:
-    /// - AMENDMENT 12: Grounded + Shift -> Sprint. Airborne + Shift -> Glide.
-    /// - AMENDMENT 13: Sprint != Glide. Glide tidak mengubah kecepatan Sprint di darat.
-    /// - Crouching > Sprinting: jika sedang jongkok di tanah, sprint otomatis ditekan/dibatalkan.
-    /// - Glide hanya aktif saat airborne, input.sprint ditekan, dan config.glide_enabled aktif.
-    /// - Melepas Shift atau mendarat di tanah seketika menonaktifkan gliding (AMENDMENT 15).
+    /// - AMENDMENT 1 (8D.5): SprintJump ditentukan secara kanonikal saat takeoff (grounded + jump + sprinting + input_has_movement).
+    /// - AMENDMENT 2 (8D.5): Airborne origin bersifat immutable selama berada di udara hingga mendarat.
+    /// - AMENDMENT 3 (8D.5): Jatuh dari tebing (FellFromEdge) dilarang menjadi Glide meski Shift ditekan.
+    /// - AMENDMENT 4 (8D.5): Glide hanya aktif pada fase descent (velocity.y <= 0.0). Selama ascent (velocity.y > 0.0) gravitasi normal, gliding = false.
+    /// - Crouching > Sprinting: jika jongkok di tanah, sprint otomatis dibatalkan.
+    /// - Melepas Shift atau mendarat di tanah seketika menonaktifkan gliding.
     pub fn update_movement_states(&mut self) {
-        if self.state.crouching {
-            self.state.sprinting = false;
+        if self.state.grounded {
             self.state.gliding = false;
-        } else if self.state.grounded {
-            self.state.gliding = false;
-            self.state.sprinting = self.input.sprint && self.input_has_movement();
-        } else if self.config.glide_enabled
-            && self.input.sprint
-            && (self.state.velocity.y.abs() > 0.01
-                || self.state.ground_distance > self.config.ground_contact_epsilon)
-        {
-            // Kondisi Airborne sesungguhnya (memiliki kecepatan vertikal atau jarak di atas tanah)
-            self.state.sprinting = false;
-            self.state.gliding = true;
+            self.state.airborne_origin = AirborneOrigin::None;
+            if self.state.crouching {
+                self.state.sprinting = false;
+                self.state.movement_state = MovementState::Grounded;
+            } else if self.input.sprint && self.input_has_movement() {
+                self.state.sprinting = true;
+                self.state.movement_state = MovementState::Sprinting;
+            } else {
+                self.state.sprinting = false;
+                self.state.movement_state = MovementState::Grounded;
+            }
         } else {
-            self.state.gliding = false;
-            self.state.sprinting = self.input.sprint && self.input_has_movement();
+            // Status Airborne:
+            self.state.sprinting = false;
+
+            if self.state.velocity.y > 0.0 {
+                // FASE ASCENT (Naik): Gliding DILARANG aktif! Gravitasi normal mutlak (Amendment 4 & 8).
+                self.state.gliding = false;
+                self.state.movement_state = match self.state.airborne_origin {
+                    AirborneOrigin::SprintJump | AirborneOrigin::NormalJump => {
+                        MovementState::JumpAscending
+                    }
+                    _ => MovementState::Falling,
+                };
+            } else {
+                // FASE DESCENT (Turun / Apex reached velocity.y <= 0.0):
+                // HANYA jika berasal dari SprintJump dan Shift ditekan!
+                if self.config.glide_enabled
+                    && self.state.airborne_origin == AirborneOrigin::SprintJump
+                    && self.input.sprint
+                {
+                    self.state.gliding = true;
+                    self.state.movement_state = MovementState::Gliding;
+                } else {
+                    self.state.gliding = false;
+                    self.state.movement_state = match self.state.airborne_origin {
+                        AirborneOrigin::SprintJump | AirborneOrigin::NormalJump => {
+                            MovementState::JumpDescending
+                        }
+                        _ => MovementState::Falling,
+                    };
+                }
+            }
         }
     }
 
@@ -254,22 +292,35 @@ impl PlayerController {
         }
     }
 
-    /// Mengeksekusi permintaan lompat jika memenuhi syarat grounded (8B.6).
+    /// Mengeksekusi permintaan lompat jika memenuhi syarat grounded (8B.6 & 8D.5).
     ///
-    /// INVARIANTS:
+    /// INVARIANTS (AMENDMENT 1 & 2 8D.5):
     /// - Lompat hanya diizinkan jika dan hanya jika `grounded == true`.
     /// - Single-consumption: `jump_requested` langsung dikonsumsi (reset ke false).
-    /// - Menahan tombol spasi tidak akan memicu lompatan berulang saat mendarat.
+    /// - SprintJump ditentukan secara kanonikal pada saat takeoff:
+    ///   `grounded && jump_pressed && sprinting && input_has_movement && !crouching`.
+    ///   Shift saja tanpa gerakan (diam) menghasilkan NormalJump.
+    /// - Menetapkan `airborne_origin` yang tidak berubah selama berada di udara.
     /// - Memberikan kecepatan vertikal ke atas: `velocity.y = config.jump_velocity` (6.0 m/s).
-    /// - Seketika mengubah status menjadi lepas landas: `grounded = false`.
+    /// - Seketika mengubah status menjadi `JumpAscending` dan `grounded = false`.
     pub fn try_execute_jump(&mut self) -> bool {
         if self.state.jump_requested {
             // Konsumsi permintaan lompat (single-consumption)
             self.state.jump_requested = false;
 
             if self.state.grounded {
+                let is_sprint_jump =
+                    self.state.sprinting && self.input_has_movement() && !self.state.crouching;
+                self.state.airborne_origin = if is_sprint_jump {
+                    AirborneOrigin::SprintJump
+                } else {
+                    AirborneOrigin::NormalJump
+                };
                 self.state.velocity.y = self.config.jump_velocity;
                 self.state.grounded = false;
+                self.state.sprinting = false;
+                self.state.gliding = false;
+                self.state.movement_state = MovementState::JumpAscending;
                 return true;
             }
         }
@@ -309,16 +360,23 @@ impl PlayerController {
                 if let Some(stable_feet) = initial_ground.stable_feet_y {
                     self.state.position.y = stable_feet;
                 }
+                self.state.movement_state = MovementState::Grounded;
+                self.state.airborne_origin = AirborneOrigin::None;
+            } else {
+                self.state.movement_state = MovementState::Falling;
+                if self.state.airborne_origin == AirborneOrigin::None {
+                    self.state.airborne_origin = AirborneOrigin::FellFromEdge;
+                }
             }
         }
 
         // 1. Evaluasi transisi jongkok dan clearance
         self.update_crouch_state_with_physics(store, physics);
 
-        // 2. Evaluasi status sprinting dan gliding (8B.4 & 8D.2)
+        // 2. Evaluasi status sprinting dan gliding (8B.4, 8D.2, 8D.5)
         self.update_movement_states();
 
-        // 3. Eksekusi lompat jika ada permintaan dan sedang grounded
+        // 3. Eksekusi lompat jika ada permintaan dan sedang grounded (8B.6 & 8D.5)
         self.try_execute_jump();
 
         // 4. Hitung niat gerak horizontal di bidang XZ
@@ -330,7 +388,7 @@ impl PlayerController {
         self.state.velocity.x = move_intent.x * target_speed;
         self.state.velocity.z = move_intent.z * target_speed;
 
-        // 5. Integrasi gravitasi kinematik jika di udara (airborne) (8B.8 & 8D.2)
+        // 5. Integrasi gravitasi kinematik jika di udara (airborne) (8B.8, 8D.2, 8D.5)
         if !self.state.grounded {
             let effective_gravity = if self.state.gliding {
                 self.config.gravity * self.config.glide_gravity_multiplier
@@ -339,7 +397,7 @@ impl PlayerController {
             };
             self.state.velocity.y += effective_gravity * fixed_dt;
 
-            // AMENDMENT 14: Batasi kecepatan jatuh maksimum saat glide (bounded terminal downward speed)
+            // AMENDMENT 14 & 8D.5: Batasi kecepatan jatuh maksimum saat glide (bounded terminal downward speed)
             if self.state.gliding {
                 self.state.velocity.y = self
                     .state
@@ -372,7 +430,7 @@ impl PlayerController {
         self.collision_hits_total += stats.hits_count;
         self.unknown_blocked_total += stats.unknown_hits_count;
 
-        // 7. Evaluasi tumpuan tanah (Ground Detection)
+        // 7. Evaluasi tumpuan tanah (Ground Detection) (8D.4 & 8D.5)
         let ground = super::collision::check_ground_support_with_physics(
             self.state.position,
             self.config.capsule_radius,
@@ -382,23 +440,38 @@ impl PlayerController {
         );
 
         if ground.grounded && self.state.velocity.y <= 0.0 {
+            // MENDARAT (Landing): Reset status airborne dan glide secara penuh (Amendment 6 8D.5)
             self.state.grounded = true;
-            self.state.gliding = false; // AMENDMENT 15: Glide terminates immediately on landing!
+            self.state.gliding = false;
+            self.state.airborne_origin = AirborneOrigin::None;
             if self.input.sprint && self.input_has_movement() && !self.state.crouching {
                 self.state.sprinting = true;
+                self.state.movement_state = MovementState::Sprinting;
+            } else {
+                self.state.sprinting = false;
+                self.state.movement_state = MovementState::Grounded;
             }
             self.state.ground_normal = ground.ground_normal;
             self.state.ground_distance = ground.ground_distance;
             self.state.velocity.y = 0.0;
             // HARD INVARIANT (Phase 8D.4): Selaraskan ke stable_feet_y, BUKAN ground_y_surface!
-            // Dilarang keras ada fallback ke ground_y_surface untuk posisi pemain.
             let stable_feet = ground
                 .stable_feet_y
                 .expect("Grounded result harus memiliki stable_feet_y valid!");
             self.state.position.y = stable_feet;
         } else {
+            let was_grounded = self.state.grounded;
             self.state.grounded = false;
             self.state.ground_distance = ground.ground_distance;
+
+            // Jika sebelumnya di tanah dan kehilangan tumpuan tanpa lompat (misal lari/jalan melewati tebing):
+            // Invarian Amendment 3: FellFromEdge tidak boleh ditimpa SprintJump atau menjadi Glide!
+            if was_grounded && self.state.airborne_origin == AirborneOrigin::None {
+                self.state.airborne_origin = AirborneOrigin::FellFromEdge;
+                self.state.movement_state = MovementState::Falling;
+                self.state.sprinting = false;
+                self.state.gliding = false;
+            }
         }
 
         // 8. Stationary ticks tracking

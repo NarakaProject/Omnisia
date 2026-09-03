@@ -10,11 +10,11 @@ pub struct PlayerConfig {
     /// Radius kapsul dan belahan bola dalam meter (default: 0.30m = 0.6 voxel)
     pub capsule_radius: f32,
 
-    /// Kecepatan jalan normal horizontal dalam m/s (default: 5.0 m/s)
+    /// Kecepatan jalan normal horizontal dalam m/s (default: 3.0 m/s)
     pub walk_speed: f32,
-    /// Kecepatan lari cepat (sprint) horizontal dalam m/s (default: 9.0 m/s)
+    /// Kecepatan lari cepat (sprint) horizontal dalam m/s (default: 6.0 m/s)
     pub sprint_speed: f32,
-    /// Kecepatan jalan saat jongkok horizontal dalam m/s (default: 2.5 m/s)
+    /// Kecepatan jalan saat jongkok horizontal dalam m/s (default: 1.6 m/s)
     pub crouch_speed: f32,
 
     /// Kecepatan vertikal awal saat lompat dalam m/s (default: 6.0 m/s)
@@ -59,9 +59,9 @@ impl Default for PlayerConfig {
             crouching_height: 1.2,
             capsule_radius: 0.30,
 
-            walk_speed: 5.0,
-            sprint_speed: 9.0,
-            crouch_speed: 2.5,
+            walk_speed: 3.0,
+            sprint_speed: 6.0,
+            crouch_speed: 1.6,
 
             jump_velocity: 6.0,
             gravity: -9.81,

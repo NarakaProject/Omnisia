@@ -441,6 +441,15 @@ pub fn check_capsule_clearance_with_physics(
                 let block_max = block_min + Vec3::splat(VOXEL_SIZE);
 
                 let coord = IVec3::new(vx, vy, vz);
+                if block_max.y <= feet_pos.y + 0.15 {
+                    let block_above = store.get_voxel_world_checked(IVec3::new(vx, vy + 1, vz));
+                    if let Some(b) = block_above {
+                        if b.is_air() {
+                            continue;
+                        }
+                    }
+                }
+
                 match store.get_voxel_world_checked(coord) {
                     Some(block) => {
                         if !block.is_air() && standing_capsule.intersects_aabb(block_min, block_max)
@@ -479,7 +488,7 @@ pub fn check_capsule_clearance_with_physics(
                         v.relative_coord.z as f32 * VOXEL_SIZE,
                     );
                 let box_max = box_min + Vec3::splat(VOXEL_SIZE);
-                if box_max.y <= feet_pos.y + 0.05 {
+                if box_max.y <= feet_pos.y + 0.15 {
                     continue;
                 }
 
@@ -1594,7 +1603,56 @@ pub fn try_step_up_with_physics(
     }
 
     let mut candidate_capsule = horiz_capsule;
-    candidate_capsule.base.y = candidate_y;
+    let radius = candidate_capsule.radius;
+    let stable_y = if let Some(voxel_coord) = hit_down.hit_voxel {
+        let box_min = Vec3::new(
+            voxel_coord.x as f32 * VOXEL_SIZE,
+            voxel_coord.y as f32 * VOXEL_SIZE,
+            voxel_coord.z as f32 * VOXEL_SIZE,
+        );
+        let box_max = box_min + Vec3::splat(VOXEL_SIZE);
+        let closest_x = candidate_capsule.base.x.clamp(box_min.x, box_max.x);
+        let closest_z = candidate_capsule.base.z.clamp(box_min.z, box_max.z);
+        let dx = candidate_capsule.base.x - closest_x;
+        let dz = candidate_capsule.base.z - closest_z;
+        let d_sq = dx * dx + dz * dz;
+        if d_sq <= radius * radius {
+            let y_offset = (radius * radius - d_sq).max(0.0).sqrt();
+            candidate_y - (radius - y_offset)
+        } else {
+            candidate_y
+        }
+    } else if let Some(physics) = physics {
+        let mut best_stable_y = candidate_y;
+        let mut min_d_sq = f32::MAX;
+        for body in physics.bodies.values() {
+            for v in &body.aggregate.voxels {
+                let box_min = body.position
+                    + Vec3::new(
+                        v.relative_coord.x as f32 * VOXEL_SIZE,
+                        v.relative_coord.y as f32 * VOXEL_SIZE,
+                        v.relative_coord.z as f32 * VOXEL_SIZE,
+                    );
+                let box_max = box_min + Vec3::splat(VOXEL_SIZE);
+                if (box_max.y - candidate_y).abs() < 1e-3 {
+                    let closest_x = candidate_capsule.base.x.clamp(box_min.x, box_max.x);
+                    let closest_z = candidate_capsule.base.z.clamp(box_min.z, box_max.z);
+                    let dx = candidate_capsule.base.x - closest_x;
+                    let dz = candidate_capsule.base.z - closest_z;
+                    let d_sq = dx * dx + dz * dz;
+                    if d_sq < min_d_sq && d_sq <= radius * radius {
+                        min_d_sq = d_sq;
+                        let y_offset = (radius * radius - d_sq).max(0.0).sqrt();
+                        best_stable_y = candidate_y - (radius - y_offset);
+                    }
+                }
+            }
+        }
+        best_stable_y
+    } else {
+        candidate_y
+    };
+    candidate_capsule.base.y = stable_y;
 
     // 5. TAHAP 5: Verifikasi ground support aktual dan clearance kapsul penuh pada posisi akhir
     step_stats.queries_count += 1;
@@ -1607,6 +1665,9 @@ pub fn try_step_up_with_physics(
     );
     if !ground_check.grounded {
         return None;
+    }
+    if let Some(stable) = ground_check.stable_feet_y {
+        candidate_capsule.base.y = stable;
     }
 
     step_stats.queries_count += 1;

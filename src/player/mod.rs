@@ -14,4 +14,4 @@ pub use collision::{
 };
 pub use config::PlayerConfig;
 pub use controller::{PlayerController, PlayerInput};
-pub use state::PlayerState;
+pub use state::{AirborneOrigin, MovementState, PlayerState};

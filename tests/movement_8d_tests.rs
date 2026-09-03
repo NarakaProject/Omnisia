@@ -3,7 +3,7 @@ use omnisia::chunk::Chunk;
 use omnisia::material::MaterialId;
 use omnisia::physics::{DynamicBodyState, PhysicsRuntime};
 use omnisia::player::collision::{check_ground_support, check_ground_support_with_physics};
-use omnisia::player::{PlayerController, PlayerInput};
+use omnisia::player::{AirborneOrigin, MovementState, PlayerController, PlayerInput};
 use omnisia::streaming::store::ChunkStore;
 use omnisia::structure::aggregate::DetachedAggregate;
 use omnisia::voxel::VoxelBlock;
@@ -77,7 +77,6 @@ fn test_8d1_one_voxel_ledge_auto_step_success() {
     };
     player.set_input(input);
 
-    // Berjalan menuju undakan selama 30 tick
     for _ in 0..30 {
         player.step_simulation(1.0 / 30.0, &store, 0.0);
     }
@@ -604,7 +603,8 @@ fn test_8d2_grounded_shift_is_sprint_not_glide() {
     assert!(player.state.grounded);
     assert!(player.state.sprinting);
     assert!(!player.state.gliding);
-    assert!((player.state.speed() - 9.0).abs() < 1e-2);
+    assert_eq!(player.state.movement_state, MovementState::Sprinting);
+    assert!((player.state.speed() - 6.0).abs() < 1e-2);
 }
 
 #[test]
@@ -621,16 +621,22 @@ fn test_8d2_glide_activation_airborne_only() {
     let mut player = PlayerController::new(Vec3::new(4.0, 0.5, 4.0));
     player.state.grounded = true;
 
-    // Lompat ke udara
+    // Sprint-Jump ke udara: Shift + W + Space
     let jump_input = PlayerInput {
+        move_forward: 1.0,
+        sprint: true,
         jump: true,
         ..Default::default()
     };
     player.set_input(jump_input);
     player.step_simulation(1.0 / 30.0, &store, 0.0);
     assert!(!player.state.grounded);
+    assert_eq!(player.state.airborne_origin, AirborneOrigin::SprintJump);
+    assert_eq!(player.state.movement_state, MovementState::JumpAscending);
+    // INVARIAN 8D.5: Selama ascent (vy > 0), gliding DILARANG aktif!
+    assert!(!player.state.gliding);
 
-    // Di udara tanpa Shift: bukan sprint dan bukan glide
+    // Di udara saat naik tanpa Shift: bukan sprint dan bukan glide
     let air_input_no_shift = PlayerInput {
         move_forward: 1.0,
         ..Default::default()
@@ -640,7 +646,16 @@ fn test_8d2_glide_activation_airborne_only() {
     assert!(!player.state.sprinting);
     assert!(!player.state.gliding);
 
-    // Di udara dengan Shift: Glide aktif, Sprint mati!
+    // Simulasi hingga mencapai apex (vy <= 0.0)
+    for _ in 0..25 {
+        player.step_simulation(1.0 / 30.0, &store, 0.0);
+    }
+    assert!(
+        player.state.velocity.y <= 0.0,
+        "Pemain harus sudah mencapai descent!"
+    );
+
+    // Di udara saat descent dengan Shift: Glide aktif, Sprint mati!
     let air_input_shift = PlayerInput {
         move_forward: 1.0,
         sprint: true,
@@ -654,8 +669,9 @@ fn test_8d2_glide_activation_airborne_only() {
     );
     assert!(
         player.state.gliding,
-        "Airborne + Shift harus mengaktifkan gliding!"
+        "SprintJump descent + Shift harus mengaktifkan gliding!"
     );
+    assert_eq!(player.state.movement_state, MovementState::Gliding);
 }
 
 #[test]
@@ -673,9 +689,11 @@ fn test_8d2_glide_deactivation_on_release_shift() {
         store.insert(chunk);
     }
 
-    // Spawn tinggi di udara
+    // Spawn tinggi di udara pada fase descent dari SprintJump
     let mut player = PlayerController::new(Vec3::new(4.0, 20.0, 4.0));
     player.state.grounded = false;
+    player.state.airborne_origin = AirborneOrigin::SprintJump;
+    player.state.velocity.y = -1.0;
 
     // Aktifkan glide
     let glide_input = PlayerInput {
@@ -686,6 +704,7 @@ fn test_8d2_glide_deactivation_on_release_shift() {
     player.set_input(glide_input);
     player.step_simulation(1.0 / 30.0, &store, 0.0);
     assert!(player.state.gliding);
+    assert_eq!(player.state.movement_state, MovementState::Gliding);
 
     // Lepas Shift
     let release_input = PlayerInput {
@@ -696,9 +715,10 @@ fn test_8d2_glide_deactivation_on_release_shift() {
     player.set_input(release_input);
     player.step_simulation(1.0 / 30.0, &store, 0.0);
 
-    // AMENDMENT 15: Melepas shift seketika mematikan glide
+    // AMENDMENT 15 / 8D.5: Melepas shift seketika mematikan glide
     assert!(!player.state.gliding);
     assert!(!player.state.sprinting);
+    assert_eq!(player.state.movement_state, MovementState::JumpDescending);
 }
 
 #[test]
@@ -712,9 +732,11 @@ fn test_8d2_glide_deactivation_on_landing() {
     }
     store.insert(chunk);
 
-    // Spawn dekat dengan tanah (y = 0.55m, permukaan tanah = 0.5m)
+    // Spawn dekat dengan tanah pada fase descent dari SprintJump (y = 0.55m, permukaan tanah = 0.5m)
     let mut player = PlayerController::new(Vec3::new(4.0, 0.55, 4.0));
     player.state.grounded = false;
+    player.state.airborne_origin = AirborneOrigin::SprintJump;
+    player.state.velocity.y = -1.0;
 
     let glide_input = PlayerInput {
         move_forward: 1.0,
@@ -731,14 +753,16 @@ fn test_8d2_glide_deactivation_on_landing() {
         }
     }
 
-    // AMENDMENT 15: Begitu mendarat, glide seketika mati
+    // AMENDMENT 15 / 8D.5: Begitu mendarat, glide seketika mati dan origin di-reset
     assert!(player.state.grounded);
     assert!(
         !player.state.gliding,
         "Glide harus mati seketika saat menyentuh tanah!"
     );
+    assert_eq!(player.state.airborne_origin, AirborneOrigin::None);
     // Karena Shift + W masih ditekan dan sudah di tanah, sekarang menjadi Sprint
     assert!(player.state.sprinting);
+    assert_eq!(player.state.movement_state, MovementState::Sprinting);
 }
 
 #[test]
@@ -757,9 +781,11 @@ fn test_8d2_glide_fall_speed_bounded() {
         store.insert(chunk);
     }
 
-    // Spawn sangat tinggi di y = 100.0m
+    // Spawn sangat tinggi di y = 100.0m pada fase descent dari SprintJump
     let mut player_glide = PlayerController::new(Vec3::new(4.0, 100.0, 4.0));
     player_glide.state.grounded = false;
+    player_glide.state.airborne_origin = AirborneOrigin::SprintJump;
+    player_glide.state.velocity.y = -1.0;
 
     let glide_input = PlayerInput {
         move_forward: 1.0,
@@ -810,6 +836,7 @@ fn test_8d2_glide_no_upward_acceleration() {
 
     let mut player = PlayerController::new(Vec3::new(4.0, 50.0, 4.0));
     player.state.grounded = false;
+    player.state.airborne_origin = AirborneOrigin::SprintJump;
     player.state.velocity = Vec3::new(0.0, -1.0, 0.0);
 
     let glide_input = PlayerInput {
@@ -851,6 +878,8 @@ fn test_8d2_glide_disabled_config() {
 
     let mut player = PlayerController::with_config(Vec3::new(4.0, 50.0, 4.0), config);
     player.state.grounded = false;
+    player.state.airborne_origin = AirborneOrigin::SprintJump;
+    player.state.velocity.y = -1.0;
 
     let input = PlayerInput {
         move_forward: 1.0,
@@ -863,7 +892,7 @@ fn test_8d2_glide_disabled_config() {
     // Dengan glide_enabled = false, glide tidak boleh aktif
     assert!(!player.state.gliding);
     // Dan akselerasi gravitasi penuh diterapkan
-    let expected_vy = -9.81 * (1.0 / 30.0);
+    let expected_vy = -1.0 - 9.81 * (1.0 / 30.0);
     assert!((player.state.velocity.y - expected_vy).abs() < 1e-3);
 }
 
@@ -884,6 +913,8 @@ fn test_8d2_glide_air_control_bounded() {
 
     let mut player = PlayerController::new(Vec3::new(4.0, 50.0, 4.0));
     player.state.grounded = false;
+    player.state.airborne_origin = AirborneOrigin::SprintJump;
+    player.state.velocity.y = -1.0;
 
     let input = PlayerInput {
         move_forward: 1.0,
@@ -893,11 +924,11 @@ fn test_8d2_glide_air_control_bounded() {
     player.set_input(input);
     player.step_simulation(1.0 / 30.0, &store, 0.0);
 
-    // Target kecepatan horizontal glide = sprint_speed (9.0) * glide_air_control (0.85) = 7.65 m/s
+    // Target kecepatan horizontal glide = sprint_speed (6.0) * glide_air_control (0.85) = 5.10 m/s
     let horiz_speed = (player.state.velocity.x * player.state.velocity.x
         + player.state.velocity.z * player.state.velocity.z)
         .sqrt();
-    let expected_glide_speed = 9.0 * 0.85;
+    let expected_glide_speed = 6.0 * 0.85;
     assert!(
         (horiz_speed - expected_glide_speed).abs() < 1e-2,
         "Kecepatan horizontal glide harus terikat air control! Didapat: {}, Ekspektasi: {}",
@@ -2037,4 +2068,646 @@ fn test_8d4_repeated_ticks_on_stable_ground_remain_stable() {
         assert!(player.state.grounded, "Tick {} harus tetap grounded!", tick);
         assert_eq!(player.state.position.y, 0.5);
     }
+}
+
+// ============================================================================
+// PHASE 8D.5 — MOVEMENT STATE MACHINE & SPRINT-JUMP GLIDE REGRESSION SUITE
+// ============================================================================
+
+#[test]
+fn test_8d5_walk_speed_calibration() {
+    let mut store = ChunkStore::new();
+    setup_flat_ground(&mut store, IVec3::ZERO);
+
+    let mut player = PlayerController::new(Vec3::new(4.0, 0.5, 4.0));
+    player.state.grounded = true;
+
+    // Input W murni (tanpa Shift, tanpa Ctrl)
+    let input = PlayerInput {
+        move_forward: 1.0,
+        ..Default::default()
+    };
+    player.set_input(input);
+    player.step_simulation(1.0 / 30.0, &store, 0.0);
+
+    assert!(player.state.grounded);
+    assert_eq!(player.state.movement_state, MovementState::Grounded);
+    assert!(!player.state.sprinting);
+    assert!(!player.state.gliding);
+    assert_eq!(player.state.airborne_origin, AirborneOrigin::None);
+    assert!(
+        (player.state.speed() - 3.0).abs() < 1e-2,
+        "Walk speed harus tepat ~3.0 m/s, terukur: {}",
+        player.state.speed()
+    );
+}
+
+#[test]
+fn test_8d5_sprint_speed_calibration() {
+    let mut store = ChunkStore::new();
+    setup_flat_ground(&mut store, IVec3::ZERO);
+
+    let mut player = PlayerController::new(Vec3::new(4.0, 0.5, 4.0));
+    player.state.grounded = true;
+
+    // Input Shift + W
+    let input = PlayerInput {
+        move_forward: 1.0,
+        sprint: true,
+        ..Default::default()
+    };
+    player.set_input(input);
+    player.step_simulation(1.0 / 30.0, &store, 0.0);
+
+    assert!(player.state.grounded);
+    assert_eq!(player.state.movement_state, MovementState::Sprinting);
+    assert!(player.state.sprinting);
+    assert!(!player.state.gliding);
+    assert_eq!(player.state.airborne_origin, AirborneOrigin::None);
+    assert!(
+        (player.state.speed() - 6.0).abs() < 1e-2,
+        "Sprint speed harus tepat ~6.0 m/s, terukur: {}",
+        player.state.speed()
+    );
+}
+
+#[test]
+fn test_8d5_crouch_speed_calibration() {
+    let mut store = ChunkStore::new();
+    setup_flat_ground(&mut store, IVec3::ZERO);
+
+    let mut player = PlayerController::new(Vec3::new(4.0, 0.5, 4.0));
+    player.state.grounded = true;
+    player.state.crouching = true;
+
+    // Input Ctrl + W
+    let input = PlayerInput {
+        move_forward: 1.0,
+        crouch: true,
+        ..Default::default()
+    };
+    player.set_input(input);
+    player.step_simulation(1.0 / 30.0, &store, 0.0);
+
+    assert!(player.state.grounded);
+    assert_eq!(player.state.movement_state, MovementState::Grounded);
+    assert!(!player.state.sprinting);
+    assert!(!player.state.gliding);
+    assert!(
+        (player.state.speed() - 1.6).abs() < 1e-2,
+        "Crouch speed harus tepat ~1.6 m/s, terukur: {}",
+        player.state.speed()
+    );
+}
+
+#[test]
+fn test_8d5_diagonal_speed_normalization() {
+    let mut store = ChunkStore::new();
+    setup_flat_ground(&mut store, IVec3::ZERO);
+
+    let mut player = PlayerController::new(Vec3::new(4.0, 0.5, 4.0));
+    player.state.grounded = true;
+
+    // W + D (diagonal maju kanan)
+    let input = PlayerInput {
+        move_forward: 1.0,
+        move_right: 1.0,
+        ..Default::default()
+    };
+    player.set_input(input);
+    player.step_simulation(1.0 / 30.0, &store, 0.0);
+
+    assert!(
+        (player.state.speed() - 3.0).abs() < 1e-2,
+        "Kecepatan diagonal tidak boleh melebihi walk_speed (3.0 m/s)! Terukur: {}",
+        player.state.speed()
+    );
+
+    // Shift + W + D (diagonal sprint maju kanan)
+    let input_sprint = PlayerInput {
+        move_forward: 1.0,
+        move_right: 1.0,
+        sprint: true,
+        ..Default::default()
+    };
+    player.set_input(input_sprint);
+    player.step_simulation(1.0 / 30.0, &store, 0.0);
+
+    assert!(
+        (player.state.speed() - 6.0).abs() < 1e-2,
+        "Kecepatan diagonal sprint tidak boleh melebihi sprint_speed (6.0 m/s)! Terukur: {}",
+        player.state.speed()
+    );
+}
+
+#[test]
+fn test_8d5_stationary_shift_space_is_normal_jump() {
+    let mut store = ChunkStore::new();
+    setup_flat_ground(&mut store, IVec3::ZERO);
+
+    let mut player = PlayerController::new(Vec3::new(4.0, 0.5, 4.0));
+    player.state.grounded = true;
+
+    // Shift + Space tanpa WASD (berdiri diam)
+    let input = PlayerInput {
+        sprint: true,
+        jump: true,
+        ..Default::default()
+    };
+    player.set_input(input);
+    player.step_simulation(1.0 / 30.0, &store, 0.0);
+
+    assert!(!player.state.grounded);
+    // MANDATORY AMENDMENT 1: Diam di tempat + Shift + Space WAJIB menghasilkan NormalJump!
+    assert_eq!(
+        player.state.airborne_origin,
+        AirborneOrigin::NormalJump,
+        "Diam + Shift + Space harus NormalJump!"
+    );
+    assert_eq!(player.state.movement_state, MovementState::JumpAscending);
+    assert!(!player.state.gliding);
+    assert!(!player.state.sprinting);
+}
+
+#[test]
+fn test_8d5_walk_space_is_normal_jump() {
+    let mut store = ChunkStore::new();
+    setup_flat_ground(&mut store, IVec3::ZERO);
+
+    let mut player = PlayerController::new(Vec3::new(4.0, 0.5, 4.0));
+    player.state.grounded = true;
+
+    // W + Space (berjalan lalu lompat)
+    let input = PlayerInput {
+        move_forward: 1.0,
+        jump: true,
+        ..Default::default()
+    };
+    player.set_input(input);
+    player.step_simulation(1.0 / 30.0, &store, 0.0);
+
+    assert!(!player.state.grounded);
+    assert_eq!(player.state.airborne_origin, AirborneOrigin::NormalJump);
+    assert_eq!(player.state.movement_state, MovementState::JumpAscending);
+    assert!(!player.state.gliding);
+}
+
+#[test]
+fn test_8d5_normal_jump_plus_shift_later_no_glide() {
+    let mut store = ChunkStore::new();
+    for cy in 0..=2 {
+        let mut chunk = Chunk::new(IVec3::new(0, cy, 0));
+        if cy == 0 {
+            for vx in 0..32 {
+                for vz in 0..32 {
+                    chunk.set_voxel(vx, 0, vz, VoxelBlock::new(MaterialId::STONE));
+                }
+            }
+        }
+        store.insert(chunk);
+    }
+
+    let mut player = PlayerController::new(Vec3::new(4.0, 0.5, 4.0));
+    player.state.grounded = true;
+
+    // Lompat biasa (W + Space)
+    let input = PlayerInput {
+        move_forward: 1.0,
+        jump: true,
+        ..Default::default()
+    };
+    player.set_input(input);
+    player.step_simulation(1.0 / 30.0, &store, 0.0);
+    assert_eq!(player.state.airborne_origin, AirborneOrigin::NormalJump);
+
+    // Naik hingga melewati apex ke fase turun
+    for _ in 0..25 {
+        player.step_simulation(1.0 / 30.0, &store, 0.0);
+    }
+    assert!(player.state.velocity.y <= 0.0);
+
+    // Tekan Shift belakangan di fase descent
+    let input_shift = PlayerInput {
+        move_forward: 1.0,
+        sprint: true,
+        ..Default::default()
+    };
+    player.set_input(input_shift);
+    let prev_vy = player.state.velocity.y;
+    player.step_simulation(1.0 / 30.0, &store, 0.0);
+
+    // MANDATORY AMENDMENT 2: NormalJump tidak pernah dapat Glide meskipun Shift ditekan belakangan
+    assert_eq!(
+        player.state.airborne_origin,
+        AirborneOrigin::NormalJump,
+        "Airborne origin harus immutable!"
+    );
+    assert!(
+        !player.state.gliding,
+        "NormalJump tidak boleh Glide meski menekan Shift belakangan!"
+    );
+    assert_eq!(player.state.movement_state, MovementState::JumpDescending);
+
+    // Gravitasi harus normal penuh (-9.81 * dt), bukan gravitasi glide rendah (0.35g)
+    let expected_vy = prev_vy - 9.81 * (1.0 / 30.0);
+    assert!(
+        (player.state.velocity.y - expected_vy).abs() < 1e-3,
+        "NormalJump harus jatuh dengan gravitasi normal! Vy: {}, Expected: {}",
+        player.state.velocity.y,
+        expected_vy
+    );
+}
+
+#[test]
+fn test_8d5_sprint_jump_takeoff_and_ascent_normal_gravity() {
+    let mut store = ChunkStore::new();
+    for cy in 0..=2 {
+        let mut chunk = Chunk::new(IVec3::new(0, cy, 0));
+        if cy == 0 {
+            for vx in 0..32 {
+                for vz in 0..32 {
+                    chunk.set_voxel(vx, 0, vz, VoxelBlock::new(MaterialId::STONE));
+                }
+            }
+        }
+        store.insert(chunk);
+    }
+
+    let mut player = PlayerController::new(Vec3::new(4.0, 0.5, 4.0));
+    player.state.grounded = true;
+
+    // Takeoff Sprint-Jump: Shift + W + Space
+    let input = PlayerInput {
+        move_forward: 1.0,
+        sprint: true,
+        jump: true,
+        ..Default::default()
+    };
+    player.set_input(input);
+    player.step_simulation(1.0 / 30.0, &store, 0.0);
+
+    assert_eq!(player.state.airborne_origin, AirborneOrigin::SprintJump);
+    assert_eq!(player.state.movement_state, MovementState::JumpAscending);
+    assert!(!player.state.grounded);
+    // MANDATORY AMENDMENT 4: Gliding dilarang aktif selama ascending!
+    assert!(!player.state.gliding);
+
+    // Verifikasi akselerasi gravitasi penuh selama ascent (bukan 0.35g jetpack!)
+    let mut apex_y = player.state.position.y;
+    for _ in 0..20 {
+        if player.state.velocity.y <= 0.0 {
+            break;
+        }
+        assert!(
+            !player.state.gliding,
+            "Ascent phase tidak boleh mengaktifkan Glide!"
+        );
+        assert_eq!(player.state.movement_state, MovementState::JumpAscending);
+        player.step_simulation(1.0 / 30.0, &store, 0.0);
+        apex_y = apex_y.max(player.state.position.y);
+    }
+
+    // Ketinggian lompat manusiawi: jump_vel = 6.0m/s -> apex ~ 0.5 + 6.0^2 / (2 * 9.81) ~ 2.33m
+    assert!(
+        apex_y < 2.50,
+        "Apex lompatan tidak boleh roket ke atas! Terukur apex_y: {}",
+        apex_y
+    );
+    assert!(
+        apex_y > 2.00,
+        "Apex lompatan harus mencapai ketinggian wajar! Terukur apex_y: {}",
+        apex_y
+    );
+}
+
+#[test]
+fn test_8d5_sprint_jump_descent_enters_glide() {
+    let mut store = ChunkStore::new();
+    for cy in 0..=3 {
+        let mut chunk = Chunk::new(IVec3::new(0, cy, 0));
+        if cy == 0 {
+            for vx in 0..32 {
+                for vz in 0..32 {
+                    chunk.set_voxel(vx, 0, vz, VoxelBlock::new(MaterialId::STONE));
+                }
+            }
+        }
+        store.insert(chunk);
+    }
+
+    let mut player = PlayerController::new(Vec3::new(4.0, 0.5, 4.0));
+    player.state.grounded = true;
+
+    // Takeoff SprintJump
+    let input = PlayerInput {
+        move_forward: 1.0,
+        sprint: true,
+        jump: true,
+        ..Default::default()
+    };
+    player.set_input(input);
+    player.step_simulation(1.0 / 30.0, &store, 0.0);
+    assert_eq!(player.state.airborne_origin, AirborneOrigin::SprintJump);
+
+    // Tahan Shift + W melintasi apex hingga descent
+    let input_hold = PlayerInput {
+        move_forward: 1.0,
+        sprint: true,
+        ..Default::default()
+    };
+    player.set_input(input_hold);
+    for _ in 0..25 {
+        player.step_simulation(1.0 / 30.0, &store, 0.0);
+    }
+
+    // Begitu vy <= 0.0, Glide aktif seketika!
+    assert!(player.state.velocity.y <= 0.0);
+    assert!(
+        player.state.gliding,
+        "SprintJump descent + Shift harus mengaktifkan Glide!"
+    );
+    assert_eq!(player.state.movement_state, MovementState::Gliding);
+    assert_eq!(player.state.airborne_origin, AirborneOrigin::SprintJump);
+
+    // Kecepatan jatuh terikat glide_max_downward_speed (2.5 m/s)
+    for _ in 0..30 {
+        if player.state.grounded {
+            break;
+        }
+        player.step_simulation(1.0 / 30.0, &store, 0.0);
+        assert!(
+            player.state.velocity.y >= -2.501,
+            "Kecepatan descent glide melebihi batas! Vy: {}",
+            player.state.velocity.y
+        );
+    }
+}
+
+#[test]
+fn test_8d5_sprint_jump_release_w_keep_shift_glides() {
+    let mut store = ChunkStore::new();
+    for cy in 0..=3 {
+        let mut chunk = Chunk::new(IVec3::new(0, cy, 0));
+        if cy == 0 {
+            for vx in 0..32 {
+                for vz in 0..32 {
+                    chunk.set_voxel(vx, 0, vz, VoxelBlock::new(MaterialId::STONE));
+                }
+            }
+        }
+        store.insert(chunk);
+    }
+
+    let mut player = PlayerController::new(Vec3::new(4.0, 0.5, 4.0));
+    player.state.grounded = true;
+
+    // SprintJump
+    let input = PlayerInput {
+        move_forward: 1.0,
+        sprint: true,
+        jump: true,
+        ..Default::default()
+    };
+    player.set_input(input);
+    player.step_simulation(1.0 / 30.0, &store, 0.0);
+
+    // MANDATORY AMENDMENT 2: SprintJump -> lepas W -> tahan Shift -> turun -> WAJIB Glide
+    let input_release_w = PlayerInput {
+        move_forward: 0.0,
+        sprint: true,
+        ..Default::default()
+    };
+    player.set_input(input_release_w);
+    for _ in 0..25 {
+        player.step_simulation(1.0 / 30.0, &store, 0.0);
+    }
+
+    assert!(player.state.velocity.y <= 0.0);
+    assert_eq!(player.state.airborne_origin, AirborneOrigin::SprintJump);
+    assert!(
+        player.state.gliding,
+        "Melepas W sambil tetap menahan Shift pada SprintJump descent harus tetap Glide!"
+    );
+    assert_eq!(player.state.movement_state, MovementState::Gliding);
+}
+
+#[test]
+fn test_8d5_cliff_fall_with_shift_is_falling_no_glide() {
+    let mut store = ChunkStore::new();
+    let mut chunk = Chunk::new(IVec3::ZERO);
+    // Lantai hanya ada dari vx = 0..8 (x = 0.0m..4.0m). Setelah x = 4.0m adalah jurang kosong
+    for vx in 0..8 {
+        for vz in 0..32 {
+            chunk.set_voxel(vx, 0, vz, VoxelBlock::new(MaterialId::STONE));
+        }
+    }
+    store.insert(chunk);
+
+    let mut player = PlayerController::new(Vec3::new(3.5, 0.5, 4.0));
+    player.state.grounded = true;
+
+    // Berlari kencang melewati tepi jurang dengan Shift + W
+    let input = PlayerInput {
+        move_forward: 1.0,
+        sprint: true,
+        ..Default::default()
+    };
+    player.set_input(input);
+
+    // Langkah melewati tepi jurang (x melintas 4.0m)
+    for _ in 0..10 {
+        player.step_simulation(1.0 / 30.0, &store, 0.0);
+        if !player.state.grounded {
+            break;
+        }
+    }
+
+    // MANDATORY AMENDMENT 3: Kehilangan tumpuan tanah tanpa lompat = FellFromEdge -> Falling
+    assert!(!player.state.grounded);
+    assert_eq!(
+        player.state.airborne_origin,
+        AirborneOrigin::FellFromEdge,
+        "Jatuh dari tebing harus FellFromEdge!"
+    );
+    assert_eq!(
+        player.state.movement_state,
+        MovementState::Falling,
+        "Jatuh dari tebing harus berstatus Falling!"
+    );
+    // Tahan Shift saat jatuh bebas DILARANG mengaktifkan Glide!
+    assert!(
+        !player.state.gliding,
+        "Jatuh dari tebing dengan menahan Shift DILARANG menjadi Glide!"
+    );
+
+    // Lanjutkan simulasi beberapa tick: tetap falling dan gravitasi penuh
+    let prev_vy = player.state.velocity.y;
+    player.step_simulation(1.0 / 30.0, &store, 0.0);
+    assert!(!player.state.gliding);
+    let expected_vy = prev_vy - 9.81 * (1.0 / 30.0);
+    assert!((player.state.velocity.y - expected_vy).abs() < 1e-3);
+}
+
+#[test]
+fn test_8d5_glide_release_shift_restores_falling() {
+    let mut store = ChunkStore::new();
+    for cy in 0..=3 {
+        let mut chunk = Chunk::new(IVec3::new(0, cy, 0));
+        if cy == 0 {
+            for vx in 0..32 {
+                for vz in 0..32 {
+                    chunk.set_voxel(vx, 0, vz, VoxelBlock::new(MaterialId::STONE));
+                }
+            }
+        }
+        store.insert(chunk);
+    }
+
+    let mut player = PlayerController::new(Vec3::new(4.0, 50.0, 4.0));
+    player.state.grounded = false;
+    player.state.airborne_origin = AirborneOrigin::SprintJump;
+    player.state.velocity.y = -1.0;
+
+    // Aktifkan Glide
+    let glide_input = PlayerInput {
+        move_forward: 1.0,
+        sprint: true,
+        ..Default::default()
+    };
+    player.set_input(glide_input);
+    player.step_simulation(1.0 / 30.0, &store, 0.0);
+    assert!(player.state.gliding);
+    assert_eq!(player.state.movement_state, MovementState::Gliding);
+
+    // Lepas Shift
+    let release_shift = PlayerInput {
+        move_forward: 1.0,
+        sprint: false,
+        ..Default::default()
+    };
+    player.set_input(release_shift);
+    let prev_vy = player.state.velocity.y;
+    player.step_simulation(1.0 / 30.0, &store, 0.0);
+
+    assert!(!player.state.gliding);
+    assert_eq!(player.state.movement_state, MovementState::JumpDescending);
+    // Gravitasi kembali penuh
+    let expected_vy = prev_vy - 9.81 * (1.0 / 30.0);
+    assert!((player.state.velocity.y - expected_vy).abs() < 1e-3);
+}
+
+#[test]
+fn test_8d5_landing_clears_glide_and_airborne_origin() {
+    let mut store = ChunkStore::new();
+    setup_flat_ground(&mut store, IVec3::ZERO);
+
+    // Spawn 10cm di atas tanah pada status Gliding
+    let mut player = PlayerController::new(Vec3::new(4.0, 0.60, 4.0));
+    player.state.grounded = false;
+    player.state.airborne_origin = AirborneOrigin::SprintJump;
+    player.state.velocity.y = -1.0;
+
+    let input = PlayerInput {
+        move_forward: 1.0,
+        sprint: true,
+        ..Default::default()
+    };
+    player.set_input(input);
+
+    // Mendarat ke tanah
+    for _ in 0..5 {
+        player.step_simulation(1.0 / 30.0, &store, 0.0);
+        if player.state.grounded {
+            break;
+        }
+    }
+
+    assert!(player.state.grounded);
+    // MANDATORY AMENDMENT 6: Reset total airborne origin & glide
+    assert_eq!(
+        player.state.airborne_origin,
+        AirborneOrigin::None,
+        "Airborne origin harus None saat mendarat!"
+    );
+    assert!(
+        !player.state.gliding,
+        "Gliding harus non-aktif saat mendarat!"
+    );
+    assert_eq!(player.state.movement_state, MovementState::Sprinting);
+
+    // Lompatan berikutnya tanpa menekan W (hanya Space + Shift)
+    let next_jump_input = PlayerInput {
+        move_forward: 0.0,
+        sprint: true,
+        jump: true,
+        ..Default::default()
+    };
+    player.set_input(next_jump_input);
+    player.step_simulation(1.0 / 30.0, &store, 0.0);
+
+    assert!(!player.state.grounded);
+    // Tidak ada kebocoran status Glide dari lompatan sebelumnya!
+    assert_eq!(
+        player.state.airborne_origin,
+        AirborneOrigin::NormalJump,
+        "Lompatan baru tidak boleh mewarisi Glide dari lompatan lama!"
+    );
+    assert!(!player.state.gliding);
+}
+
+#[test]
+fn test_8d5_step_up_regression_with_new_speeds() {
+    let mut store = ChunkStore::new();
+    let mut chunk = Chunk::new(IVec3::ZERO);
+    for vx in 0..32 {
+        for vz in 0..32 {
+            chunk.set_voxel(vx, 0, vz, VoxelBlock::new(MaterialId::STONE));
+        }
+    }
+    // Undakan 0.5m di vx = 8 (x = 4.0m)
+    for vx in 8..32 {
+        for vz in 0..32 {
+            chunk.set_voxel(vx, 1, vz, VoxelBlock::new(MaterialId::STONE));
+        }
+    }
+    store.insert(chunk);
+
+    // 1. Uji berjalan (walk ~3.0 m/s) menaiki undakan
+    let mut player_walk = PlayerController::new(Vec3::new(3.0, 0.5, 4.0));
+    player_walk.state.grounded = true;
+    let walk_input = PlayerInput {
+        move_forward: 1.0,
+        ..Default::default()
+    };
+    player_walk.set_input(walk_input);
+    for _ in 0..40 {
+        player_walk.step_simulation(1.0 / 30.0, &store, 0.0);
+    }
+    assert!(player_walk.state.grounded);
+    assert!(
+        player_walk.state.position.x > 4.5,
+        "Pemain jalan harus menaiki undakan! X: {}",
+        player_walk.state.position.x
+    );
+    assert!((player_walk.state.position.y - 1.0).abs() < 1e-2);
+
+    // 2. Uji berlari (sprint ~6.0 m/s) menaiki undakan
+    let mut player_sprint = PlayerController::new(Vec3::new(3.0, 0.5, 4.0));
+    player_sprint.state.grounded = true;
+    let sprint_input = PlayerInput {
+        move_forward: 1.0,
+        sprint: true,
+        ..Default::default()
+    };
+    player_sprint.set_input(sprint_input);
+    for _ in 0..30 {
+        player_sprint.step_simulation(1.0 / 30.0, &store, 0.0);
+    }
+    assert!(player_sprint.state.grounded);
+    assert!(
+        player_sprint.state.position.x > 5.0,
+        "Pemain lari harus menaiki undakan tanpa tersangkut! X: {}",
+        player_sprint.state.position.x
+    );
+    assert!((player_sprint.state.position.y - 1.0).abs() < 1e-2);
 }

@@ -926,6 +926,8 @@ fn main() {
 
         let mut player = PlayerController::new(Vec3::new(4.0, 50.0, 4.0));
         player.state.grounded = false;
+        player.state.airborne_origin = omnisia::player::AirborneOrigin::SprintJump;
+        player.state.velocity.y = -1.0;
         let input = PlayerInput {
             move_forward: 1.0,
             sprint: true,
@@ -942,6 +944,8 @@ fn main() {
             if player.state.position.y < 20.0 {
                 player.state.position.y = 50.0;
                 player.state.grounded = false;
+                player.state.airborne_origin = omnisia::player::AirborneOrigin::SprintJump;
+                player.state.velocity.y = -1.0;
             }
             std::hint::black_box(player.state.velocity);
         }
