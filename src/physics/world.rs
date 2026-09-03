@@ -5,7 +5,10 @@ use super::aabb::Aabb;
 use super::broadphase::{
     BodyType, BroadphaseError, BroadphasePair, BroadphaseProxy, RigidBodyId, SpatialHashBroadphase,
 };
+use super::collider::{Collider, ColliderId};
 use super::rigid_body::{MassProperties, RigidBody};
+use super::shape::Shape;
+use super::transform::Transform;
 use crate::coord::world_pos_to_world_voxel;
 use crate::streaming::store::ChunkStore;
 use crate::voxel::VOXEL_SIZE;
@@ -49,7 +52,9 @@ pub struct PhysicsWorld {
     pub config: PhysicsWorldConfig,
     pub broadphase: SpatialHashBroadphase,
     pub next_body_id: u64,
+    pub next_collider_id: u64,
     pub rigid_bodies: BTreeMap<RigidBodyId, RigidBody>,
+    pub colliders: BTreeMap<ColliderId, Collider>,
 }
 
 impl Default for PhysicsWorld {
@@ -66,7 +71,9 @@ impl PhysicsWorld {
             config,
             broadphase,
             next_body_id: 1,
+            next_collider_id: 1,
             rigid_bodies: BTreeMap::new(),
+            colliders: BTreeMap::new(),
         }
     }
 
@@ -108,11 +115,127 @@ impl PhysicsWorld {
         self.rigid_bodies.get_mut(&id)
     }
 
-    /// Menghapus badan dari registri fisik dan broadphase secara atomik.
+    /// Menghapus badan dari registri fisik, menghapus seluruh collider miliknya, dan membersihkan broadphase.
     pub fn remove_rigid_body(&mut self, id: RigidBodyId) -> Option<RigidBody> {
         let body = self.rigid_bodies.remove(&id)?;
+        self.colliders.retain(|_, c| c.rigid_body_id() != id);
         self.broadphase.remove(id);
         Some(body)
+    }
+
+    /// Mendaftarkan `Collider` ke badan kaku dan menyinkronkan AABB dunia turunannya ke broadphase.
+    ///
+    /// INVARIAN TRANSAKSIONAL:
+    /// - Memvalidasi keberadaan `RigidBody` pemilik terlebih dahulu.
+    /// - Memvalidasi ketiadaan duplikasi `ColliderId`.
+    /// - Menghitung AABB dunia turunan dan memperbarui/memasukkan proksi ke broadphase.
+    /// - Hanya jika seluruh langkah di atas berhasil, `Collider` disimpan di registri internal.
+    pub fn add_collider(&mut self, collider: Collider) -> Result<ColliderId, BroadphaseError> {
+        let body_id = collider.rigid_body_id();
+        let body = self
+            .rigid_bodies
+            .get(&body_id)
+            .ok_or(BroadphaseError::BodyNotFound(body_id))?;
+
+        if self.colliders.contains_key(&collider.id()) {
+            return Err(BroadphaseError::ColliderAlreadyExists(collider.id()));
+        }
+
+        // Hitung AABB dunia dari collider berdasarkan transform RigidBody pemiliknya
+        let world_aabb = collider.compute_world_aabb(&body.transform())?;
+
+        // Sinkronisasi broadphase: jika body sudah memiliki proksi AABB, gabungkan (union)
+        let unioned_aabb = match self.broadphase.get_proxy(body_id) {
+            Some(proxy) => proxy.aabb.union(&world_aabb),
+            None => world_aabb,
+        };
+
+        if self.broadphase.get_proxy(body_id).is_some() {
+            self.broadphase.update(body_id, unioned_aabb)?;
+        } else {
+            let proxy = BroadphaseProxy::new(body_id, body.body_type(), unioned_aabb);
+            self.broadphase.insert(proxy)?;
+        }
+
+        // Transaksional: hanya simpan collider jika validasi dan sinkronisasi broadphase berhasil
+        let collider_id = collider.id();
+        if collider_id.0 >= self.next_collider_id {
+            self.next_collider_id = collider_id.0 + 1;
+        }
+        self.colliders.insert(collider_id, collider);
+
+        Ok(collider_id)
+    }
+
+    /// Helper untuk membuat dan menambahkan collider baru dengan ID otomatis.
+    pub fn create_collider(
+        &mut self,
+        rigid_body_id: RigidBodyId,
+        shape: Shape,
+        local_transform: Transform,
+    ) -> Result<ColliderId, BroadphaseError> {
+        let id = ColliderId(self.next_collider_id);
+        let collider = Collider::new(id, rigid_body_id, shape, local_transform);
+        self.add_collider(collider)
+    }
+
+    /// Mengambil referensi tidak dapat diubah ke Collider berdasarkan ID.
+    #[inline(always)]
+    pub fn get_collider(&self, id: ColliderId) -> Option<&Collider> {
+        self.colliders.get(&id)
+    }
+
+    /// Mengambil referensi mutabel ke Collider berdasarkan ID.
+    #[inline(always)]
+    pub fn get_collider_mut(&mut self, id: ColliderId) -> Option<&mut Collider> {
+        self.colliders.get_mut(&id)
+    }
+
+    /// Menghapus collider dan menghitung ulang AABB broadphase dari collider-collider yang tersisa.
+    pub fn remove_collider(&mut self, id: ColliderId) -> Option<Collider> {
+        let collider = self.colliders.remove(&id)?;
+        let body_id = collider.rigid_body_id();
+
+        // Hitung ulang AABB gabungan untuk badan ini dari collider yang tersisa
+        let mut combined_aabb: Option<Aabb> = None;
+        if let Some(body) = self.rigid_bodies.get(&body_id) {
+            let body_transform = body.transform();
+            for c in self
+                .colliders
+                .values()
+                .filter(|c| c.rigid_body_id() == body_id)
+            {
+                if let Ok(aabb) = c.compute_world_aabb(&body_transform) {
+                    combined_aabb = Some(match combined_aabb {
+                        Some(prev) => prev.union(&aabb),
+                        None => aabb,
+                    });
+                }
+            }
+        }
+
+        if let Some(new_aabb) = combined_aabb {
+            let _ = self.broadphase.update(body_id, new_aabb);
+        } else {
+            // Jika tidak ada collider tersisa untuk badan ini, bersihkan proksi broadphase
+            self.broadphase.remove(body_id);
+        }
+
+        Some(collider)
+    }
+
+    /// Mengambil iterator untuk seluruh collider yang terpasang pada suatu badan kaku tertentu.
+    #[inline(always)]
+    pub fn colliders_for_body(&self, body_id: RigidBodyId) -> impl Iterator<Item = &Collider> {
+        self.colliders
+            .values()
+            .filter(move |c| c.rigid_body_id() == body_id)
+    }
+
+    /// Jumlah total collider yang terdaftar.
+    #[inline(always)]
+    pub fn collider_count(&self) -> usize {
+        self.colliders.len()
     }
 
     /// Lapisan kompatibilitas Phase 9.1: mendaftarkan badan fisika baru dengan ID otomatis.
@@ -267,9 +390,10 @@ impl PhysicsWorld {
         self.broadphase.generate_candidate_pairs()
     }
 
-    /// Mengosongkan seluruh badan dari dunia fisika dan broadphase.
+    /// Mengosongkan seluruh badan, collider, dan broadphase dari dunia fisika.
     pub fn clear(&mut self) {
         self.rigid_bodies.clear();
+        self.colliders.clear();
         self.broadphase.clear();
     }
 }

@@ -2,6 +2,7 @@ use glam::{Mat3, Quat, Vec3};
 use std::fmt;
 
 use super::broadphase::{BodyType, RigidBodyId};
+use super::transform::Transform;
 
 /// Kesalahan validasi atau pembuatan RigidBody dan MassProperties.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -426,5 +427,14 @@ impl RigidBody {
     #[inline(always)]
     pub fn is_kinematic(&self) -> bool {
         self.body_type == BodyType::Kinematic
+    }
+
+    /// Mengambil representasi Transform spasial kaku dari badan (posisi dan rotasi ternormalisasi).
+    #[inline(always)]
+    pub fn transform(&self) -> Transform {
+        Transform {
+            position: self.position,
+            rotation: self.rotation,
+        }
     }
 }

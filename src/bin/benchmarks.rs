@@ -1314,6 +1314,61 @@ fn main() {
         );
     }
 
+    // ========================================================================
+    // BENCHMARK 40: Shape AABB Computation & Transform Composition (Phase 9.3)
+    // 1,000 Shapes (Sphere, Rotated Box, Rotated Capsule) & Offset Colliders
+    // ========================================================================
+    {
+        use glam::Quat;
+        use omnisia::physics::{
+            BoxShape, Capsule, Collider, ColliderId, RigidBodyId, Shape, Sphere, Transform,
+        };
+
+        let iterations = 1_000;
+        let start = Instant::now();
+
+        for iter in 0..iterations {
+            let mut aabb_accum = Vec3::ZERO;
+            for i in 1..=1000 {
+                let angle = (iter + i) as f32 * 0.01;
+                let body_transform = Transform::new(
+                    Vec3::new(i as f32, 10.0, -5.0),
+                    Quat::from_rotation_y(angle),
+                )
+                .unwrap();
+
+                let local_transform =
+                    Transform::from_translation(Vec3::new(0.5, 0.2, -0.3)).unwrap();
+
+                let shape = match i % 3 {
+                    0 => Shape::Sphere(Sphere::new(1.2).unwrap()),
+                    1 => Shape::Box(BoxShape::new(Vec3::new(1.0, 2.0, 0.5)).unwrap()),
+                    _ => Shape::Capsule(Capsule::new(0.6, 1.5).unwrap()),
+                };
+
+                let collider = Collider::new(
+                    ColliderId(i as u64),
+                    RigidBodyId(i as u64),
+                    shape,
+                    local_transform,
+                );
+                let aabb = collider.compute_world_aabb(&body_transform).unwrap();
+                aabb_accum += aabb.min + aabb.max;
+            }
+            std::hint::black_box(aabb_accum);
+        }
+
+        let elapsed = start.elapsed();
+        let us_per_batch = elapsed.as_micros() as f64 / iterations as f64;
+        let us_per_op = us_per_batch / 1000.0;
+        println!(
+            "[BENCHMARK 40] Shape AABB & Collider Transform (1,000 shapes): {:.3} µs/batch ({:.3} µs/op, {:.1} ops/sec)",
+            us_per_batch,
+            us_per_op,
+            1_000_000.0 / us_per_op
+        );
+    }
+
     println!("============================================================");
     println!("             BENCHMARK SUITE COMPLETE                       ");
     println!("============================================================");

@@ -2,9 +2,10 @@ use glam::{IVec3, Mat3, Quat, Vec3};
 use omnisia::chunk::Chunk;
 use omnisia::material::MaterialId;
 use omnisia::physics::{
-    world_pos_to_cell, Aabb, AabbError, BodyType, BroadphaseError, BroadphasePair, BroadphaseProxy,
-    CellCoord, MassProperties, PhysicsWorld, PhysicsWorldConfig, RigidBody, RigidBodyError,
-    RigidBodyId, SpatialHashBroadphase, StaticTerrainQuery,
+    world_pos_to_cell, Aabb, AabbError, BodyType, BoxShape, BroadphaseError, BroadphasePair,
+    BroadphaseProxy, Capsule, CellCoord, Collider, ColliderId, MassProperties, PhysicsWorld,
+    PhysicsWorldConfig, RigidBody, RigidBodyError, RigidBodyId, Shape, ShapeError,
+    SpatialHashBroadphase, Sphere, StaticTerrainQuery, Transform,
 };
 use omnisia::streaming::store::ChunkStore;
 use omnisia::voxel::VoxelBlock;
@@ -1046,4 +1047,520 @@ fn test_9_2_physics_world_single_authoritative_registry() {
     let rb = world.get_rigid_body(id).unwrap();
     assert_eq!(rb.body_type(), BodyType::Dynamic);
     assert_eq!(rb.position(), aabb.center());
+}
+
+// ============================================================================
+// 6. PHASE 9.3 — SHAPE REPRESENTATION & COLLIDER TESTS
+// ============================================================================
+
+// --- A. SHAPE VALIDATION ---
+
+#[test]
+fn test_9_3_valid_sphere() {
+    let sphere = Sphere::new(1.5).unwrap();
+    assert_eq!(sphere.radius(), 1.5);
+
+    let aabb = sphere.compute_aabb(&Transform::IDENTITY).unwrap();
+    assert_eq!(aabb.min, Vec3::new(-1.5, -1.5, -1.5));
+    assert_eq!(aabb.max, Vec3::new(1.5, 1.5, 1.5));
+}
+
+#[test]
+fn test_9_3_invalid_sphere_zero_and_negative() {
+    assert_eq!(Sphere::new(0.0).unwrap_err(), ShapeError::NonPositiveRadius);
+    assert_eq!(
+        Sphere::new(-2.5).unwrap_err(),
+        ShapeError::NonPositiveRadius
+    );
+}
+
+#[test]
+fn test_9_3_invalid_sphere_nan_and_infinity() {
+    assert_eq!(
+        Sphere::new(f32::NAN).unwrap_err(),
+        ShapeError::NonPositiveRadius
+    );
+    assert_eq!(
+        Sphere::new(f32::INFINITY).unwrap_err(),
+        ShapeError::NonPositiveRadius
+    );
+}
+
+#[test]
+fn test_9_3_valid_box() {
+    let half_extents = Vec3::new(1.0, 2.0, 3.0);
+    let box_shape = BoxShape::new(half_extents).unwrap();
+    assert_eq!(box_shape.half_extents(), half_extents);
+
+    let aabb = box_shape.compute_aabb(&Transform::IDENTITY).unwrap();
+    assert_eq!(aabb.min, -half_extents);
+    assert_eq!(aabb.max, half_extents);
+}
+
+#[test]
+fn test_9_3_invalid_box_zero_and_negative() {
+    assert_eq!(
+        BoxShape::new(Vec3::new(0.0, 1.0, 1.0)).unwrap_err(),
+        ShapeError::InvalidHalfExtents
+    );
+    assert_eq!(
+        BoxShape::new(Vec3::new(1.0, -1.0, 1.0)).unwrap_err(),
+        ShapeError::InvalidHalfExtents
+    );
+}
+
+#[test]
+fn test_9_3_invalid_box_nan_and_infinity() {
+    assert_eq!(
+        BoxShape::new(Vec3::new(f32::NAN, 1.0, 1.0)).unwrap_err(),
+        ShapeError::InvalidHalfExtents
+    );
+    assert_eq!(
+        BoxShape::new(Vec3::new(1.0, 1.0, f32::INFINITY)).unwrap_err(),
+        ShapeError::InvalidHalfExtents
+    );
+}
+
+#[test]
+fn test_9_3_valid_capsule() {
+    let capsule = Capsule::new(0.5, 1.0).unwrap();
+    assert_eq!(capsule.radius(), 0.5);
+    assert_eq!(capsule.half_height(), 1.0);
+    assert_eq!(capsule.total_height(), 3.0); // 2 * 1.0 + 2 * 0.5 = 3.0
+
+    let aabb = capsule.compute_aabb(&Transform::IDENTITY).unwrap();
+    assert_eq!(aabb.min, Vec3::new(-0.5, -1.5, -0.5));
+    assert_eq!(aabb.max, Vec3::new(0.5, 1.5, 0.5));
+}
+
+#[test]
+fn test_9_3_invalid_capsule_dimensions() {
+    assert_eq!(
+        Capsule::new(0.0, 1.0).unwrap_err(),
+        ShapeError::NonPositiveRadius
+    );
+    assert_eq!(
+        Capsule::new(-1.0, 1.0).unwrap_err(),
+        ShapeError::NonPositiveRadius
+    );
+    assert_eq!(
+        Capsule::new(1.0, -0.5).unwrap_err(),
+        ShapeError::InvalidCapsuleDimensions
+    );
+    assert_eq!(
+        Capsule::new(f32::NAN, 1.0).unwrap_err(),
+        ShapeError::NonPositiveRadius
+    );
+    assert_eq!(
+        Capsule::new(1.0, f32::INFINITY).unwrap_err(),
+        ShapeError::InvalidCapsuleDimensions
+    );
+}
+
+// --- B. TRANSFORM & COMPOSITION TESTS ---
+
+#[test]
+fn test_9_3_transform_identity() {
+    let t = Transform::IDENTITY;
+    assert_eq!(t.position, Vec3::ZERO);
+    assert_eq!(t.rotation, Quat::IDENTITY);
+}
+
+#[test]
+fn test_9_3_transform_translation_and_rotation() {
+    let t = Transform::new(
+        Vec3::new(1.0, 2.0, 3.0),
+        Quat::from_rotation_y(std::f32::consts::FRAC_PI_2),
+    )
+    .unwrap();
+    assert_eq!(t.position, Vec3::new(1.0, 2.0, 3.0));
+    assert!((t.rotation.length() - 1.0).abs() < 1e-6);
+}
+
+#[test]
+fn test_9_3_transform_invalid_quaternion_rejected() {
+    assert_eq!(
+        Transform::new(Vec3::ZERO, Quat::from_xyzw(0.0, 0.0, 0.0, 0.0)).unwrap_err(),
+        ShapeError::InvalidTransform
+    );
+    assert_eq!(
+        Transform::new(Vec3::ZERO, Quat::from_xyzw(f32::NAN, 1.0, 0.0, 0.0)).unwrap_err(),
+        ShapeError::InvalidTransform
+    );
+    assert_eq!(
+        Transform::new(Vec3::new(f32::NAN, 0.0, 0.0), Quat::IDENTITY).unwrap_err(),
+        ShapeError::NonFiniteCoordinates
+    );
+}
+
+// --- C. CRITICAL TEST: OFFSET COLLIDER (SECTION 33) ---
+
+#[test]
+fn test_9_3_offset_collider_world_transform() {
+    // Body: posisi (10, 0, 0), rotasi 90 derajat terhadap Y
+    let body_transform = Transform::new(
+        Vec3::new(10.0, 0.0, 0.0),
+        Quat::from_rotation_y(std::f32::consts::FRAC_PI_2),
+    )
+    .unwrap();
+
+    // Collider: offset lokal (2, 0, 0)
+    let local_transform = Transform::from_translation(Vec3::new(2.0, 0.0, 0.0)).unwrap();
+
+    // Transform gabungan: T_world = T_body * T_local
+    let world_transform = body_transform.mul_transform(&local_transform);
+
+    // Rotasi 90 derajat terhadap Y memetakan sumbu lokal +X ke dunia -Z:
+    // (10, 0, 0) + rotate_Y_90((2, 0, 0)) = (10, 0, 0) + (0, 0, -2) = (10, 0, -2)
+    let expected_pos = Vec3::new(10.0, 0.0, -2.0);
+    assert!(
+        (world_transform.position - expected_pos).length() < 1e-5,
+        "Posisi dunia collider harus memperhitungkan rotasi RigidBody: didapat {:?}, ekspektasi {:?}",
+        world_transform.position,
+        expected_pos
+    );
+}
+
+// --- D. AABB TESTS ---
+
+#[test]
+fn test_9_3_sphere_aabb_identity_and_translation() {
+    let sphere = Sphere::new(2.0).unwrap();
+    let t = Transform::from_translation(Vec3::new(10.0, -5.0, 20.0)).unwrap();
+    let aabb = sphere.compute_aabb(&t).unwrap();
+
+    assert_eq!(aabb.min, Vec3::new(8.0, -7.0, 18.0));
+    assert_eq!(aabb.max, Vec3::new(12.0, -3.0, 22.0));
+}
+
+#[test]
+fn test_9_3_sphere_aabb_rotation_invariance() {
+    let sphere = Sphere::new(3.0).unwrap();
+    let t_unrotated = Transform::from_translation(Vec3::new(5.0, 5.0, 5.0)).unwrap();
+    let t_rotated = Transform::new(
+        Vec3::new(5.0, 5.0, 5.0),
+        Quat::from_rotation_x(1.234) * Quat::from_rotation_z(0.567),
+    )
+    .unwrap();
+
+    let aabb1 = sphere.compute_aabb(&t_unrotated).unwrap();
+    let aabb2 = sphere.compute_aabb(&t_rotated).unwrap();
+
+    assert_eq!(aabb1.min, aabb2.min);
+    assert_eq!(aabb1.max, aabb2.max);
+}
+
+#[test]
+fn test_9_3_sphere_aabb_negative_coordinates() {
+    let sphere = Sphere::new(5.0).unwrap();
+    let t = Transform::from_translation(Vec3::new(-50.0, -100.0, -200.0)).unwrap();
+    let aabb = sphere.compute_aabb(&t).unwrap();
+
+    assert_eq!(aabb.min, Vec3::new(-55.0, -105.0, -205.0));
+    assert_eq!(aabb.max, Vec3::new(-45.0, -95.0, -195.0));
+}
+
+#[test]
+fn test_9_3_box_aabb_identity_and_translation() {
+    let b = BoxShape::new(Vec3::new(2.0, 3.0, 4.0)).unwrap();
+    let t = Transform::from_translation(Vec3::new(10.0, 20.0, 30.0)).unwrap();
+    let aabb = b.compute_aabb(&t).unwrap();
+
+    assert_eq!(aabb.min, Vec3::new(8.0, 17.0, 26.0));
+    assert_eq!(aabb.max, Vec3::new(12.0, 23.0, 34.0));
+}
+
+#[test]
+fn test_9_3_box_aabb_90_degree_rotation_around_y() {
+    let b = BoxShape::new(Vec3::new(2.0, 3.0, 4.0)).unwrap();
+    let t = Transform::from_rotation(Quat::from_rotation_y(std::f32::consts::FRAC_PI_2)).unwrap();
+    let aabb = b.compute_aabb(&t).unwrap();
+
+    // Rotasi 90 derajat terhadap Y menukar sumbu X dan Z:
+    // extents X menjadi 4.0, extents Z menjadi 2.0, extents Y tetap 3.0
+    assert!((aabb.min.x - (-4.0)).abs() < 1e-5);
+    assert!((aabb.max.x - 4.0).abs() < 1e-5);
+    assert!((aabb.min.y - (-3.0)).abs() < 1e-5);
+    assert!((aabb.max.y - 3.0).abs() < 1e-5);
+    assert!((aabb.min.z - (-2.0)).abs() < 1e-5);
+    assert!((aabb.max.z - 2.0).abs() < 1e-5);
+}
+
+// --- CRITICAL TEST: ROTATED BOX 45 DEGREE ANALYTICAL (SECTION 34) ---
+
+#[test]
+fn test_9_3_box_aabb_45_degree_rotation_analytical() {
+    // Box half_extents = (2.0, 1.0, 0.5)
+    let half_extents = Vec3::new(2.0, 1.0, 0.5);
+    let b = BoxShape::new(half_extents).unwrap();
+
+    // Rotasi 45 derajat terhadap sumbu Y
+    let t = Transform::from_rotation(Quat::from_rotation_y(std::f32::consts::FRAC_PI_4)).unwrap();
+    let aabb = b.compute_aabb(&t).unwrap();
+
+    // Analitis:
+    // R = [ cos 45,  0, sin 45 ] = [ sqrt(2)/2, 0,  sqrt(2)/2 ]
+    //     [      0,  1,      0 ]   [         0, 1,          0 ]
+    //     [-sin 45,  0, cos 45 ]   [-sqrt(2)/2, 0,  sqrt(2)/2 ]
+    //
+    // |R| * (2.0, 1.0, 0.5)
+    // E_world.x = sqrt(2)/2 * 2.0 + 0 * 1.0 + sqrt(2)/2 * 0.5 = 2.5 * sqrt(2)/2 ≈ 1.767767
+    // E_world.y = 1.0
+    // E_world.z = sqrt(2)/2 * 2.0 + 0 * 1.0 + sqrt(2)/2 * 0.5 = 2.5 * sqrt(2)/2 ≈ 1.767767
+    let expected_x = 2.5 * (std::f32::consts::SQRT_2 / 2.0);
+    let expected_y = 1.0;
+    let expected_z = 2.5 * (std::f32::consts::SQRT_2 / 2.0);
+
+    assert!(
+        (aabb.max.x - expected_x).abs() < 1e-5,
+        "AABB X extent: didapat {}, ekspektasi {}",
+        aabb.max.x,
+        expected_x
+    );
+    assert!(
+        (aabb.max.y - expected_y).abs() < 1e-5,
+        "AABB Y extent: didapat {}, ekspektasi {}",
+        aabb.max.y,
+        expected_y
+    );
+    assert!(
+        (aabb.max.z - expected_z).abs() < 1e-5,
+        "AABB Z extent: didapat {}, ekspektasi {}",
+        aabb.max.z,
+        expected_z
+    );
+    assert!((aabb.min.x - (-expected_x)).abs() < 1e-5);
+    assert!((aabb.min.y - (-expected_y)).abs() < 1e-5);
+    assert!((aabb.min.z - (-expected_z)).abs() < 1e-5);
+}
+
+// --- CRITICAL TEST: CAPSULE AXIS ROTATION 90 DEGREE (SECTION 35) ---
+
+#[test]
+fn test_9_3_capsule_aabb_90_degree_rotation_around_x() {
+    // Sumbu lokal kapsul adalah Y: radius = 1.0, half_height = 2.0
+    let capsule = Capsule::new(1.0, 2.0).unwrap();
+
+    // Rotasi 90 derajat terhadap sumbu X memetakan lokal +Y ke dunia +Z
+    let t = Transform::from_rotation(Quat::from_rotation_x(std::f32::consts::FRAC_PI_2)).unwrap();
+    let aabb = capsule.compute_aabb(&t).unwrap();
+
+    // Sumbu panjang kapsul sekarang sejajar dengan sumbu Z dunia:
+    // X half-extent = radius = 1.0
+    // Y half-extent = radius = 1.0
+    // Z half-extent = half_height + radius = 2.0 + 1.0 = 3.0
+    assert!((aabb.min.x - (-1.0)).abs() < 1e-5);
+    assert!((aabb.max.x - 1.0).abs() < 1e-5);
+    assert!((aabb.min.y - (-1.0)).abs() < 1e-5);
+    assert!((aabb.max.y - 1.0).abs() < 1e-5);
+    assert!((aabb.min.z - (-3.0)).abs() < 1e-5);
+    assert!((aabb.max.z - 3.0).abs() < 1e-5);
+}
+
+#[test]
+fn test_9_3_capsule_aabb_negative_coordinates() {
+    let capsule = Capsule::new(1.0, 2.0).unwrap();
+    let t = Transform::from_translation(Vec3::new(-100.0, -50.0, -25.0)).unwrap();
+    let aabb = capsule.compute_aabb(&t).unwrap();
+
+    assert_eq!(aabb.min, Vec3::new(-101.0, -53.0, -26.0));
+    assert_eq!(aabb.max, Vec3::new(-99.0, -47.0, -24.0));
+}
+
+// --- E. COLLIDER & PHYSICS WORLD LIFECYCLE TESTS ---
+
+#[test]
+fn test_9_3_collider_creation_and_accessors() {
+    let id = ColliderId(1);
+    let body_id = RigidBodyId(10);
+    let shape = Shape::Sphere(Sphere::new(2.5).unwrap());
+    let local_t = Transform::from_translation(Vec3::new(1.0, 0.0, 0.0)).unwrap();
+
+    let collider = Collider::new(id, body_id, shape.clone(), local_t);
+    assert_eq!(collider.id(), id);
+    assert_eq!(collider.rigid_body_id(), body_id);
+    assert_eq!(collider.shape(), &shape);
+    assert_eq!(collider.local_transform(), &local_t);
+}
+
+#[test]
+fn test_9_3_collider_add_to_physics_world_and_broadphase_sync() {
+    let mut world = PhysicsWorld::default();
+
+    let body_id = RigidBodyId(100);
+    let body = RigidBody::new_static(body_id, Vec3::new(10.0, 0.0, 0.0), Quat::IDENTITY).unwrap();
+    world.add_rigid_body(body, None).unwrap();
+
+    let collider_id = ColliderId(1);
+    let shape = Shape::Sphere(Sphere::new(2.0).unwrap());
+    let local_t = Transform::IDENTITY;
+    let collider = Collider::new(collider_id, body_id, shape, local_t);
+
+    world.add_collider(collider).unwrap();
+
+    assert_eq!(world.collider_count(), 1);
+    assert!(world.get_collider(collider_id).is_some());
+
+    // Proksi broadphase otomatis tersinkronisasi dengan AABB turunan (pusat (10,0,0) radius 2.0)
+    let proxy_aabb = world.get_body_aabb(body_id).unwrap();
+    assert_eq!(proxy_aabb.min, Vec3::new(8.0, -2.0, -2.0));
+    assert_eq!(proxy_aabb.max, Vec3::new(12.0, 2.0, 2.0));
+}
+
+#[test]
+fn test_9_3_collider_add_fails_on_missing_body() {
+    let mut world = PhysicsWorld::default();
+
+    let missing_body_id = RigidBodyId(999);
+    let collider = Collider::new(
+        ColliderId(1),
+        missing_body_id,
+        Shape::Sphere(Sphere::new(1.0).unwrap()),
+        Transform::IDENTITY,
+    );
+
+    let err = world.add_collider(collider).unwrap_err();
+    assert_eq!(err, BroadphaseError::BodyNotFound(missing_body_id));
+    assert_eq!(world.collider_count(), 0);
+}
+
+#[test]
+fn test_9_3_collider_add_fails_on_duplicate_id() {
+    let mut world = PhysicsWorld::default();
+
+    let body_id = RigidBodyId(101);
+    let body = RigidBody::new_static(body_id, Vec3::ZERO, Quat::IDENTITY).unwrap();
+    world.add_rigid_body(body, None).unwrap();
+
+    let col1 = Collider::new(
+        ColliderId(5),
+        body_id,
+        Shape::Sphere(Sphere::new(1.0).unwrap()),
+        Transform::IDENTITY,
+    );
+    let col2 = Collider::new(
+        ColliderId(5),
+        body_id,
+        Shape::Sphere(Sphere::new(2.0).unwrap()),
+        Transform::IDENTITY,
+    );
+
+    assert!(world.add_collider(col1).is_ok());
+    assert_eq!(
+        world.add_collider(col2).unwrap_err(),
+        BroadphaseError::ColliderAlreadyExists(ColliderId(5))
+    );
+}
+
+#[test]
+fn test_9_3_multi_collider_representation_and_compound_broadphase_aabb() {
+    let mut world = PhysicsWorld::default();
+
+    let body_id = RigidBodyId(200);
+    let body = RigidBody::new_static(body_id, Vec3::ZERO, Quat::IDENTITY).unwrap();
+    world.add_rigid_body(body, None).unwrap();
+
+    // Collider 1 di offset lokal (-5, 0, 0) dengan radius 1.0
+    let col1 = Collider::new(
+        ColliderId(10),
+        body_id,
+        Shape::Sphere(Sphere::new(1.0).unwrap()),
+        Transform::from_translation(Vec3::new(-5.0, 0.0, 0.0)).unwrap(),
+    );
+
+    // Collider 2 di offset lokal (+5, 0, 0) dengan radius 1.0
+    let col2 = Collider::new(
+        ColliderId(11),
+        body_id,
+        Shape::Sphere(Sphere::new(1.0).unwrap()),
+        Transform::from_translation(Vec3::new(5.0, 0.0, 0.0)).unwrap(),
+    );
+
+    world.add_collider(col1).unwrap();
+    world.add_collider(col2).unwrap();
+
+    assert_eq!(world.collider_count(), 2);
+    let colliders: Vec<_> = world.colliders_for_body(body_id).collect();
+    assert_eq!(colliders.len(), 2);
+
+    // Broadphase AABB untuk badan ini mewakili gabungan (union) kedua collider:
+    // X membentang dari -6.0 (-5.0 - 1.0) hingga +6.0 (+5.0 + 1.0)
+    let broadphase_aabb = world.get_body_aabb(body_id).unwrap();
+    assert_eq!(broadphase_aabb.min, Vec3::new(-6.0, -1.0, -1.0));
+    assert_eq!(broadphase_aabb.max, Vec3::new(6.0, 1.0, 1.0));
+}
+
+#[test]
+fn test_9_3_collider_removal_resyncs_broadphase() {
+    let mut world = PhysicsWorld::default();
+
+    let body_id = RigidBodyId(300);
+    let body = RigidBody::new_static(body_id, Vec3::ZERO, Quat::IDENTITY).unwrap();
+    world.add_rigid_body(body, None).unwrap();
+
+    let col1 = Collider::new(
+        ColliderId(20),
+        body_id,
+        Shape::Sphere(Sphere::new(1.0).unwrap()),
+        Transform::from_translation(Vec3::new(-5.0, 0.0, 0.0)).unwrap(),
+    );
+    let col2 = Collider::new(
+        ColliderId(21),
+        body_id,
+        Shape::Sphere(Sphere::new(1.0).unwrap()),
+        Transform::from_translation(Vec3::new(5.0, 0.0, 0.0)).unwrap(),
+    );
+
+    world.add_collider(col1).unwrap();
+    world.add_collider(col2).unwrap();
+
+    // Hapus collider 2 (+5, 0, 0)
+    let removed = world.remove_collider(ColliderId(21)).unwrap();
+    assert_eq!(removed.id(), ColliderId(21));
+    assert_eq!(world.collider_count(), 1);
+
+    // Broadphase AABB harus mengecil kembali hanya mencakup collider 1 (-6.0 hingga -4.0 di X)
+    let aabb_after_first = world.get_body_aabb(body_id).unwrap();
+    assert_eq!(aabb_after_first.min, Vec3::new(-6.0, -1.0, -1.0));
+    assert_eq!(aabb_after_first.max, Vec3::new(-4.0, 1.0, 1.0));
+
+    // Hapus collider 1 (-5, 0, 0)
+    world.remove_collider(ColliderId(20)).unwrap();
+    assert_eq!(world.collider_count(), 0);
+
+    // Broadphase proksi harus bersih setelah seluruh collider dihapus
+    assert!(world.get_body_aabb(body_id).is_none());
+}
+
+#[test]
+fn test_9_3_rigid_body_removal_cleans_all_colliders() {
+    let mut world = PhysicsWorld::default();
+
+    let body_id = RigidBodyId(400);
+    let body = RigidBody::new_static(body_id, Vec3::ZERO, Quat::IDENTITY).unwrap();
+    world.add_rigid_body(body, None).unwrap();
+
+    let col1 = Collider::new(
+        ColliderId(30),
+        body_id,
+        Shape::Sphere(Sphere::new(1.0).unwrap()),
+        Transform::IDENTITY,
+    );
+    let col2 = Collider::new(
+        ColliderId(31),
+        body_id,
+        Shape::Box(BoxShape::new(Vec3::ONE).unwrap()),
+        Transform::IDENTITY,
+    );
+
+    world.add_collider(col1).unwrap();
+    world.add_collider(col2).unwrap();
+    assert_eq!(world.collider_count(), 2);
+
+    // Hapus RigidBody pemilik
+    world.remove_rigid_body(body_id).unwrap();
+
+    // Seluruh collider milik body ini harus otomatis terhapus
+    assert_eq!(world.collider_count(), 0);
+    assert!(world.get_body_aabb(body_id).is_none());
 }

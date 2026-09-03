@@ -90,7 +90,7 @@ impl BroadphasePair {
     }
 }
 
-/// Kesalahan operasi pada broadphase.
+/// Kesalahan operasi pada broadphase dan registri fisika.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BroadphaseError {
     /// Badan dengan ID tersebut sudah terdaftar
@@ -99,6 +99,12 @@ pub enum BroadphaseError {
     BodyNotFound(RigidBodyId),
     /// AABB tidak valid (non-finite atau min > max)
     InvalidAabb(AabbError),
+    /// Collider dengan ID tersebut sudah terdaftar
+    ColliderAlreadyExists(super::collider::ColliderId),
+    /// Collider dengan ID tersebut tidak ditemukan
+    ColliderNotFound(super::collider::ColliderId),
+    /// Kesalahan geometri bentuk
+    ShapeError(super::shape::ShapeError),
 }
 
 impl fmt::Display for BroadphaseError {
@@ -107,11 +113,20 @@ impl fmt::Display for BroadphaseError {
             Self::BodyAlreadyExists(id) => write!(f, "Badan {} sudah terdaftar di broadphase", id),
             Self::BodyNotFound(id) => write!(f, "Badan {} tidak ditemukan di broadphase", id),
             Self::InvalidAabb(err) => write!(f, "AABB tidak valid: {}", err),
+            Self::ColliderAlreadyExists(id) => write!(f, "Collider {:?} sudah terdaftar", id),
+            Self::ColliderNotFound(id) => write!(f, "Collider {:?} tidak ditemukan", id),
+            Self::ShapeError(err) => write!(f, "Kesalahan bentuk tabrakan: {}", err),
         }
     }
 }
 
 impl std::error::Error for BroadphaseError {}
+
+impl From<super::shape::ShapeError> for BroadphaseError {
+    fn from(err: super::shape::ShapeError) -> Self {
+        Self::ShapeError(err)
+    }
+}
 
 /// Koordinat sel 3D integer spatial hash yang memiliki urutan total (`Ord`, `PartialOrd`)
 /// untuk menjamin determinisme saat digunakan sebagai kunci dalam struktur `BTreeMap`.
