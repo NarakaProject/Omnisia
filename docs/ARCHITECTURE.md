@@ -1,6 +1,6 @@
 # Omnisia — System Architecture & Source of Truth
 
-> **Current Milestone**: Phase 9.12 — Stress / Performance Validation (`4f60bd6`)  
+> **Current Milestone**: Phase 10.3 — Impact → Structure → Physics Integration  
 > **Core Architectural Paradigm**: Engine-First, Data-Driven, Deterministic Voxel Simulation with Authoritative Firewalls.
 
 ---
@@ -25,7 +25,8 @@ Omnisia separates simulation into distinct, non-overlapping architectural layers
 │  • DetachedAggregate extraction (Zero per-tick BFS scans)                   │
 │                                                                             │
 │  [ LAYER 3: DYNAMIC AGGREGATE RUNTIME ]                                     │
-│  • DynamicBody / DynamicAggregateRecord: Authoritative owner of detached vx │
+│  • DynamicAggregateRecord (authoritative dynamic owner in PhysicsWorld)     │
+│  • DynamicBody: Synchronized snapshot view                                  │
 │  • Mutual exclusivity: STATIC_WORLD <-> DYNAMIC_SIMULATION <-> REINTEGRATING│
 │  • Two-phase transactional reintegration (prepare -> commit)                │
 │                                                                             │
@@ -46,6 +47,7 @@ Omnisia separates simulation into distinct, non-overlapping architectural layers
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                           INTER-SUBSTRATE BRIDGES                           │
 ├─────────────────────────────────────────────────────────────────────────────┤
+│  • ImpactBridge: Whole-Impact Phase A Atomicity & Phase B Impulse Response   │
 │  • PlayerRigidBodyBridge: Kinematic velocity transfer & box pushing         │
 │  • StructuralAggregateBridge: Aggregate -> DynamicBody -> RigidBody         │
 └──────────────────────────────────────┬──────────────────────────────────────┘

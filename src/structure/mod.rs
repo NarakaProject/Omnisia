@@ -10,4 +10,4 @@ pub use aggregate::{AggregateVoxel, DetachedAggregate};
 pub use anchor::AnchorPolicy;
 pub use connectivity::{check_structural_connectivity, ConnectivityConfig, ConnectivityStatus};
 pub use events::{StructuralEvent, StructuralMutationType};
-pub use manager::StructuralSystem;
+pub use manager::{StructuralSystem, StructuralTransactionSnapshot};
