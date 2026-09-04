@@ -1,8 +1,8 @@
 # Omnisia — Authoritative Project State
 
-> **Current Milestone**: Phase 10.3 — Impact → Structure → Physics Integration (**COMPLETED / VALIDATED**)  
-> **Next Milestone**: Phase 10.4 — Secondary Debris & Micro-Fragment Pipeline (**PLANNED / NEXT**)  
-> **Verified HEAD Commit**: Current Phase 10.3 Working State  
+> **Current Milestone**: Phase 10.4 — CSG / Destruction Hardening (**COMPLETED / VALIDATED**)  
+> **Next Milestone**: Phase 10.5 — Procedural Sky & Celestial Mechanics (**PLANNED / NEXT**)  
+> **Verified HEAD Commit**: Current Phase 10.4 Working State  
 > **Branch**: `main`  
 > **Source-of-Truth Policy**: Source code and passing automated tests are the absolute source of truth.
 
@@ -16,12 +16,13 @@ Every count in this document has been directly audited and verified against the 
 - **Compiler**: Rust 2021 edition, `cargo build --release` compiles cleanly with zero errors.
 - **Formatting**: `cargo fmt --all -- --check` passes cleanly with zero diffs.
 - **Linter**: `cargo clippy --all-targets --all-features -- -D warnings` passes cleanly with zero warnings or errors.
-- **Test Suite**: `cargo test --all-targets` passes with **738 passed, 0 failed, 0 ignored** across 14 test targets.
+- **Test Suite**: `cargo test --all-targets` passes with **783 passed, 0 failed, 0 ignored** across 15 test targets.
 
-### Test Count Breakdown by Target (738 Total Tests)
+### Test Count Breakdown by Target (783 Total Tests)
 
 | Test Target Binary | Scope / Feature Area | Verified Test Count | Status |
 |:---|:---|:---:|:---:|
+| `tests/csg_hardening_tests.rs` | Arbitrary Add/Remove/Replace, Cross-Chunk Boundaries, Negative Euclidean Coordinates, Structural Consistency, Persistence/Revision Invariants, Deterministic Replay, Symmetric 6-Face Invalidation, Transactional Revert & Preflight Safety (Phase 10.4) | **45** | PASS |
 | `tests/impact_physics_integration_tests.rs` | ImpactBridge, Multi-Aggregate Atomicity, Phase A Rollback, Phase B Impulse Response, Reintegration Guardrails, Infallible Physics Deregistration, Zero-Motion Roundtrip, Negative Coordinates, Cross-Chunk Boundaries, Unloaded Chunk Safety (Phase 10.3) | **34** | PASS |
 | `tests/csg_tests.rs` | VoxelEdit, VoxelEditTransaction, Infallible Commit & Rollback, Duplicate Rejection, CraterGenerator, MaterialDestructionPolicy, Invalidation (Phase 10.2) | **27** | PASS |
 | `tests/impact_tests.rs` | ImpactEvent, ImpactSource, Magnitude, AffectedVolume, Euclidean Boundaries, Determinism (Phase 10.1) | **17** | PASS |
@@ -36,7 +37,7 @@ Every count in this document has been directly audited and verified against the 
 | `tests/streaming_tests.rs` | ChunkStore Residency, Job Scheduler, Memory Budget, Eviction Lifecycle (Phase 3) | **11** | PASS |
 | `tests/structure_tests.rs` | 6-Connected Adjacency, Structural Anchors, Aggregate Extraction (Phase 7) | **11** | PASS |
 | `tests/scale_tests.rs` | Metric Coordinate Invariants (1 vx = 0.5m), Scale Ruler, Traversal Residency (Phase 7) | **7** | PASS |
-| **Workspace Total** | **All Subsystems** | **738** | **PASS** |
+| **Workspace Total** | **All Subsystems** | **783** | **PASS** |
 
 ### Verified Validation Binaries (6 Binaries)
 
@@ -47,7 +48,7 @@ Every count in this document has been directly audited and verified against the 
 | `src/bin/integration_validation.rs` | `cargo run --release --bin integration_validation` | Structural detachment, DynamicBody interaction, two-phase atomic reintegration | **PASS (6/6 stages)** |
 | `src/bin/player_validation.rs` | `cargo run --release --bin player_validation` | Kinematic locomotion, capsule crouching, jump edge-trigger, swept anti-tunneling | **PASS (8/8 stages)** |
 | `src/bin/traversal_validation.rs` | `cargo run --release --bin traversal_validation` | Multi-kilometer flight (-1km to +1km), streaming residency audit, memory stability | **PASS (10/10 stages)** |
-| `src/bin/benchmarks.rs` | `cargo run --release --bin benchmarks` | Full performance test suite covering 52 isolated benchmarks (including BM 52 with all 9 profiles) | **PASS (52/52 runs)** |
+| `src/bin/benchmarks.rs` | `cargo run --release --bin benchmarks` | Full performance test suite covering 53 isolated benchmarks (including BM 53 with all 4 profiles) | **PASS (53/53 runs)** |
 
 ---
 
@@ -78,7 +79,7 @@ Under Omnisia's engineering standard, every subsystem must be explicitly classif
 | **Impact Foundation (10.1)** | `VALIDATED` | `src/impact/` (`event.rs`, `volume.rs`, `pipeline.rs`) | Generic `ImpactEvent`, `ImpactSource`, `ImpactMagnitude`, `AffectedVolume`, `DeterministicImpactPipeline`. |
 | **Terrain Mutation / CSG Foundation (10.2)** | `VALIDATED` | `src/csg/` (`edit.rs`, `transaction.rs`, `crater.rs`, `policy.rs`) | Atomic multi-chunk `VoxelEditTransaction`, `CraterGenerator`, `DestructionPolicy`, 27 unit tests, Benchmark 51. |
 | **Impact → Structure → Physics (10.3)** | `VALIDATED` | `src/impact/bridge.rs`, `src/structure/manager.rs` | Whole-impact Phase A atomicity, exact rollback, Phase B impulse response (\|\|J\|\| = J), dynamic aggregate single ownership, 34 tests, Benchmark 52. |
-| **Destruction Hardening (10.4)** | `PLANNED` | — (Phase 10.4) | Arbitrary boundary stress, negative coordinate cratering, deterministic destruction replay. |
+| **Destruction Hardening (10.4)** | `VALIDATED` | `src/csg/` (`transaction.rs`, `edit.rs`), `tests/csg_hardening_tests.rs` | Pre-state snapshotting, explicit `revert()` with preflight safety, arbitrary boundary stress, negative Euclidean coordinates, symmetric 6-face invalidation, 45 tests, Benchmark 53. |
 | **Procedural Sky & Atmosphere (10.5–10.7)** | `PLANNED` | — (Phase 10.5–10.7) | GPU-driven atmospheric gradient, sun/moon cycle, stars, procedural aurora. |
 | **Player World Interaction (Tools/Harvest)**| `PLANNED` | — (Phase 11) | Voxel targeting, block placing/breaking, harvesting tools, interaction raycast. |
 | **Entity & Creature Foundation** | `PLANNED` | — (Phase 12) | `CreatureDefinition`, stats, health, AI states, animal & beast hierarchy. |

@@ -1,5 +1,5 @@
 use glam::IVec3;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use crate::chunk::dirty_flags;
 use crate::coord::world_voxel_to_chunk_and_local;
@@ -18,6 +18,15 @@ pub enum DuplicateEditPolicy {
     LastWriteWins,
 }
 
+/// Snapshot of authoritative chunk state prior to transaction mutation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ChunkPreState {
+    pub chunk_coord: IVec3,
+    pub dirty_flags: u16,
+    pub revision: u64,
+    pub non_air_count: u16,
+}
+
 /// The result returned upon successfully committing a `VoxelEditTransaction`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VoxelEditCommitResult {
@@ -29,6 +38,50 @@ pub struct VoxelEditCommitResult {
     pub structural_events: Vec<StructuralEvent>,
     /// Snapshot of the committed deltas.
     pub delta: ProposedDelta,
+    /// Pre-commit snapshots of all resident chunks touched or invalidated by the transaction.
+    pub chunk_pre_states: Vec<ChunkPreState>,
+}
+
+impl VoxelEditCommitResult {
+    /// Reverts the authoritative `ChunkStore` state touched by this committed transaction
+    /// to the captured pre-commit state, assuming the same `ChunkStore` authority remains
+    /// unchanged between commit and revert.
+    ///
+    /// PREFLIGHT SAFETY:
+    /// Prior to making any modifications, this method verifies that every captured chunk
+    /// remains resident in `store`. If any chunk is no longer resident, it returns
+    /// `Err(VoxelEditError::ChunkNotResident)` and aborts immediately without partial mutation.
+    ///
+    /// STATE RESTORATION:
+    /// 1. Voxel deltas are restored in reverse order via `store.set_voxel_world(d.position, d.old_block)`.
+    /// 2. Captured pre-commit metadata (`non_air_count`, `dirty_flags`, `revision`) is restored
+    ///    directly for every chunk in `chunk_pre_states`, overwriting any transient mutation side effects.
+    pub fn revert(&self, store: &mut ChunkStore) -> Result<(), VoxelEditError> {
+        // Preflight safety: verify all captured chunks remain resident before mutating anything.
+        for pre_state in &self.chunk_pre_states {
+            if !store.is_chunk_resident(&pre_state.chunk_coord) {
+                return Err(VoxelEditError::ChunkNotResident {
+                    chunk_coord: pre_state.chunk_coord,
+                });
+            }
+        }
+
+        // 1. Restore voxel deltas in reverse delta order
+        for d in self.delta.deltas.iter().rev() {
+            store.set_voxel_world(d.position, d.old_block);
+        }
+
+        // 2. Restore exact pre-commit metadata
+        for pre_state in &self.chunk_pre_states {
+            if let Some(chunk) = store.get_mut(&pre_state.chunk_coord) {
+                chunk.dirty_flags = pre_state.dirty_flags;
+                chunk.revision = pre_state.revision;
+                chunk.non_air_count = pre_state.non_air_count;
+            }
+        }
+
+        Ok(())
+    }
 }
 
 /// An atomic, transactional collection of voxel edit proposals.
@@ -231,17 +284,17 @@ impl VoxelEditTransaction {
 
     /// Atomically commits the transaction to `ChunkStore`.
     ///
-    /// ATOMICITY GUARANTEE & PROOF:
+    /// GUARANTEE:
     /// 1. `self.validate(store)?` is executed prior to any mutation.
     ///    If ANY validation check fails (unloaded chunk, precondition mismatch, duplicate conflict),
     ///    this method terminates immediately with `Err`. Exactly ZERO voxels or dirty flags are modified.
     /// 2. Once `validate` succeeds:
     ///    - All affected chunks are proven resident.
     ///    - All coordinates are in valid local bounds [0..31] by Euclidean modulus.
+    ///    - Pre-states of all affected chunks and resident boundary neighbors are snapshotted BEFORE mutation.
     ///    - `store.set_voxel_world` performs flat array writes to resident chunks in-memory.
-    ///    - This phase is provably infallible (zero I/O, zero network, zero allocations that could fail).
-    /// 3. In the event of any unexpected condition, a rollback mechanism restores modified voxels
-    ///    from the `ProposedDelta` snapshot, ensuring absolute 100% atomicity.
+    /// 3. The returned `VoxelEditCommitResult` includes `chunk_pre_states` enabling explicit `revert()`
+    ///    to restore exact pre-transaction state on demand.
     pub fn commit(&self, store: &mut ChunkStore) -> Result<VoxelEditCommitResult, VoxelEditError> {
         let delta = self.validate(store)?;
 
@@ -251,7 +304,42 @@ impl VoxelEditTransaction {
                 mesh_invalidation_chunks: Vec::new(),
                 structural_events: Vec::new(),
                 delta,
+                chunk_pre_states: Vec::new(),
             });
+        }
+
+        // Capture pre-states of all resident chunks that will be touched by commit
+        // (both directly affected chunks and resident boundary neighbors that receive MESH_DIRTY)
+        // BEFORE the first voxel mutation.
+        let mut chunk_pre_states = Vec::new();
+        let mut recorded_coords = HashSet::new();
+
+        // Snapshot directly affected resident chunks
+        for &coord in &delta.affected_chunks {
+            if let Some(chunk) = store.get(&coord) {
+                recorded_coords.insert(coord);
+                chunk_pre_states.push(ChunkPreState {
+                    chunk_coord: coord,
+                    dirty_flags: chunk.dirty_flags,
+                    revision: chunk.revision,
+                    non_air_count: chunk.non_air_count,
+                });
+            }
+        }
+
+        // Snapshot resident boundary neighbor chunks that will receive MESH_DIRTY
+        for &coord in &delta.mesh_invalidation_chunks {
+            if !recorded_coords.contains(&coord) {
+                if let Some(chunk) = store.get(&coord) {
+                    recorded_coords.insert(coord);
+                    chunk_pre_states.push(ChunkPreState {
+                        chunk_coord: coord,
+                        dirty_flags: chunk.dirty_flags,
+                        revision: chunk.revision,
+                        non_air_count: chunk.non_air_count,
+                    });
+                }
+            }
         }
 
         // Apply mutations in canonical order
@@ -322,6 +410,7 @@ impl VoxelEditTransaction {
             mesh_invalidation_chunks: delta.mesh_invalidation_chunks.clone(),
             structural_events,
             delta,
+            chunk_pre_states,
         })
     }
 }

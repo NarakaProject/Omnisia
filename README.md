@@ -3,8 +3,8 @@
 [![Rust](https://img.shields.io/badge/Rust-2021_Edition-orange.svg)](https://www.rust-lang.org/)
 [![wgpu](https://img.shields.io/badge/wgpu-v24_(Metal%20%2F%20Vulkan%20%2F%20DX12)-blue.svg)](https://wgpu.rs/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Phase](https://img.shields.io/badge/Phase-10.2_Validated-brightgreen.svg)](#completed-phases)
-[![Tests](https://img.shields.io/badge/Tests-704_Passing-brightgreen.svg)](#test-suite--validation-evidence)
+[![Phase](https://img.shields.io/badge/Phase-10.4_Validated-brightgreen.svg)](#completed-phases)
+[![Tests](https://img.shields.io/badge/Tests-783_Passing-brightgreen.svg)](#test-suite--validation-evidence)
 
 > **Vision**: *"Revive Chimeraland with a voxel soul."*  
 > Omnisia is a high-performance voxel sandbox engine and game built from scratch in pure Rust and `wgpu`. It merges continuous procedural world generation, structural connectivity, and rigid-body physical simulation with a deep creature ecosystem, taming, pet raising, and modular chimera devour/evolution.
@@ -20,8 +20,8 @@ For any developer or AI coding agent entering this repository for the first time
 | **What is Omnisia?** | A voxel sandbox game engine combining a procedural voxel substrate with modular creature and evolution gameplay. |
 | **What is the long-term vision?** | Revive the modular creature capture, chimera evolution, and open living world of *Chimeraland* on an authoritative, physically reactive voxel substrate. |
 | **What is the current gameplay reality?** | **Early physics & locomotion substrate.** The player can walk, sprint, crouch, jump, auto-step, glide, and push dynamic rigid bodies. There are **no creatures, combat, taming, inventory, crafting, or devour systems yet**. |
-| **What Phase is complete?** | **Phase 10.2 — Terrain Mutation / CSG Foundation** (Validated with 27 focused tests, atomic multi-chunk commit, material destruction policy, crater generation). |
-| **What is the next Phase?** | **Phase 10.3 — Impact → Structure → Physics Integration** (Triggering structural detachment and physical impulses from committed voxel mutation). |
+| **What Phase is complete?** | **Phase 10.4 — CSG / Destruction Hardening** (Validated with 45 hardening tests, exact transactional revert, symmetric invalidation, negative coordinate roundtrips). |
+| **What is the next Phase?** | **Phase 10.5 — Procedural Sky & Celestial Mechanics** (Lightweight GPU sky shader, celestial clock, sun/moon/stars). |
 | **What systems are authoritative?** | `ChunkStore` (static terrain), `DynamicBody` (detached voxels), `PhysicsWorld` (rigid bodies), `PlayerController` (kinematic locomotion), Data Registry (modding definitions). |
 | **What systems are derived / cache state?** | GPU mesh buffers (`MeshCache`), spatial broadphase grid, collision contact manifolds, transient structural BFS results. |
 | **What are the top architectural invariants?** | (1) Player is Kinematic, NEVER a `RigidBody`, NEVER in islands. (2) 1 structural aggregate = 1 `RigidBody` owning $M$ colliders (never 1 voxel = 1 body). (3) Zero double-ownership of voxels. |
@@ -64,6 +64,8 @@ PHASE 9   RIGIDBODY PHYSICS          Broadphase + SAT contacts + impulse solver 
           (9.1 to 9.12)              Islands + dynamic-dynamic + bridges + stress validation
 PHASE 10.1 IMPACT FOUNDATION          Generic ImpactEvent + bounded volume query + pipeline
 PHASE 10.2 CSG & TERRAIN MUTATION    VoxelEditTransaction + atomic commit + crater generator + invalidation
+PHASE 10.3 IMPACT -> STRUCTURE -> PHYSICS ImpactBridge + Phase A atomicity + Phase B impulse + 34 tests
+PHASE 10.4 CSG / DESTRUCTION HARDENING  Pre-state snapshotting + revert() + negative coords + 6-face invalidation + 45 tests
 ```
 
 ### Authoritative Player Locomotion Semantics (Phase 8D / 9.10)
@@ -84,11 +86,11 @@ PHASE 10.2 CSG & TERRAIN MUTATION    VoxelEditTransaction + atomic commit + crat
 Phase 10 connects the completed physical simulation substrate to destruction events and atmospheric aesthetics:
 - **Track A: World Impact & CSG Destruction**
   - **10.1 Impact Foundation (`VALIDATED`)**: Generic `ImpactEvent` representation, `ImpactSource`, `ImpactMagnitude`, bounded `AffectedVolume` queries, and `DeterministicImpactPipeline`.
-  - **10.2 Terrain Mutation / CSG Foundation (`PLANNED / NEXT`)**: Transactional spherical and directional crater carving in `ChunkStore`.
-  - **10.3 Impact $\to$ Structure $\to$ Physics**: Terrain blast $\to$ structural detachment $\to$ `DynamicBody` $\to$ `RigidBody` outward impulse $\to$ settling $\to$ reintegration.
-  - **10.4 Destruction Hardening**: Multi-chunk boundary craters, negative coordinates, persistence interaction.
+  - **10.2 Terrain Mutation / CSG Foundation (`VALIDATED`)**: Transactional spherical and directional crater carving in `ChunkStore`.
+  - **10.3 Impact $\to$ Structure $\to$ Physics (`VALIDATED`)**: Terrain blast $\to$ structural detachment $\to$ `DynamicBody` $\to$ `RigidBody` outward impulse $\to$ settling $\to$ reintegration.
+  - **10.4 Destruction Hardening (`VALIDATED`)**: Multi-chunk boundary craters, negative coordinates, persistence interaction, transactional revert.
 - **Track B: Sky & Atmosphere**
-  - **10.5 Sky & Atmosphere Foundation**: Lightweight procedural GPU sky, celestial clock (sun, moon phases), twilight gradients, procedural stars. (*No HDRIs, no giant skyboxes, no expensive volumetric raymarching*).
+  - **10.5 Sky & Atmosphere Foundation (`PLANNED / NEXT`)**: Lightweight procedural GPU sky, celestial clock (sun, moon phases), twilight gradients, procedural stars. (*No HDRIs, no giant skyboxes, no expensive volumetric raymarching*).
   - **10.6 Procedural Aurora**: Multi-band animated procedural aurora borealis across night skies.
   - **10.7 Integration & Visual Stress**: Concurrent terrain destruction during real-time sky rendering at $\ge 60\text{ FPS}$.
 
@@ -147,7 +149,9 @@ Any modification violating these core rules will be rejected:
 ## 🧪 Test Suite & Validation Evidence
 
 Verified across all subsystems:
-- **Workspace Test Suite**: **704 / 704 tests passing** (`cargo test --all-targets`).
+- **Workspace Test Suite**: **783 / 783 tests passing** (`cargo test --all-targets`).
+  - `tests/csg_hardening_tests.rs`: **45 tests** (Arbitrary Add/Remove/Replace, cross-chunk boundaries, negative coordinates, structural consistency, persistence/revision contracts, deterministic replay, 6-face invalidation, transactional revert).
+  - `tests/impact_physics_integration_tests.rs`: **34 tests** (Whole-impact Phase A atomicity, Phase B impulse response, single dynamic ownership, 2-phase reintegration).
   - `tests/csg_tests.rs`: **27 tests** (Add/Remove/Replace, atomic commit & failure rollback, duplicate rejection, cross-chunk atomicity, negative coords, crater generator, material-aware policy, invalidation).
   - `tests/impact_tests.rs`: **17 tests** (ImpactEvent construction, sources, Euclidean volume queries, deterministic pipeline, replay).
   - `tests/physics_9_tests.rs`: **415 tests** (RigidBody, contacts, islands, sleeping, dynamic-dynamic, stress).
@@ -161,7 +165,7 @@ Verified across all subsystems:
   - `cargo run --release --bin integration_validation` $\to$ **PASS** (6/6 stages).
   - `cargo run --release --bin player_validation` $\to$ **PASS** (8/8 stages).
   - `cargo run --release --bin traversal_validation` $\to$ **PASS** (10/10 stages, 1km traversal, memory $\le 85\text{ MB}$).
-- **Benchmark Suite**: **51 benchmarks** in `src/bin/benchmarks.rs` (including Benchmark 51 for CSG Crater Generation & Atomic Transaction).
+- **Benchmark Suite**: **53 benchmarks** in `src/bin/benchmarks.rs` (including Benchmark 53 for CSG Hardening & Arbitrary Cross-Chunk Transactions).
 
 ---
 

@@ -33,7 +33,7 @@ fn main() {
     let filter = std::env::args().nth(1);
     let run_all = filter.is_none() || filter.as_deref() == Some("all");
 
-    if run_all || filter.as_deref() != Some("52") {
+    if run_all || (filter.as_deref() != Some("52") && filter.as_deref() != Some("53")) {
         // 1. Benchmark Chunk Indexing
         {
             let start = Instant::now();
@@ -2973,6 +2973,173 @@ fn main() {
             println!(
                 "  [Profile 9] Reintegration Latency (100 voxels, prepare+validate+commit): {:.2} µs/reintegration (iters: {})",
                 us_per_reint, iters
+            );
+        }
+    }
+
+    // ========================================================================
+    // [BENCHMARK 53] CSG Hardening & Arbitrary Cross-Chunk Transactions (Phase 10.4)
+    // ========================================================================
+    if run_all || filter.as_deref() == Some("53") {
+        use omnisia::chunk::Chunk;
+        use omnisia::coord::CHUNK_SIZE;
+        use omnisia::csg::{VoxelEdit, VoxelEditTransaction};
+        use omnisia::material::MaterialId;
+        use omnisia::streaming::store::ChunkStore;
+        use omnisia::voxel::VoxelBlock;
+
+        println!("------------------------------------------------------------");
+        println!("[BENCHMARK 53] CSG Hardening & Arbitrary Cross-Chunk Transactions (Phase 10.4)");
+        println!("------------------------------------------------------------");
+
+        let mat_stone = MaterialId::STONE;
+        let mat_dirt = MaterialId::DIRT;
+        let mat_wood = MaterialId::OAK_WOOD;
+
+        let make_8chunk_store = || -> ChunkStore {
+            let mut store = ChunkStore::new();
+            for cx in 0..2 {
+                for cy in 0..2 {
+                    for cz in 0..2 {
+                        store.insert(Chunk::new(IVec3::new(cx, cy, cz)));
+                    }
+                }
+            }
+            store
+        };
+
+        // Profile 1: Multi-Chunk Arbitrary Edits (Add, Remove, Replace across 8 chunks)
+        {
+            let iters = 500;
+            let mut store = make_8chunk_store();
+            // Pre-seed some blocks
+            for cx in 0..2 {
+                for cy in 0..2 {
+                    for cz in 0..2 {
+                        let base = IVec3::new(cx, cy, cz) * CHUNK_SIZE;
+                        store.set_voxel_world(
+                            base + IVec3::new(10, 10, 10),
+                            VoxelBlock::new(mat_stone),
+                        );
+                    }
+                }
+            }
+
+            let start = Instant::now();
+            for _ in 0..iters {
+                let mut tx = VoxelEditTransaction::new();
+                for cx in 0..2 {
+                    for cy in 0..2 {
+                        for cz in 0..2 {
+                            let base = IVec3::new(cx, cy, cz) * CHUNK_SIZE;
+                            tx.add_edit(VoxelEdit::replace(
+                                base + IVec3::new(10, 10, 10),
+                                VoxelBlock::new(mat_stone),
+                                VoxelBlock::new(mat_wood),
+                            ));
+                            tx.add_edit(VoxelEdit::add(
+                                base + IVec3::new(15, 15, 15),
+                                VoxelBlock::new(mat_dirt),
+                            ));
+                        }
+                    }
+                }
+                let res = tx.commit(&mut store).unwrap();
+                res.revert(&mut store).unwrap();
+            }
+            let elapsed = start.elapsed();
+            let us_per_tx = (elapsed.as_nanos() as f64 / iters as f64) / 1_000.0;
+            println!(
+                "  [Profile 1] Multi-Chunk Arbitrary Edits (8 chunks, 16 edits commit+revert): {:.2} µs/tx (iters: {})",
+                us_per_tx, iters
+            );
+        }
+
+        // Profile 2: Negative-Coordinate Multi-Chunk Transactions
+        {
+            let iters = 500;
+            let mut store = ChunkStore::new();
+            for cx in -2..=0 {
+                for cy in -2..=0 {
+                    for cz in -2..=0 {
+                        store.insert(Chunk::new(IVec3::new(cx, cy, cz)));
+                    }
+                }
+            }
+
+            let start = Instant::now();
+            for _ in 0..iters {
+                let mut tx = VoxelEditTransaction::new();
+                tx.add_edit(VoxelEdit::add(
+                    IVec3::new(-1, -1, -1),
+                    VoxelBlock::new(mat_stone),
+                ));
+                tx.add_edit(VoxelEdit::add(
+                    IVec3::new(-32, -32, -32),
+                    VoxelBlock::new(mat_dirt),
+                ));
+                tx.add_edit(VoxelEdit::add(
+                    IVec3::new(-33, -33, -33),
+                    VoxelBlock::new(mat_wood),
+                ));
+                let res = tx.commit(&mut store).unwrap();
+                res.revert(&mut store).unwrap();
+            }
+            let elapsed = start.elapsed();
+            let us_per_tx = (elapsed.as_nanos() as f64 / iters as f64) / 1_000.0;
+            println!(
+                "  [Profile 2] Negative-Coordinate Transactions (boundary -1/-32/-33 commit+revert): {:.2} µs/tx (iters: {})",
+                us_per_tx, iters
+            );
+        }
+
+        // Profile 3: Edge & Corner Multi-Boundary Invalidation Latency
+        {
+            let iters = 1000;
+            let mut store = make_8chunk_store();
+            let corner_voxel = IVec3::new(31, 31, 31);
+
+            let start = Instant::now();
+            for _ in 0..iters {
+                let mut tx = VoxelEditTransaction::new();
+                tx.add_edit(VoxelEdit::add(corner_voxel, VoxelBlock::new(mat_stone)));
+                let res = tx.commit(&mut store).unwrap();
+                res.revert(&mut store).unwrap();
+            }
+            let elapsed = start.elapsed();
+            let us_per_op = (elapsed.as_nanos() as f64 / iters as f64) / 1_000.0;
+            println!(
+                "  [Profile 3] Corner Multi-Boundary Invalidation (commit+revert with 3 neighbors): {:.2} µs/op (iters: {})",
+                us_per_op, iters
+            );
+        }
+
+        // Profile 4: Transaction Revert Cost and Overhead
+        {
+            let iters = 1000;
+            let mut store = make_8chunk_store();
+            let mut total_revert_ns = 0u128;
+
+            for _ in 0..iters {
+                let mut tx = VoxelEditTransaction::new();
+                tx.add_edit(VoxelEdit::add(
+                    IVec3::new(5, 5, 5),
+                    VoxelBlock::new(mat_stone),
+                ));
+                tx.add_edit(VoxelEdit::add(
+                    IVec3::new(31, 5, 5),
+                    VoxelBlock::new(mat_dirt),
+                ));
+                let res = tx.commit(&mut store).unwrap();
+
+                let rev_start = Instant::now();
+                res.revert(&mut store).unwrap();
+                total_revert_ns += rev_start.elapsed().as_nanos();
+            }
+            let us_per_revert = (total_revert_ns as f64 / iters as f64) / 1_000.0;
+            println!(
+                "  [Profile 4] Revert Isolated Latency (preflight check + reverse delta + metadata restore): {:.2} µs/revert (iters: {})",
+                us_per_revert, iters
             );
         }
     }

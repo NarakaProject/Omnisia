@@ -1,6 +1,6 @@
 # Omnisia — System Architecture & Source of Truth
 
-> **Current Milestone**: Phase 10.3 — Impact → Structure → Physics Integration  
+> **Current Milestone**: Phase 10.4 — CSG / Destruction Hardening  
 > **Core Architectural Paradigm**: Engine-First, Data-Driven, Deterministic Voxel Simulation with Authoritative Firewalls.
 
 ---
@@ -125,6 +125,19 @@ Omnisia separates simulation into distinct, non-overlapping architectural layers
 - **Bounded Crater Geometry**: `CraterGenerator` evaluates candidate voxels within a sphere using Euclidean division. Work scales strictly with the affected volume $O(r^3)$ rather than the world size.
 - **Material-Aware Policy**: `MaterialDestructionPolicy` designates indestructible materials (such as `AG_CORE_CASING`) that are bypassed by crater carving without introducing speculative physics or damage values.
 - **Invalidation Signals without Simulation Coupling**: Committed edits mark in-memory `dirty_flags::MESH_DIRTY` (including border neighbor propagation) and emit `StructuralEvent` notifications. Crucially, CSG does **NOT** run structural BFS, does **NOT** detach aggregates, does **NOT** spawn `DynamicBody` or `RigidBody` instances, and does **NOT** perform disk I/O.
+
+### 2.8 Impact → Structure → Physics Integration (`src/impact/bridge.rs`, Phase 10.3)
+- **Two-Phase Bridge Pattern**: Coordinates between voxel destruction, structural detachment, and rigid body simulation.
+- **Whole-Impact Atomicity**: Phase A extracts detached aggregates across all structural events produced by CSG in a single batch, preventing intermediate structural fragmentation.
+- **Single Authoritative Dynamic Owner**: Extracted aggregates are recorded in `DynamicAggregateRecord` and physicalized as single `RigidBody` instances with greedy compound colliders.
+- **Blast Impulse Coupling**: Phase B applies outward impulses inversely proportional to distance from the impact epicenter directly to rigid body linear and angular velocities.
+
+### 2.9 CSG Hardening, Boundary Invalidation & Transactional Revert (`src/csg/`, Phase 10.4)
+- **Authoritative Boundary Mutation**: Arbitrary multi-chunk mutations (Add, Remove, Replace) preserve total voxel conservation and mathematical coordinate continuity across negative chunk space via Euclidean floor division (`div_euclid`) and positive modulo (`rem_euclid(32)`).
+- **Symmetric 6-Face & Corner Invalidation**: Voxel boundary edits propagate `MESH_DIRTY` to all resident adjacent faces ($\pm X, \pm Y, \pm Z$), edges, and corners.
+- **Unloaded Neighbor Protection (`UNLOADED != AIR`)**: Target edits require resident chunks or fail validation. Neighbor mesh invalidation touches resident neighbors only; unloaded chunks are strictly left untouched with zero implicit chunk allocation, zero disk I/O, and zero phantom dirty flags.
+- **Transactional Pre-State Capture & Revert**: Captures exact chunk pre-states (`ChunkPreState`: `chunk_coord`, `dirty_flags`, `revision`, `non_air_count`) before the first mutation. Explicit `revert(&mut ChunkStore)` performs a full residency preflight check before applying inverse voxel deltas and restoring exact chunk metadata, leaving zero partial mutations on failure.
+- **Deterministic Ordering & Preservation**: Canonical `(x, y, z)` spatial ordering is maintained for deltas and structural events, while `LastWriteWins` strictly respects transaction insertion order without spatial reordering. CSG produces zero downstream physics or structural BFS side effects.
 
 ---
 

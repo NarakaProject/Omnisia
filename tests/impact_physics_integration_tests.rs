@@ -603,6 +603,7 @@ fn test_17_multi_aggregate_atomic_rollback_on_failure() {
             affected_chunks: vec![],
             mesh_invalidation_chunks: vec![],
         },
+        chunk_pre_states: vec![],
     };
 
     let impact = ImpactEvent::builder(ImpactId(17), Vec3::new(1.0, 1.0, 1.0), 1.0)
@@ -687,6 +688,7 @@ fn test_18_multi_aggregate_atomic_rollback_restores_exact_dirty_state() {
             affected_chunks: vec![],
             mesh_invalidation_chunks: vec![],
         },
+        chunk_pre_states: vec![],
     };
 
     let impact = ImpactEvent::builder(ImpactId(18), Vec3::new(1.0, 1.0, 1.0), 1.0)
@@ -1188,6 +1190,7 @@ fn test_33_unloaded_chunk_prevents_false_detachment() {
             affected_chunks: vec![],
             mesh_invalidation_chunks: vec![],
         },
+        chunk_pre_states: vec![],
     };
 
     let impact = ImpactEvent::builder(ImpactId(33), Vec3::new(15.5, 0.0, 0.0), 1.0)

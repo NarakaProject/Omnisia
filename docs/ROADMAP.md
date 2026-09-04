@@ -3,8 +3,8 @@
 > **Vision Statement**: *"Revive Chimeraland with a voxel soul."*  
 > **Core Substrate**: Procedural, structural, and rigid-body voxel world.  
 > **Core Gameplay Identity**: Creature ecosystem, taming, acquisition, pet companions, and modular devour/evolution.  
-> **Current Completed Phase**: **Phase 9.12 — Stress / Performance Validation** (`4f60bd6`)  
-> **Next Active Phase**: **Phase 10 — World Impact & Atmosphere** (`PLANNED / NEXT`)
+> **Current Completed Phase**: **Phase 10.4 — CSG / Destruction Hardening**  
+> **Next Active Phase**: **Phase 10.5 — Procedural Sky & Celestial Mechanics** (`PLANNED / NEXT`)
 
 ---
 
@@ -129,7 +129,7 @@ Omnisia is an ambitious, high-performance voxel sandbox game built from scratch 
 
 ## 3. Active Milestone: Phase 10 — World Impact & Atmosphere
 
-> **Status**: `IN PROGRESS` (Phase 10.1 `VALIDATED`, Phase 10.2 `VALIDATED`, Phase 10.3 `NEXT`)  
+> **Status**: `IN PROGRESS` (Track A: Phase 10.1 `VALIDATED`, Phase 10.2 `VALIDATED`, Phase 10.3 `VALIDATED`, Phase 10.4 `VALIDATED`; Track B: Phase 10.5 `NEXT`)  
 > **Objective**: Connect the physical simulation substrate to destruction events (Track A) and atmospheric visuals (Track B).  
 > **Scope Firewall**: Phase 10 must **NOT** implement creature AI, taming, devour, inventory, or full weather simulation.
 
@@ -142,10 +142,10 @@ Omnisia is an ambitious, high-performance voxel sandbox game built from scratch 
       TRACK A:                                                TRACK B:
 WORLD IMPACT & CSG DESTRUCTION                          SKY & ATMOSPHERE
          │                                                       │
-  10.1 Impact Foundation (VALIDATED)                      10.5 Sky Foundation
+  10.1 Impact Foundation (VALIDATED)                      10.5 Sky Foundation (NEXT)
   10.2 Terrain Mutation / CSG (VALIDATED)                 10.6 Procedural Aurora
-  10.3 Impact -> Structure -> Physics (NEXT)              10.7 Integration & Visual Stress
-  10.4 Destruction Hardening                                     │
+  10.3 Impact -> Structure -> Physics (VALIDATED)         10.7 Integration & Visual Stress
+  10.4 CSG Hardening & Revert (VALIDATED)                        │
          │                                                       │
          └───────────────────────────┬───────────────────────────┘
                                      ▼
@@ -166,16 +166,20 @@ WORLD IMPACT & CSG DESTRUCTION                          SKY & ATMOSPHERE
   - `MaterialDestructionPolicy`: Configurable indestructible material preservation (e.g. `AG_CORE_CASING`).
   - Dual invalidation signals: in-memory `MESH_DIRTY` (including border neighbor propagation) and `StructuralEvent` notifications without triggering structural BFS or physics.
   - Verified with 27 focused unit tests (`tests/csg_tests.rs`) and Benchmark 51.
-- **Phase 10.3 — Impact $\to$ Structure $\to$ Physics Pipeline (`PLANNED / NEXT`)**:
-  - Voxel removal triggers event-driven structural connectivity check (Phase 7).
-  - Detached voxels extracted into `DynamicBody` (Phase 8A).
-  - Physicalized into `RigidBody` owning greedy compound colliders (Phase 9.11).
-  - Outward blast impulse applied to rigid bodies based on distance from impact epicenter.
-  - Bodies settle, sleep, and reintegrate into static terrain via two-phase transaction.
-- **Phase 10.4 — CSG & Destruction Hardening**:
-  - Arbitrary multi-chunk boundary cratering.
-  - Negative coordinate boundary stability ($x = -1, -32, -33$).
-  - Deterministic replay verification of impact destruction.
+- **Phase 10.3 — Impact $\to$ Structure $\to$ Physics Pipeline (`COMPLETED / VALIDATED`)**:
+  - `ImpactBridge`: Coordinates two-phase pipeline between `VoxelEditCommitResult`, `StructuralSystem`, and `PhysicsWorld`.
+  - Phase A: Authoritative structural detachment extraction without physics coupling.
+  - Phase B: Physicalization into `DynamicAggregateRecord`, generating `RigidBody` with greedy colliders, and distance-attenuated blast impulse application.
+  - Reintegration guards preserving single dynamic ownership and transactional settlement.
+  - Verified at commit `a7bf5f3` with 34 integration tests (`tests/impact_physics_integration_tests.rs`) and Benchmark 52.
+- **Phase 10.4 — CSG / Destruction Hardening (`COMPLETED / VALIDATED`)**:
+  - Arbitrary multi-chunk boundary mutation (Add, Remove, Replace).
+  - Negative coordinate boundary stability ($x = -1, -32, -33$) with zero coordinate-sign asymmetry.
+  - 6-face and corner boundary mesh invalidation with unloaded neighbor protection (`UNLOADED != AIR`).
+  - Transactional pre-commit state capture (`ChunkPreState`: voxels, `non_air_count`, `dirty_flags`, `revision`) and preflight-safe `revert(&mut store)`.
+  - Deterministic replay verification and strict LastWriteWins transaction-order preservation.
+  - Zero coupling to downstream physics, structural BFS, or persistence workers.
+  - Verified with 45 hardening tests (`tests/csg_hardening_tests.rs`) and Benchmark 53 (4 measurement profiles).
 
 ### Track B: Sky & Atmosphere
 - **Phase 10.5 — Sky & Atmosphere Foundation**:
