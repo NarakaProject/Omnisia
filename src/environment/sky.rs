@@ -149,7 +149,7 @@ impl EnvironmentState {
             sun_elevation: self.celestial.sun_elevation,
             moon_direction: self.celestial.moon_direction.to_array(),
             moon_phase: self.clock.moon_phase(),
-            sun_color: self.celestial.celestial_light_color,
+            sun_color: self.celestial.sun_color,
             twilight_factor: self.celestial.twilight_factor,
             ambient_color: self.celestial.ambient_light_color,
             star_visibility: self.celestial.star_visibility,
@@ -162,10 +162,11 @@ impl EnvironmentState {
 
     /// Builds the harmonized `LightUniform` for the existing terrain renderer.
     ///
-    /// The sunlight ray vector is the opposite of the sun's sky direction (`-sun_direction`),
-    /// ensuring that `L = normalize(-light.sun_direction)` in `shader.wgsl` points towards the sun.
+    /// The incoming celestial light ray vector is the opposite of the active celestial source direction
+    /// (`-celestial_light_direction`), ensuring that `L = normalize(-light.sun_direction)` in `shader.wgsl`
+    /// always points TO the active celestial source (the sun during day, the moon at night).
     pub fn build_light_uniform(&self) -> LightUniform {
-        let sunlight_direction = -self.celestial.sun_direction;
+        let sunlight_direction = -self.celestial.celestial_light_direction;
         LightUniform {
             sun_direction: sunlight_direction.to_array(),
             _pad1: 0.0,

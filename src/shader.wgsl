@@ -48,18 +48,21 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let N = normalize(in.world_normal);
     let L = normalize(-light.sun_direction);
 
-    // 1. Shading Half-Lambert: diffuse = (N · L * 0.5 + 0.5)^2
-    // Menghasilkan pencahayaan diffuse membungkus lembut tanpa bayangan hitam pekat
+    // 1. Shading Half-Lambert: diffuse = (N · L * 0.5 + 0.5)^2 for N · L > 0.
+    // Surfaces facing away (N · L <= 0) receive zero direct celestial light (Mandates 3 & 4).
     let n_dot_l = dot(N, L);
-    let half_lambert = n_dot_l * 0.5 + 0.5;
-    let diffuse_factor = half_lambert * half_lambert;
+    var diffuse_factor: f32 = 0.0;
+    if (n_dot_l > 0.0) {
+        let half_lambert = n_dot_l * 0.5 + 0.5;
+        diffuse_factor = half_lambert * half_lambert;
+    }
 
-    // 2. Direct Sun Light & Ambient Pastel Fill terisolasi
+    // 2. Direct Celestial Light & Ambient Fill evaluated independently
     let direct_light = light.sun_color * diffuse_factor;
-    let ao_modulated = in.ao * 0.7 + 0.3; // Mencegah area sudut terlalu gelap gulita
+    let ao_modulated = in.ao * 0.7 + 0.3; // Prevent corner occlusion from being pitch black
     let ambient_light = light.ambient_color * ao_modulated;
 
-    // 3. Komposisi Total Lighting & Base Color
+    // 3. Composition of Total Lighting & Base Color
     let total_lighting = direct_light + ambient_light;
     let final_rgb = in.color * total_lighting;
 

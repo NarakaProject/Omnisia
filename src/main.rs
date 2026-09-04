@@ -49,6 +49,7 @@ struct AppState {
     frame_count: u32,
     current_fps: f32,
     current_frame_ms: f32,
+    ignore_next_mouse_motion: bool,
 }
 
 impl AppState {
@@ -83,7 +84,27 @@ impl AppState {
             frame_count: 0,
             current_fps: 60.0,
             current_frame_ms: 16.6,
+            ignore_next_mouse_motion: false,
         }
+    }
+
+    /// Explicit cursor and mouse capture state management (Mandates 13, 14, 15, 16, 17).
+    /// - Developer Camera (console closed): locked/hidden cursor for true free-look.
+    /// - Player Camera or Console Open: released/visible cursor.
+    /// - Resets accumulated mouse delta to avoid sudden camera jumps on mode transitions.
+    fn update_cursor_grab(&mut self) {
+        if let Some(window) = &self.window {
+            if self.camera_ctx.is_developer() && !self.console.is_open() {
+                let _ = window
+                    .set_cursor_grab(winit::window::CursorGrabMode::Locked)
+                    .or_else(|_| window.set_cursor_grab(winit::window::CursorGrabMode::Confined));
+                window.set_cursor_visible(false);
+            } else {
+                let _ = window.set_cursor_grab(winit::window::CursorGrabMode::None);
+                window.set_cursor_visible(true);
+            }
+        }
+        self.ignore_next_mouse_motion = true;
     }
 }
 
@@ -108,6 +129,7 @@ impl ApplicationHandler for AppState {
 
             self.window = Some(window);
             self.renderer = Some(renderer);
+            self.update_cursor_grab();
         }
     }
 
@@ -149,6 +171,7 @@ impl ApplicationHandler for AppState {
                             self.key_jump = false;
                             self.player.set_input(PlayerInput::default());
                         }
+                        self.update_cursor_grab();
                         return;
                     }
                 }
@@ -167,6 +190,7 @@ impl ApplicationHandler for AppState {
                                         frame_time_ms: self.current_frame_ms,
                                     };
                                     self.console.submit(&self.command_registry, &mut ctx);
+                                    self.update_cursor_grab();
                                 }
                                 KeyCode::Backspace => self.console.backspace(),
                                 KeyCode::Delete => self.console.delete(),
@@ -178,7 +202,10 @@ impl ApplicationHandler for AppState {
                                 KeyCode::ArrowDown => self.console.history_next(),
                                 KeyCode::PageUp => self.console.scroll_up(5),
                                 KeyCode::PageDown => self.console.scroll_down(5),
-                                KeyCode::Escape => self.console.close(),
+                                KeyCode::Escape => {
+                                    self.console.close();
+                                    self.update_cursor_grab();
+                                }
                                 _ => {
                                     if let Some(text) = &event.text {
                                         for c in text.chars() {
@@ -220,6 +247,7 @@ impl ApplicationHandler for AppState {
                                         // Developer camera does NOT mutate player position! (Amendment 2)
                                     }
                                 }
+                                self.update_cursor_grab();
                             }
                         }
                         KeyCode::KeyW => self.key_w = pressed,
@@ -470,6 +498,11 @@ impl ApplicationHandler for AppState {
     ) {
         if !self.console.is_open() {
             if let DeviceEvent::MouseMotion { delta } = event {
+                // Discard synthetic mouse delta on transitions (Mandate 16)
+                if self.ignore_next_mouse_motion {
+                    self.ignore_next_mouse_motion = false;
+                    return;
+                }
                 if self.camera_ctx.is_developer() {
                     self.camera_ctx
                         .dev_camera

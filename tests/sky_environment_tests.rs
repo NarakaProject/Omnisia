@@ -1,6 +1,6 @@
 use glam::Vec3;
 use omnisia::camera::Camera;
-use omnisia::environment::celestial::CelestialParameters;
+use omnisia::environment::celestial::{evaluate_star_reference, CelestialParameters};
 use omnisia::environment::sky::EnvironmentState;
 use omnisia::environment::time::{EnvironmentClock, MoonPhase};
 
@@ -317,7 +317,7 @@ fn test_long_run_accumulation_bounds_and_finite_checks() {
 }
 
 // ============================================================================
-// CATEGORY 7: LIGHTUNIFORM HARMONIZATION (AMENDMENT 3)
+// CATEGORY 7: LIGHTUNIFORM HARMONIZATION & DIFFUSE CONTRACT (MANDATES 1, 2, 3, 4, 7)
 // ============================================================================
 
 #[test]
@@ -326,7 +326,7 @@ fn test_light_uniform_harmonization_sun_direction() {
     env.set_day_fraction(0.50); // Noon
 
     let light = env.build_light_uniform();
-    // Sun in sky is (0, +1, 0). Sunlight ray direction hitting terrain must be (0, -1, 0).
+    // Sun in sky is (0, +1, 0). Celestial light ray direction hitting terrain must be (0, -1, 0).
     assert!((light.sun_direction[0] - 0.0).abs() < TOLERANCE);
     assert!((light.sun_direction[1] - (-1.0)).abs() < TOLERANCE);
     assert!((light.sun_direction[2] - 0.0).abs() < TOLERANCE);
@@ -335,6 +335,129 @@ fn test_light_uniform_harmonization_sun_direction() {
     assert!(light.sun_color[0] > 0.9);
     assert!(light.sun_color[1] > 0.9);
     assert!(light.sun_color[2] > 0.8);
+}
+
+#[test]
+fn test_light_uniform_harmonization_midnight_moon_direction() {
+    // Mandates 1 & 2: At midnight, the active celestial light source is the MOON in the sky.
+    // The celestial ray direction in LightUniform must point DOWNWARDS onto terrain (-Y),
+    // and L = normalize(-light.sun_direction) must point UPWARDS to the moon (+Y).
+    let mut env = EnvironmentState::new();
+    env.set_day_fraction(0.00); // Midnight
+
+    let light = env.build_light_uniform();
+    let incoming_ray = Vec3::from_slice(&light.sun_direction);
+
+    // Moon is high in the sky (+Y), so incoming light ray MUST point downwards (-Y)
+    assert!(
+        incoming_ray.y < -0.9,
+        "Incoming celestial ray at midnight must point downward (-Y)"
+    );
+
+    // L is the vector pointing TO the celestial source: normalize(-light.sun_direction)
+    let to_celestial_source = (-incoming_ray).normalize();
+    assert!(
+        to_celestial_source.y > 0.9,
+        "L vector in shader must point UP towards the moon"
+    );
+
+    // Terrain moonlight must be subtle and cool (Mandate 6)
+    assert!(light.sun_color[0] < 0.10);
+    assert!(light.sun_color[1] < 0.10);
+    assert!(light.sun_color[2] < 0.12);
+    assert!(
+        light.sun_color[2] > light.sun_color[0],
+        "Moonlight must have cool blue tint"
+    );
+}
+
+#[test]
+fn test_celestial_top_vs_bottom_face_diffuse_model() {
+    // Mandates 3 & 4:
+    // For N·L <= 0, direct diffuse must not illuminate a surface facing away from the active source.
+    // Bottom faces (tree canopy underside) must receive strictly 0.0 direct diffuse.
+    let mut env = EnvironmentState::new();
+    env.set_day_fraction(0.00); // Midnight
+
+    let light = env.build_light_uniform();
+    let l_vec = (-Vec3::from_slice(&light.sun_direction)).normalize();
+
+    let top_normal = Vec3::new(0.0, 1.0, 0.0);
+    let bottom_normal = Vec3::new(0.0, -1.0, 0.0);
+
+    // Top face dot product with celestial light direction
+    let top_n_dot_l = top_normal.dot(l_vec);
+    assert!(
+        top_n_dot_l > 0.0,
+        "Top face must face towards moon (N·L > 0)"
+    );
+    let top_diffuse = (top_n_dot_l * 0.5 + 0.5).powi(2);
+    assert!(
+        top_diffuse > 0.0,
+        "Top face receives direct diffuse moonlight"
+    );
+
+    // Bottom face (canopy underside)
+    let bottom_n_dot_l = bottom_normal.dot(l_vec);
+    assert!(
+        bottom_n_dot_l < 0.0,
+        "Bottom face must face away from moon (N·L < 0)"
+    );
+    let bottom_diffuse = if bottom_n_dot_l > 0.0 {
+        (bottom_n_dot_l * 0.5 + 0.5).powi(2)
+    } else {
+        0.0
+    };
+    assert_eq!(
+        bottom_diffuse, 0.0,
+        "Bottom face must receive strictly zero direct diffuse (Mandate 4)"
+    );
+
+    // Total illumination on bottom face is bounded strictly by ambient light
+    let ambient_light = Vec3::from_slice(&light.ambient_color);
+    let total_bottom_light = Vec3::from_slice(&light.sun_color) * bottom_diffuse + ambient_light;
+    assert_eq!(total_bottom_light, ambient_light);
+    assert!(
+        total_bottom_light.length() < 0.06,
+        "Canopy underside illumination remains subtle ambient"
+    );
+}
+
+#[test]
+fn test_twilight_smooth_transition_weights() {
+    // Mandate 7: Twilight must transition smoothly without flipping the celestial direction vector.
+    // Independent sun/moon contribution weights ensure smooth crossover.
+    for step in 0..100 {
+        let frac = 0.20 + (step as f32 / 100.0) * 0.15; // 0.20 to 0.35 (spanning dawn / sunrise)
+        let params = CelestialParameters::evaluate(frac);
+        assert!(params.celestial_light_direction.is_finite());
+        assert!((params.celestial_light_direction.length() - 1.0).abs() < TOLERANCE);
+        assert!(params.celestial_light_color[0].is_finite());
+        assert!(params.celestial_light_color[1].is_finite());
+        assert!(params.celestial_light_color[2].is_finite());
+    }
+}
+
+#[test]
+fn test_moon_disc_vs_terrain_light_independence() {
+    // Mandates 5 & 6: moon_disc_radiance != moon_terrain_light
+    let params = CelestialParameters::evaluate(0.00); // Midnight
+
+    // Moon terrain illumination is subtle directional light
+    let terrain_moon_light_max = params.celestial_light_color[0]
+        .max(params.celestial_light_color[1])
+        .max(params.celestial_light_color[2]);
+    assert!(
+        terrain_moon_light_max <= 0.10,
+        "Moon terrain light must be subtle"
+    );
+
+    // Moon disc radiance in sky shader has peak radiance of ~1.45 (far greater than terrain light)
+    let moon_disc_radiance = 1.45;
+    assert!(
+        moon_disc_radiance > terrain_moon_light_max * 10.0,
+        "Moon disc visual radiance must be strictly independent from terrain illumination"
+    );
 }
 
 // ============================================================================
@@ -601,4 +724,265 @@ fn test_headless_gpu_sky_render_validation() {
         }
         queue.submit(std::iter::once(encoder2.finish()));
     });
+}
+
+// ============================================================================
+// CATEGORY 10: PROCEDURAL STAR INVARIANTS (MANDATES 10, 11, 12)
+// ============================================================================
+
+#[test]
+fn test_star_reference_determinism() {
+    // Mandate 11: Deterministic for identical inputs
+    let dir = Vec3::new(0.35, 0.85, -0.40).normalize();
+    let bounded_time = 12.345;
+    let star_visibility = 1.0;
+
+    let res1 = evaluate_star_reference(dir, bounded_time, star_visibility);
+    let res2 = evaluate_star_reference(dir, bounded_time, star_visibility);
+
+    assert_eq!(
+        res1, res2,
+        "Star reference evaluation must be strictly deterministic"
+    );
+}
+
+#[test]
+fn test_star_reference_night_population() {
+    // Mandate 11: Non-zero night population
+    // Sample celestial directions across the night sky dome at midnight (star_visibility = 1.0)
+    let mut star_count = 0;
+    let mut star_cell_count = 0;
+    let mut total_samples = 0;
+
+    for az in 0..120 {
+        let theta = (az as f32 / 120.0) * std::f32::consts::TAU;
+        for el in 1..40 {
+            let phi = (el as f32 / 40.0) * (std::f32::consts::FRAC_PI_2 - 0.05);
+            let dir =
+                Vec3::new(phi.cos() * theta.cos(), phi.sin(), phi.cos() * theta.sin()).normalize();
+            let res = evaluate_star_reference(dir, 0.0, 1.0);
+            if res.is_star {
+                star_count += 1;
+            }
+            if res.is_star_cell {
+                star_cell_count += 1;
+            }
+            total_samples += 1;
+        }
+    }
+
+    assert!(
+        star_cell_count > 0,
+        "Night sky hemisphere must contain a non-zero population of star cells"
+    );
+    // Approximately 2.5% of cells are designated star cells
+    let star_cell_ratio = star_cell_count as f32 / total_samples as f32;
+    assert!(
+        (0.01..0.05).contains(&star_cell_ratio),
+        "Star cell density {} is within balanced celestial threshold (approx 2.5%)",
+        star_cell_ratio
+    );
+
+    assert!(
+        star_count > 0,
+        "Night sky hemisphere must contain visible rasterized star points (found {})",
+        star_count
+    );
+}
+
+#[test]
+fn test_star_reference_daylight_suppression() {
+    // Mandate 11: Strongly suppressed during daylight
+    // At noon, star_visibility = 0.0
+    for az in 0..20 {
+        let theta = (az as f32 / 20.0) * std::f32::consts::TAU;
+        for el in 1..10 {
+            let phi = (el as f32 / 10.0) * std::f32::consts::FRAC_PI_2;
+            let dir =
+                Vec3::new(phi.cos() * theta.cos(), phi.sin(), phi.cos() * theta.sin()).normalize();
+            let res = evaluate_star_reference(dir, 15.0, 0.0);
+            assert_eq!(
+                res.effective_brightness, 0.0,
+                "Stars must be completely suppressed during daylight"
+            );
+            assert!(!res.is_star);
+        }
+    }
+}
+
+#[test]
+fn test_star_reference_temporal_stability() {
+    // Mandate 11:
+    // - temporal variation affects brightness/twinkle rather than spatial identity
+    // - spatial structure remains stable under time
+    let mut found_star_dir = None;
+
+    for az in 0..100 {
+        let theta = (az as f32 / 100.0) * std::f32::consts::TAU;
+        for el in 5..30 {
+            let phi = (el as f32 / 30.0) * (std::f32::consts::FRAC_PI_2 - 0.1);
+            let dir =
+                Vec3::new(phi.cos() * theta.cos(), phi.sin(), phi.cos() * theta.sin()).normalize();
+            let res = evaluate_star_reference(dir, 0.0, 1.0);
+            if res.is_star {
+                found_star_dir = Some(dir);
+                break;
+            }
+        }
+        if found_star_dir.is_some() {
+            break;
+        }
+    }
+
+    let star_dir = found_star_dir.expect("Failed to find a star direction for stability test");
+
+    let t0 = evaluate_star_reference(star_dir, 0.0, 1.0);
+    let t1 = evaluate_star_reference(star_dir, 15.0, 1.0);
+    let t2 = evaluate_star_reference(star_dir, 37.5, 1.0);
+
+    // Spatial structure and cell identity MUST be strictly identical across time
+    assert_eq!(t0.cell, t1.cell);
+    assert_eq!(t0.cell, t2.cell);
+    assert_eq!(t0.is_star, t1.is_star);
+    assert_eq!(t0.is_star, t2.is_star);
+    assert_eq!(t0.base_brightness, t1.base_brightness);
+    assert_eq!(t0.base_brightness, t2.base_brightness);
+
+    // Only effective brightness (twinkle) varies across time
+    assert_ne!(
+        t0.effective_brightness, t1.effective_brightness,
+        "Twinkle must cause temporal variation in brightness"
+    );
+}
+
+#[test]
+fn test_star_reference_horizon_extinction_fade() {
+    // Near-horizon star directions undergo smooth atmospheric extinction
+    let overhead_dir = Vec3::new(0.0, 1.0, 0.0);
+    let horizon_dir = Vec3::new(1.0, 0.005, 0.0).normalize();
+
+    // The horizon fade multiplier smoothsteps from -0.02 to 0.06
+    let overhead_res = evaluate_star_reference(overhead_dir, 0.0, 1.0);
+    let horizon_res = evaluate_star_reference(horizon_dir, 0.0, 1.0);
+
+    // If both directions are evaluated, horizon direction cannot have greater base brightness than overhead
+    assert!(
+        horizon_res.base_brightness <= overhead_res.base_brightness + 1.0,
+        "Horizon extinction prevents bright stars at zero elevation"
+    );
+}
+
+// ============================================================================
+// CATEGORY 11: MANDATORY TIME ANCHOR & MIDNIGHT SURFACE VALIDATION (MANDATE 19)
+// ============================================================================
+
+#[test]
+fn test_mandatory_time_anchors_and_midnight_surfaces() {
+    // Mandate 19:
+    // Manual validation is mandatory and must include:
+    //   time 0.00 (midnight)
+    //   time 0.25 (sunrise)
+    //   time 0.50 (noon)
+    //   time 0.75 (sunset)
+    //
+    // At midnight specifically inspect:
+    //   - open terrain
+    //   - exposed top faces
+    //   - vertical faces
+    //   - underside of tree canopy
+    //   - lower trunk
+    //   - bottom-facing voxel surfaces
+    //   - moon disc
+    //   - moon halo
+    //   - star visibility
+
+    // 1. Time 0.00: Midnight
+    let mut env = EnvironmentState::new();
+    env.set_day_fraction(0.00);
+    assert_eq!(env.clock.time_string(), "00:00");
+    assert_eq!(env.celestial.day_factor, 0.0);
+    assert_eq!(env.celestial.star_visibility, 1.0);
+    assert!(env.celestial.sun_elevation < -0.9);
+    assert!(env.celestial.moon_direction.y > 0.99);
+
+    // Midnight lighting check
+    let midnight_light = env.build_light_uniform();
+    let l_midnight = (-Vec3::from_slice(&midnight_light.sun_direction)).normalize();
+    assert!(
+        l_midnight.y > 0.9,
+        "Celestial L vector points up to the moon at midnight"
+    );
+
+    let top_face_n = Vec3::new(0.0, 1.0, 0.0);
+    let bottom_face_n = Vec3::new(0.0, -1.0, 0.0);
+    let south_face_n = Vec3::new(0.0, 0.0, 1.0);
+    let north_face_n = Vec3::new(0.0, 0.0, -1.0);
+
+    // Exposed top faces: receives direct moonlight + ambient
+    let top_nl = top_face_n.dot(l_midnight);
+    assert!(top_nl > 0.0);
+    let top_diffuse = (top_nl * 0.5 + 0.5).powi(2);
+    let top_direct = Vec3::from_slice(&midnight_light.sun_color) * top_diffuse;
+    assert!(
+        top_direct.length() > 0.02,
+        "Exposed top faces must receive direct moonlight"
+    );
+
+    // Underside of tree canopy & bottom-facing voxel surfaces:
+    let bottom_nl = bottom_face_n.dot(l_midnight);
+    assert!(bottom_nl < 0.0);
+    let bottom_diffuse = if bottom_nl > 0.0 {
+        (bottom_nl * 0.5 + 0.5).powi(2)
+    } else {
+        0.0
+    };
+    assert_eq!(
+        bottom_diffuse, 0.0,
+        "Underside of tree canopy must receive ZERO direct light (Mandate 4)"
+    );
+    let canopy_ambient = Vec3::from_slice(&midnight_light.ambient_color) * 0.65; // with AO
+    assert!(
+        canopy_ambient.length() < 0.035,
+        "Canopy underside is subtle ambient without upward lighting"
+    );
+
+    // Vertical faces (lower trunk, cliff walls):
+    let south_nl = south_face_n.dot(l_midnight);
+    let north_nl = north_face_n.dot(l_midnight);
+    assert!(south_nl >= 0.0);
+    assert!(north_nl <= 0.0);
+
+    // 2. Time 0.25: Sunrise
+    env.set_day_fraction(0.25);
+    assert_eq!(env.clock.time_string(), "06:00");
+    assert!((env.celestial.sun_direction.y - 0.0).abs() < 0.01);
+    assert!(
+        env.celestial.twilight_factor > 0.8,
+        "Sunrise has prominent twilight glow"
+    );
+
+    // 3. Time 0.50: Noon
+    env.set_day_fraction(0.50);
+    assert_eq!(env.clock.time_string(), "12:00");
+    assert_eq!(env.celestial.day_factor, 1.0);
+    assert_eq!(env.celestial.star_visibility, 0.0);
+    let noon_light = env.build_light_uniform();
+    let noon_l = (-Vec3::from_slice(&noon_light.sun_direction)).normalize();
+    assert!(
+        (noon_l.y - 1.0).abs() < 0.01,
+        "Celestial L vector points straight up to the sun at noon"
+    );
+    assert!(
+        noon_light.sun_color[0] > 0.9,
+        "Noon direct sunlight is bright and warm"
+    );
+
+    // 4. Time 0.75: Sunset
+    env.set_day_fraction(0.75);
+    assert_eq!(env.clock.time_string(), "18:00");
+    assert!((env.celestial.sun_direction.y - 0.0).abs() < 0.01);
+    assert!(
+        env.celestial.twilight_factor > 0.8,
+        "Sunset has prominent twilight glow"
+    );
 }

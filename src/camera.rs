@@ -168,6 +168,8 @@ pub struct Camera {
     is_up: bool,
     is_down: bool,
     pub is_mouse_dragging: bool,
+    /// Mode free-look aktif: pergerakan mouse langsung mengubah yaw/pitch tanpa perlu menahan tombol mouse
+    pub free_look: bool,
 }
 
 impl Camera {
@@ -190,6 +192,7 @@ impl Camera {
             is_up: false,
             is_down: false,
             is_mouse_dragging: false,
+            free_look: false,
         }
     }
 
@@ -317,7 +320,7 @@ impl Camera {
 
     /// Menangani perpindahan mouse
     pub fn handle_mouse_motion(&mut self, dx: f64, dy: f64) {
-        if self.is_mouse_dragging {
+        if self.free_look || self.is_mouse_dragging {
             self.yaw_deg += (dx as f32) * self.sensitivity;
             self.pitch_deg -= (dy as f32) * self.sensitivity;
 

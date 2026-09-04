@@ -38,9 +38,11 @@ pub struct DeveloperCameraContext {
 
 impl DeveloperCameraContext {
     pub fn new(player_spawn: Vec3, dev_spawn: Vec3) -> Self {
+        let mut dev_camera = Camera::new(dev_spawn, -90.0, -10.0);
+        dev_camera.free_look = true;
         Self {
             mode: CameraMode::Player,
-            dev_camera: Camera::new(dev_spawn, -90.0, -10.0),
+            dev_camera,
             player_pos: player_spawn,
             player_eye_pos: player_spawn,
         }
@@ -59,6 +61,7 @@ impl DeveloperCameraContext {
         // If switching to developer mode for the first time, sync to player eye position
         if self.mode == CameraMode::Player && mode == CameraMode::Developer {
             self.dev_camera.position = self.player_eye_pos;
+            self.dev_camera.free_look = true;
         }
         self.mode = mode;
     }

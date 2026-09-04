@@ -79,11 +79,19 @@ fn fs_sky(in: SkyVertexOutput) -> @location(0) vec4<f32> {
         sky_color += sun_contrib;
     }
 
-    // 3. Procedural Moon Disc & Continuous Phase Shading
+    // 3. Procedural Moon Disc, Phase Shading & Halo Glow
     let moon_dir = normalize(sky.moon_direction);
     let cos_moon = dot(dir, moon_dir);
+
+    // Atmospheric moon halo (Mandates 5 & 6: visual glow independent of terrain light)
+    if (cos_moon > 0.96 && sky.star_visibility > 0.05) {
+        let halo_dist = max(0.0, (cos_moon - 0.96) / 0.04);
+        let moon_halo = pow(halo_dist, 6.0) * 0.065 * (1.0 - sky.day_factor);
+        sky_color += vec3<f32>(0.35, 0.45, 0.65) * moon_halo;
+    }
+
     if (cos_moon > 0.9980) {
-        let moon_core = smoothstep(0.9986, 0.9996, cos_moon);
+        let moon_core = smoothstep(0.9984, 0.9996, cos_moon);
 
         // Orthonormal tangent frame on moon disc
         var up_hint = vec3<f32>(0.0, 1.0, 0.0);
@@ -108,32 +116,46 @@ fn fs_sky(in: SkyVertexOutput) -> @location(0) vec4<f32> {
             let light_dir_moon = sin(phase_angle) * moon_tangent + cos(phase_angle) * moon_dir;
 
             let moon_diffuse = max(0.0, dot(normal_moon, light_dir_moon));
-            let earthshine = 0.05; // Faint visibility of unlit moon face
-            let moon_intensity = moon_core * (moon_diffuse * 0.95 + earthshine);
+            let earthshine = 0.04; // Faint visibility of unlit moon face
+            let moon_intensity = moon_core * (moon_diffuse * 1.45 + earthshine);
 
-            let moon_color = vec3<f32>(0.82, 0.88, 0.98) * moon_intensity;
+            let moon_color = vec3<f32>(0.88, 0.93, 1.0) * moon_intensity;
             sky_color += moon_color;
         }
     }
 
-    // 4. Procedural Deterministic Stars
+    // 4. Procedural Deterministic Stars (Mandates 10, 11, 12)
     if (sky.star_visibility > 0.005) {
-        let star_grid = dir * 160.0;
+        let star_grid = dir * 140.0;
         let cell = floor(star_grid);
         let frac_coord = fract(star_grid);
         let rnd = hash33(cell);
 
-        // Approximately 1.8% of cells contain a visible star point
-        if (rnd.x > 0.982) {
-            let star_center = rnd * 0.7 + 0.15;
+        // Filter: cell selection threshold and elevation horizon cutoff
+        if (rnd.x > 0.975 && dir.y > -0.02) {
+            let star_center = rnd * 0.6 + 0.2;
             let dist = length(frac_coord - star_center);
-            let star_point = smoothstep(0.07, 0.015, dist);
+            let star_radius = 0.20;
+            let star_point = smoothstep(star_radius, 0.03, dist);
 
-            // Subtle twinkle oscillation without moving star position
-            let twinkle = 0.8 + 0.2 * sin(sky.bounded_time * 3.5 + rnd.y * 62.83);
-            let star_tint = mix(vec3<f32>(0.85, 0.92, 1.0), vec3<f32>(1.0, 0.92, 0.82), rnd.z);
+            // Horizon atmospheric extinction fade
+            let horizon_fade = smoothstep(-0.02, 0.06, dir.y);
 
-            let stars = star_tint * (star_point * twinkle * sky.star_visibility * 1.6);
+            // Subtle temporal twinkle oscillation preserving spatial position
+            let twinkle = 0.75 + 0.25 * sin(sky.bounded_time * 3.5 + rnd.y * 62.83);
+
+            // Star magnitude / brightness variation (power distribution for natural diversity)
+            let magnitude = pow(rnd.y, 3.0) * 2.5 + 0.8;
+
+            // Spectral color temperature tint
+            let star_tint = mix(vec3<f32>(0.82, 0.90, 1.0), vec3<f32>(1.0, 0.88, 0.75), rnd.z);
+
+            // Moon proximity attenuation: suppress stars immediately around the bright moon disc
+            let moon_dist = max(0.0, 1.0 - cos_moon);
+            let moon_occlusion = smoothstep(0.001, 0.008, moon_dist);
+
+            let star_radiance = star_point * magnitude * horizon_fade * twinkle * sky.star_visibility * moon_occlusion;
+            let stars = star_tint * star_radiance;
             sky_color += stars;
         }
     }

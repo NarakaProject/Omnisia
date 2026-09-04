@@ -514,3 +514,42 @@ fn test_console_state_unicode_input_navigation() {
     assert_eq!(state.history[0], "日本");
     assert!(state.input_buffer.is_empty());
 }
+
+#[test]
+fn test_developer_camera_freelook_mouse_motion() {
+    // Mandates 13 & 14: Developer camera free-look requires no mouse click/drag,
+    // while player camera remains unaffected (free_look disabled).
+    use omnisia::camera::Camera;
+
+    let mut player_camera = Camera::new(Vec3::ZERO, -90.0, 0.0);
+    assert!(!player_camera.free_look);
+    assert!(!player_camera.is_mouse_dragging);
+
+    let initial_yaw = player_camera.yaw_deg;
+    let initial_pitch = player_camera.pitch_deg;
+
+    // Moving mouse on player camera without dragging must NOT change yaw/pitch
+    player_camera.handle_mouse_motion(20.0, 15.0);
+    assert_eq!(player_camera.yaw_deg, initial_yaw);
+    assert_eq!(player_camera.pitch_deg, initial_pitch);
+
+    // Developer camera context has free_look enabled on dev_camera
+    let mut cam_ctx = DeveloperCameraContext::new(Vec3::ZERO, Vec3::ZERO);
+    assert_eq!(cam_ctx.mode(), CameraMode::Player);
+    assert!(cam_ctx.dev_camera.free_look);
+    assert!(!cam_ctx.dev_camera.is_mouse_dragging);
+
+    let dev_initial_yaw = cam_ctx.dev_camera.yaw_deg;
+    let dev_initial_pitch = cam_ctx.dev_camera.pitch_deg;
+
+    // Moving mouse on Developer camera with NO mouse dragging MUST update yaw/pitch immediately (Mandate 13)
+    cam_ctx.dev_camera.handle_mouse_motion(30.0, -20.0);
+    assert_ne!(cam_ctx.dev_camera.yaw_deg, dev_initial_yaw);
+    assert_ne!(cam_ctx.dev_camera.pitch_deg, dev_initial_pitch);
+
+    // Player camera remains untouched and free_look remains false (Mandate 14)
+    cam_ctx.set_mode(CameraMode::Player);
+    assert!(!player_camera.free_look);
+    assert_eq!(player_camera.yaw_deg, initial_yaw);
+    assert_eq!(player_camera.pitch_deg, initial_pitch);
+}
