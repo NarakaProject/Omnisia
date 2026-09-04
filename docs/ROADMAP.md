@@ -127,9 +127,9 @@ Omnisia is an ambitious, high-performance voxel sandbox game built from scratch 
 
 ---
 
-## 3. Active Next Milestone: Phase 10 — World Impact & Atmosphere
+## 3. Active Milestone: Phase 10 — World Impact & Atmosphere
 
-> **Status**: `PLANNED / NEXT`  
+> **Status**: `IN PROGRESS` (Phase 10.1 `VALIDATED`, Phase 10.2 `NEXT`)  
 > **Objective**: Connect the physical simulation substrate to destruction events (Track A) and atmospheric visuals (Track B).  
 > **Scope Firewall**: Phase 10 must **NOT** implement creature AI, taming, devour, inventory, or full weather simulation.
 
@@ -142,8 +142,8 @@ Omnisia is an ambitious, high-performance voxel sandbox game built from scratch 
       TRACK A:                                                TRACK B:
 WORLD IMPACT & CSG DESTRUCTION                          SKY & ATMOSPHERE
          │                                                       │
-  10.1 Impact Foundation                                  10.5 Sky Foundation
-  10.2 Terrain Mutation / CSG                             10.6 Procedural Aurora
+  10.1 Impact Foundation (VALIDATED)                      10.5 Sky Foundation
+  10.2 Terrain Mutation / CSG (NEXT)                      10.6 Procedural Aurora
   10.3 Impact -> Structure -> Physics                     10.7 Integration & Visual Stress
   10.4 Destruction Hardening                                     │
          │                                                       │
@@ -153,11 +153,12 @@ WORLD IMPACT & CSG DESTRUCTION                          SKY & ATMOSPHERE
 ```
 
 ### Track A: World Impact & Destruction
-- **Phase 10.1 — Impact Foundation**:
-  - `ImpactEvent` representation: source type, world position, impact normal, impulse energy, blast radius.
-  - Generic spatial query for affected voxel volumes.
-  - Agnostic event pipeline: handles explosions, creature attacks, falling boulders, meteor strikes, and future projectile impacts identically.
-- **Phase 10.2 — Terrain Mutation & CSG Foundation**:
+- **Phase 10.1 — Impact Foundation (`COMPLETED / VALIDATED`)**:
+  - `ImpactEvent` representation: source type (`ImpactSource`), world position, impact normal and direction, magnitude (`ImpactMagnitude`: energy vs impulse distinction), and bounded radius.
+  - Generic spatial query (`AffectedVolume`) for affected voxel volumes and chunk bounds using authoritative Euclidean floor division (`div_euclid`) for seamless negative coordinate handling.
+  - `DeterministicImpactPipeline`: deterministic sorting, deduplication, and pure observational queries without mutating world state.
+  - Verified with 17 focused unit tests (`tests/impact_tests.rs`) and Benchmark 50 ($38.3\text{ ns}$ construction, $47.0\text{ ns}$ volume query).
+- **Phase 10.2 — Terrain Mutation & CSG Foundation (`PLANNED / NEXT`)**:
   - Transactional voxel edits: `add_voxel`, `remove_voxel`, `replace_voxel`.
   - Spherical and geometric crater carving operating directly on authoritative `ChunkStore`.
   - Material-aware resistance: hard rock resists blast radius; soft dirt yields easily.

@@ -2312,6 +2312,84 @@ fn main() {
                 sleep_ms
             );
         }
+
+        // ====================================================================
+        // [BENCHMARK 50] Impact Foundation & Deterministic Pipeline (Phase 10.1)
+        // ====================================================================
+        {
+            use omnisia::impact::{
+                AffectedVolume, DeterministicImpactPipeline, ImpactEvent, ImpactId, ImpactSource,
+            };
+
+            println!("[BENCHMARK 50] Impact Foundation & Deterministic Pipeline (Phase 10.1)");
+
+            // 1. ImpactEvent Construction & Validation (10,000 events)
+            let n_events = 10_000;
+            let start = Instant::now();
+            let mut dummy_sum = 0.0f32;
+            for i in 0..n_events {
+                let event = ImpactEvent::builder(
+                    ImpactId(i as u64),
+                    Vec3::new(i as f32 * 0.1, 10.0, -i as f32 * 0.1),
+                    3.5,
+                )
+                .source(ImpactSource::projectile((i % 100) as u64))
+                .direction(Vec3::new(0.0, -1.0, 0.0))
+                .energy(5000.0)
+                .build()
+                .unwrap();
+                dummy_sum += event.radius;
+            }
+            let dur = start.elapsed();
+            let ns_per_event = dur.as_nanos() as f64 / n_events as f64;
+            println!(
+                "    [BM50] ImpactEvent Construction: {:.2} ns/event (Total: {:?}, dummy: {:.0})",
+                ns_per_event, dur, dummy_sum
+            );
+
+            // 2. AffectedVolume Spatial Query (10,000 queries)
+            let start = Instant::now();
+            let mut total_chunks = 0usize;
+            for i in 0..n_events {
+                let center = Vec3::new((i % 50) as f32 * 10.0, 5.0, (i / 50) as f32 * 10.0);
+                let vol = AffectedVolume::from_sphere(center, 4.0).unwrap();
+                total_chunks += vol.chunk_count();
+            }
+            let dur = start.elapsed();
+            let ns_per_query = dur.as_nanos() as f64 / n_events as f64;
+            println!(
+                "    [BM50] AffectedVolume Query: {:.2} ns/query (Total: {:?}, total_chunks: {})",
+                ns_per_query, dur, total_chunks
+            );
+
+            // 3. Deterministic Impact Pipeline Processing (1,000 shuffled events)
+            let n_pipe = 1_000;
+            let mut pipeline = DeterministicImpactPipeline::new();
+            for i in 0..n_pipe {
+                // Submit in reverse / interleaved order
+                let id = if i % 2 == 0 { n_pipe - i } else { i };
+                let event = ImpactEvent::builder(
+                    ImpactId(id as u64),
+                    Vec3::new((i % 20) as f32 * 8.0, 0.0, (i / 20) as f32 * 8.0),
+                    2.5,
+                )
+                .source(ImpactSource::environment(1))
+                .energy(1000.0)
+                .build()
+                .unwrap();
+                pipeline.submit(event);
+            }
+
+            let start = Instant::now();
+            let processed = pipeline.process();
+            let dur = start.elapsed();
+            let us_total = dur.as_nanos() as f64 / 1_000.0;
+            let ns_per_processed = dur.as_nanos() as f64 / n_pipe as f64;
+            println!(
+                "    [BM50] Pipeline Sort & Process (1,000 events): {:.2} µs ({:.1} ns/event, output: {})",
+                us_total, ns_per_processed, processed.len()
+            );
+        }
     }
 
     println!("============================================================");

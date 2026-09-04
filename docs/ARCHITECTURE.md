@@ -109,6 +109,13 @@ Omnisia separates simulation into distinct, non-overlapping architectural layers
 - **Bounded Glide**: Glide activates only during descent ($v_y \le 0$) from a sprint-jump takeoff.
 - **Hard Player Invariant**: The player is never a `RigidBody`, has zero mass in the solver, and is never registered in `PhysicsWorld.rigid_bodies` or `PhysicsIsland`.
 
+### 2.6 Impact Event Foundation (`src/impact/`, Phase 10.1)
+- **Generic Event Abstraction**: `ImpactEvent` describes position, direction, surface normal, magnitude, and radius without gameplay or explosion-specific assumptions.
+- **Physical Distinction**: `ImpactMagnitude` strictly separates energy (Joules, scalar work capability) and impulse (Newton-seconds, momentum transfer).
+- **Bounded Affected Volume**: `AffectedVolume` answers *which spatial region is affected* without answering *which voxels to destroy*. Uses authoritative Euclidean floor division (`div_euclid`) for negative coordinates.
+- **Deterministic Pipeline**: `DeterministicImpactPipeline` processes event batches in canonical total order (`Ord`), independent of input submission order.
+- **Strict Immutability Boundary**: Impact queries are 100% observational and never mutate `ChunkStore`, `PhysicsWorld`, or `PlayerController`.
+
 ---
 
 ## 3. The 25 Architectural Invariants

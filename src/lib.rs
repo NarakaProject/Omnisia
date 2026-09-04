@@ -1,6 +1,7 @@
 pub mod camera;
 pub mod chunk;
 pub mod coord;
+pub mod impact;
 pub mod lod;
 pub mod material;
 pub mod mesh;

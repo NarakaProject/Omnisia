@@ -1,8 +1,8 @@
 # Omnisia — Authoritative Project State
 
-> **Current Milestone**: Phase 9.12 — Stress / Performance Validation (**COMPLETED / APPROVED**)  
-> **Next Milestone**: Phase 10 — World Impact & Atmosphere (**PLANNED / NEXT**)  
-> **Verified HEAD Commit**: `4f60bd6`  
+> **Current Milestone**: Phase 10.1 — Impact Foundation (**COMPLETED / VALIDATED**)  
+> **Next Milestone**: Phase 10.2 — Terrain Mutation / CSG Foundation (**PLANNED / NEXT**)  
+> **Verified HEAD Commit**: `4f60bd6` (Phase 9.12) $\to$ Current Phase 10.1 Working State  
 > **Branch**: `main`  
 > **Source-of-Truth Policy**: Source code and passing automated tests are the absolute source of truth.
 
@@ -10,18 +10,19 @@
 
 ## 1. Executive Status & Test Metrics
 
-Every count in this document has been directly audited and verified against the live repository at commit `4f60bd6`.
+Every count in this document has been directly audited and verified against the live repository.
 
 ### Quality Gates Status
 - **Compiler**: Rust 2021 edition, `cargo build --release` compiles cleanly with zero errors.
 - **Formatting**: `cargo fmt --all -- --check` passes cleanly with zero diffs.
 - **Linter**: `cargo clippy --all-targets --all-features -- -D warnings` passes cleanly with zero warnings or errors.
-- **Test Suite**: `cargo test --all-targets` passes with **660 passed, 0 failed, 0 ignored** across 11 test targets.
+- **Test Suite**: `cargo test --all-targets` passes with **677 passed, 0 failed, 0 ignored** across 12 test targets.
 
-### Test Count Breakdown by Target (660 Total Tests)
+### Test Count Breakdown by Target (677 Total Tests)
 
 | Test Target Binary | Scope / Feature Area | Verified Test Count | Status |
 |:---|:---|:---:|:---:|
+| `tests/impact_tests.rs` | ImpactEvent, ImpactSource, Magnitude, AffectedVolume, Euclidean Boundaries, Determinism (Phase 10.1) | **17** | PASS |
 | `tests/physics_9_tests.rs` | RigidBody Physics, Broadphase, Contacts, Solver, Sleeping, Islands, Dynamic-Dynamic, Bridges, Stress (Phase 9.1–9.12) | **415** | PASS |
 | `tests/movement_8d_tests.rs` | Kinematic Movement, Bounded Glide, Auto-Step Traversal, Slope Resolution (Phase 8D) | **81** | PASS |
 | `tests/integration_8c_tests.rs` | Player ↔ World ↔ DynamicBody Integration, Reintegration Lifecycle (Phase 8C) | **32** | PASS |
@@ -33,18 +34,18 @@ Every count in this document has been directly audited and verified against the 
 | `tests/streaming_tests.rs` | ChunkStore Residency, Job Scheduler, Memory Budget, Eviction Lifecycle (Phase 3) | **11** | PASS |
 | `tests/structure_tests.rs` | 6-Connected Adjacency, Structural Anchors, Aggregate Extraction (Phase 7) | **11** | PASS |
 | `tests/scale_tests.rs` | Metric Coordinate Invariants (1 vx = 0.5m), Scale Ruler, Traversal Residency (Phase 7) | **7** | PASS |
-| **Workspace Total** | **All Subsystems** | **660** | **PASS** |
+| **Workspace Total** | **All Subsystems** | **677** | **PASS** |
 
 ### Verified Validation Binaries (6 Binaries)
 
 | Binary Path | Executable Target | Verification Summary | Status |
 |:---|:---|:---|:---:|
-| `src/bin/stress_validation.rs` | `cargo run --release --bin stress_validation` | Workloads A–K: Sparse/Dense Scaling, Sleeping, Islands, Stacks, Bridges, 10k Steps, Determinism | **PASS (1.41 s)** |
+| `src/bin/stress_validation.rs` | `cargo run --release --bin stress_validation` | Workloads A–K: Sparse/Dense Scaling, Sleeping, Islands, Stacks, Bridges, 10k Steps, Determinism | **PASS (1.33 s)** |
 | `src/bin/physics_validation.rs` | `cargo run --release --bin physics_validation` | Dynamic aggregate lifecycle, AntiGravity floating, unloaded boundary protection | **PASS (5/5 stages)** |
 | `src/bin/integration_validation.rs` | `cargo run --release --bin integration_validation` | Structural detachment, DynamicBody interaction, two-phase atomic reintegration | **PASS (6/6 stages)** |
 | `src/bin/player_validation.rs` | `cargo run --release --bin player_validation` | Kinematic locomotion, capsule crouching, jump edge-trigger, swept anti-tunneling | **PASS (8/8 stages)** |
 | `src/bin/traversal_validation.rs` | `cargo run --release --bin traversal_validation` | Multi-kilometer flight (-1km to +1km), streaming residency audit, memory stability | **PASS (10/10 stages)** |
-| `src/bin/benchmarks.rs` | `cargo run --release --bin benchmarks` | Full performance test suite covering 49 isolated benchmarks | **PASS (49/49 runs)** |
+| `src/bin/benchmarks.rs` | `cargo run --release --bin benchmarks` | Full performance test suite covering 50 isolated benchmarks (including BM 50) | **PASS (50/50 runs)** |
 
 ---
 
@@ -72,7 +73,8 @@ Under Omnisia's engineering standard, every subsystem must be explicitly classif
 | **Player ↔ RigidBody Bridge (9.10)** | `VALIDATED` | `src/physics/player_bridge.rs` | Kinematic pushing, dynamic carrying, zero solver mass for player. |
 | **Structural Aggregate Bridge (9.11)** | `VALIDATED` | `src/physics/aggregate.rs` | 1 aggregate = 1 RigidBody ($M$ colliders), Parallel Axis Theorem inertia. |
 | **Physics Stress & Profiling (9.12)** | `VALIDATED` | `src/bin/stress_validation.rs`, `src/physics/world.rs` | Linear scaling up to 10,000 bodies, 45% sleeping CPU reduction, 1.41s suite. |
-| **World Impact / Destruction** | `PLANNED` | — (Phase 10.1–10.4) | `ImpactEvent`, crater carving, CSG mutation, structural detachment bridge. |
+| **Impact Foundation (10.1)** | `VALIDATED` | `src/impact/` (`event.rs`, `volume.rs`, `pipeline.rs`) | Generic `ImpactEvent`, `ImpactSource`, `ImpactMagnitude`, `AffectedVolume`, `DeterministicImpactPipeline`. |
+| **Terrain Mutation / CSG Destruction (10.2–10.4)** | `PLANNED` | — (Phase 10.2–10.4) | Spherical/directional crater carving in ChunkStore, structural detachment bridge. |
 | **Procedural Sky & Atmosphere** | `PLANNED` | — (Phase 10.5–10.7) | GPU-driven atmospheric gradient, sun/moon cycle, stars, procedural aurora. |
 | **Player World Interaction (Tools/Harvest)**| `PLANNED` | — (Phase 11) | Voxel targeting, block placing/breaking, harvesting tools, interaction raycast. |
 | **Entity & Creature Foundation** | `PLANNED` | — (Phase 12) | `CreatureDefinition`, stats, health, AI states, animal & beast hierarchy. |

@@ -3,8 +3,8 @@
 [![Rust](https://img.shields.io/badge/Rust-2021_Edition-orange.svg)](https://www.rust-lang.org/)
 [![wgpu](https://img.shields.io/badge/wgpu-v24_(Metal%20%2F%20Vulkan%20%2F%20DX12)-blue.svg)](https://wgpu.rs/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Phase](https://img.shields.io/badge/Phase-9.12_Validated-brightgreen.svg)](#completed-phases)
-[![Tests](https://img.shields.io/badge/Tests-660_Passing-brightgreen.svg)](#test-suite--validation-evidence)
+[![Phase](https://img.shields.io/badge/Phase-10.1_Validated-brightgreen.svg)](#completed-phases)
+[![Tests](https://img.shields.io/badge/Tests-677_Passing-brightgreen.svg)](#test-suite--validation-evidence)
 
 > **Vision**: *"Revive Chimeraland with a voxel soul."*  
 > Omnisia is a high-performance voxel sandbox engine and game built from scratch in pure Rust and `wgpu`. It merges continuous procedural world generation, structural connectivity, and rigid-body physical simulation with a deep creature ecosystem, taming, pet raising, and modular chimera devour/evolution.
@@ -20,8 +20,8 @@ For any developer or AI coding agent entering this repository for the first time
 | **What is Omnisia?** | A voxel sandbox game engine combining a procedural voxel substrate with modular creature and evolution gameplay. |
 | **What is the long-term vision?** | Revive the modular creature capture, chimera evolution, and open living world of *Chimeraland* on an authoritative, physically reactive voxel substrate. |
 | **What is the current gameplay reality?** | **Early physics & locomotion substrate.** The player can walk, sprint, crouch, jump, auto-step, glide, and push dynamic rigid bodies. There are **no creatures, combat, taming, inventory, crafting, or devour systems yet**. |
-| **What Phase is complete?** | **Phase 9.12 — Stress / Performance Validation** (Verified at commit `4f60bd6`). |
-| **What is the next Phase?** | **Phase 10 — World Impact & Atmosphere** (Track A: Impact / CSG Destruction; Track B: Procedural Sky & Aurora). |
+| **What Phase is complete?** | **Phase 10.1 — Impact Foundation** (Validated with 17 focused tests). |
+| **What is the next Phase?** | **Phase 10.2 — Terrain Mutation / CSG Foundation** (Spherical/directional crater carving in ChunkStore). |
 | **What systems are authoritative?** | `ChunkStore` (static terrain), `DynamicBody` (detached voxels), `PhysicsWorld` (rigid bodies), `PlayerController` (kinematic locomotion), Data Registry (modding definitions). |
 | **What systems are derived / cache state?** | GPU mesh buffers (`MeshCache`), spatial broadphase grid, collision contact manifolds, transient structural BFS results. |
 | **What are the top architectural invariants?** | (1) Player is Kinematic, NEVER a `RigidBody`, NEVER in islands. (2) 1 structural aggregate = 1 `RigidBody` owning $M$ colliders (never 1 voxel = 1 body). (3) Zero double-ownership of voxels. |
@@ -62,6 +62,7 @@ PHASE 8C  INTEGRATION LAYER          Player <-> DynamicBody interaction + owners
 PHASE 8D  MOVEMENT HARDENING         Auto-step (0.55m) + bounded glide + slope sliding
 PHASE 9   RIGIDBODY PHYSICS          Broadphase + SAT contacts + impulse solver + sleeping
           (9.1 to 9.12)              Islands + dynamic-dynamic + bridges + stress validation
+PHASE 10.1 IMPACT FOUNDATION          Generic ImpactEvent + bounded volume query + pipeline
 ```
 
 ### Authoritative Player Locomotion Semantics (Phase 8D / 9.10)
@@ -78,11 +79,11 @@ PHASE 9   RIGIDBODY PHYSICS          Broadphase + SAT contacts + impulse solver 
 
 ## 🎯 Current Phase & Next Milestone: Phase 10
 
-### Phase 10 — World Impact & Atmosphere (`PLANNED / NEXT`)
+### Phase 10 — World Impact & Atmosphere (`IN PROGRESS`)
 Phase 10 connects the completed physical simulation substrate to destruction events and atmospheric aesthetics:
 - **Track A: World Impact & CSG Destruction**
-  - **10.1 Impact Foundation**: Generic `ImpactEvent` representation (epicenters, normal, blast impulse).
-  - **10.2 Terrain Mutation / CSG Foundation**: Transactional spherical and directional crater carving in `ChunkStore`.
+  - **10.1 Impact Foundation (`VALIDATED`)**: Generic `ImpactEvent` representation, `ImpactSource`, `ImpactMagnitude`, bounded `AffectedVolume` queries, and `DeterministicImpactPipeline`.
+  - **10.2 Terrain Mutation / CSG Foundation (`PLANNED / NEXT`)**: Transactional spherical and directional crater carving in `ChunkStore`.
   - **10.3 Impact $\to$ Structure $\to$ Physics**: Terrain blast $\to$ structural detachment $\to$ `DynamicBody` $\to$ `RigidBody` outward impulse $\to$ settling $\to$ reintegration.
   - **10.4 Destruction Hardening**: Multi-chunk boundary craters, negative coordinates, persistence interaction.
 - **Track B: Sky & Atmosphere**
@@ -144,20 +145,21 @@ Any modification violating these core rules will be rejected:
 
 ## 🧪 Test Suite & Validation Evidence
 
-Verified at commit `4f60bd6`:
-- **Workspace Test Suite**: **660 / 660 tests passing** (`cargo test --all-targets`).
+Verified across all subsystems:
+- **Workspace Test Suite**: **677 / 677 tests passing** (`cargo test --all-targets`).
+  - `tests/impact_tests.rs`: **17 tests** (ImpactEvent construction, sources, Euclidean volume queries, deterministic pipeline, replay).
   - `tests/physics_9_tests.rs`: **415 tests** (RigidBody, contacts, islands, sleeping, dynamic-dynamic, stress).
   - `tests/movement_8d_tests.rs`: **81 tests** (Auto-step, slope sliding, bounded glide).
   - `tests/integration_8c_tests.rs`: **32 tests** (Player-world integration, structural breaks).
   - `tests/player_tests.rs`: **30 tests** (Kinematic capsule, clearance guard, swept anti-tunneling).
   - Other subsystem test suites: **102 tests** (Worldgen, Modding, Streaming, Structure, Scale, Engine).
 - **Validation Binaries**:
-  - `cargo run --release --bin stress_validation` $\to$ **PASS** (11 workloads + 10k steps + determinism in $1.41\text{ s}$).
+  - `cargo run --release --bin stress_validation` $\to$ **PASS** (11 workloads + 10k steps + determinism in $1.33\text{ s}$).
   - `cargo run --release --bin physics_validation` $\to$ **PASS** (5/5 stages).
   - `cargo run --release --bin integration_validation` $\to$ **PASS** (6/6 stages).
   - `cargo run --release --bin player_validation` $\to$ **PASS** (8/8 stages).
   - `cargo run --release --bin traversal_validation` $\to$ **PASS** (10/10 stages, 1km traversal, memory $\le 85\text{ MB}$).
-- **Benchmark Suite**: **49 benchmarks** in `src/bin/benchmarks.rs`.
+- **Benchmark Suite**: **50 benchmarks** in `src/bin/benchmarks.rs` (including Benchmark 50 for Impact Foundation).
 
 ---
 
