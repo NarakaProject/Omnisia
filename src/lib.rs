@@ -1,5 +1,6 @@
 pub mod camera;
 pub mod chunk;
+pub mod console;
 pub mod coord;
 pub mod csg;
 pub mod environment;

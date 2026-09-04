@@ -3,8 +3,8 @@
 [![Rust](https://img.shields.io/badge/Rust-2021_Edition-orange.svg)](https://www.rust-lang.org/)
 [![wgpu](https://img.shields.io/badge/wgpu-v24_(Metal%20%2F%20Vulkan%20%2F%20DX12)-blue.svg)](https://wgpu.rs/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Phase](https://img.shields.io/badge/Phase-10.5_Validated-brightgreen.svg)](#completed-phases)
-[![Tests](https://img.shields.io/badge/Tests-806_Passing-brightgreen.svg)](#test-suite--validation-evidence)
+[![Phase](https://img.shields.io/badge/Phase-10.5.x_Validated-brightgreen.svg)](#completed-phases)
+[![Tests](https://img.shields.io/badge/Tests-823_Passing-brightgreen.svg)](#test-suite--validation-evidence)
 
 > **Vision**: *"Revive Chimeraland with a voxel soul."*  
 > Omnisia is a high-performance voxel sandbox engine and game built from scratch in pure Rust and `wgpu`. It merges continuous procedural world generation, structural connectivity, and rigid-body physical simulation with a deep creature ecosystem, taming, pet raising, and modular chimera devour/evolution.
@@ -19,12 +19,12 @@ For any developer or AI coding agent entering this repository for the first time
 |:---|:---|
 | **What is Omnisia?** | A voxel sandbox game engine combining a procedural voxel substrate with modular creature and evolution gameplay. |
 | **What is the long-term vision?** | Revive the modular creature capture, chimera evolution, and open living world of *Chimeraland* on an authoritative, physically reactive voxel substrate. |
-| **What is the current gameplay reality?** | **Early physics & locomotion substrate.** The player can walk, sprint, crouch, jump, auto-step, glide, and push dynamic rigid bodies. There are **no creatures, combat, taming, inventory, crafting, or devour systems yet**. |
-| **What Phase is complete?** | **Phase 10.5 — Procedural Sky & Atmosphere Foundation** (Validated with 23 sky environment tests, 7-stage validation binary, 3 Benchmark 54 CPU profiles, 806 total passing workspace tests). |
+| **What is the current gameplay reality?** | **Early physics & locomotion substrate with developer tooling.** The player can walk, sprint, crouch, jump, auto-step, glide, push dynamic rigid bodies, and use the Developer Debug Console (`` ` ``) / Free Camera (`camera free`). There are **no creatures, combat, taming, inventory, crafting, or devour systems yet**. |
+| **What Phase is complete?** | **Phase 10.5.x — Developer Debug Console & Camera Tooling** (Validated on top of Phase 10.5 with 17 console tests, 23 sky environment tests, 823 total passing workspace tests). |
 | **What is the next Phase?** | **Phase 10.6 — Procedural Aurora** (Multi-band animated procedural aurora borealis across night skies). |
-| **What systems are authoritative?** | `ChunkStore` (static terrain), `DynamicBody` (detached voxels), `PhysicsWorld` (rigid bodies), `PlayerController` (kinematic locomotion), Data Registry (modding definitions). |
-| **What systems are derived / cache state?** | `EnvironmentState` (derived visual environment model), `SkyUniform` & `LightUniform` (GPU uniform buffers), `MeshCache` (GPU mesh buffers), spatial broadphase grid, collision contact manifolds, transient structural BFS results. |
-| **What are the top architectural invariants?** | (1) Player is Kinematic, NEVER a `RigidBody`, NEVER in islands. (2) 1 structural aggregate = 1 `RigidBody` owning $M$ colliders (never 1 voxel = 1 body). (3) Zero double-ownership of voxels. |
+| **What systems are authoritative?** | `ChunkStore` (static terrain), `DynamicBody` (detached voxels), `PhysicsWorld` (rigid bodies), `PlayerController` (kinematic locomotion), `EnvironmentClock` (environment time), Data Registry (modding definitions). |
+| **What systems are derived / cache state?** | `EnvironmentState` (derived visual environment model), `DeveloperCameraContext` (observational free camera mode), `SkyUniform` & `LightUniform` (GPU uniform buffers), `MeshCache` (GPU mesh buffers), spatial broadphase grid, collision contact manifolds, transient structural BFS results. |
+| **What are the top architectural invariants?** | (1) Player is Kinematic, NEVER a `RigidBody`, NEVER in islands. (2) 1 structural aggregate = 1 `RigidBody` owning $M$ colliders (never 1 voxel = 1 body). (3) Zero double-ownership of voxels. (4) Single authority for environment time in `EnvironmentClock`. (5) Developer camera does NOT mutate player position or physics. |
 | **What are the known limitations?** | Sequential impulse solver shows compliance under tall vertical stacks ($H \ge 20$ boxes). Warm starting and shock propagation are deferred. |
 | **What has been deliberately deferred?** | Full LOD meshing, volumetric clouds, dynamic weather simulation, multiplayer networking, advanced constraint solvers. |
 | **Where should a new contributor start?** | Read this README, then inspect [docs/PROJECT_STATE.md](docs/PROJECT_STATE.md), [docs/ROADMAP.md](docs/ROADMAP.md), and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). |
@@ -67,6 +67,7 @@ PHASE 10.2 CSG & TERRAIN MUTATION    VoxelEditTransaction + atomic commit + crat
 PHASE 10.3 IMPACT -> STRUCTURE -> PHYSICS ImpactBridge + Phase A atomicity + Phase B impulse + 34 tests
 PHASE 10.4 CSG / DESTRUCTION HARDENING  Pre-state snapshotting + revert() + negative coords + 6-face invalidation + 45 tests
 PHASE 10.5 SKY & ATMOSPHERE FOUNDATION  Procedural GPU sky + continuous day/night + celestial anchors + 3D stars + 23 tests
+PHASE 10.5.x DEVELOPER CONSOLE & CAMERA Developer debug console + free camera + single clock authority + 17 tests
 ```
 
 ### Authoritative Player Locomotion Semantics (Phase 8D / 9.10)
@@ -92,6 +93,7 @@ Phase 10 connects the completed physical simulation substrate to destruction eve
   - **10.4 Destruction Hardening (`VALIDATED`)**: Multi-chunk boundary craters, negative coordinates, persistence interaction, transactional revert.
 - **Track B: Sky & Atmosphere**
   - **10.5 Sky & Atmosphere Foundation (`VALIDATED`)**: Lightweight procedural GPU sky shader, continuous day/night cycle, celestial anchors (sun, moon with $5^\circ$ declination and continuous phase), twilight cosine bell curve, temporally stable 3D stars, unified `SkyUniform` and `LightUniform` harmonization. (*No HDRIs, no giant skyboxes, no expensive volumetric raymarching*).
+  - **10.5.x Developer Debug Console & Camera Tooling (`VALIDATED`)**: Production-grade keyboard developer debug console (`` ` `` / `F1`), decoupled 6-DOF developer free camera (`camera free` / `camera player`), single environment clock mutable authority, bounded UTF-8 parser, dynamic self-documenting command registry, zero-overhead closed rendering overlay, 17 tests.
   - **10.6 Procedural Aurora (`PLANNED / NEXT`)**: Multi-band animated procedural aurora borealis across night skies.
   - **10.7 Integration & Visual Stress**: Concurrent terrain destruction during real-time sky rendering at $\ge 60\text{ FPS}$.
 

@@ -109,6 +109,30 @@ impl EnvironmentState {
         self.celestial = CelestialParameters::evaluate(self.clock.day_fraction);
     }
 
+    /// Freezes environment time progression (Amendment 1 & 8).
+    #[inline]
+    pub fn pause(&mut self) {
+        self.clock.pause();
+    }
+
+    /// Resumes environment time progression.
+    #[inline]
+    pub fn resume(&mut self) {
+        self.clock.resume();
+    }
+
+    /// Returns whether environment time progression is paused.
+    #[inline]
+    pub fn is_paused(&self) -> bool {
+        self.clock.is_paused()
+    }
+
+    /// Sets the time progression scale on the authoritative clock.
+    #[inline]
+    pub fn set_time_scale(&mut self, scale: f32) -> Result<(), &'static str> {
+        self.clock.set_time_scale(scale)
+    }
+
     /// Sets the normalized day fraction directly in `[0.0, 1.0)` and updates celestial parameters.
     pub fn set_day_fraction(&mut self, fraction: f32) {
         self.clock.set_day_fraction(fraction);

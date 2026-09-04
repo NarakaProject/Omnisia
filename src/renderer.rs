@@ -8,8 +8,53 @@ use winit::dpi::PhysicalSize;
 use winit::window::Window;
 
 use crate::camera::CameraUniform;
+use crate::console::font::{generate_font_atlas_pixels, glyph_uv, ATLAS_HEIGHT, ATLAS_WIDTH};
+use crate::console::{ConsoleLineKind, ConsoleState};
 use crate::environment::SkyUniform;
 use crate::mesh::types::{MeshData, VoxelVertex};
+
+/// Screen-size uniform untuk transformasi koordinat overlay 2D konsol (Phase 10.5.x)
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Pod, Zeroable)]
+pub struct ConsoleScreenUniform {
+    pub screen_size: [f32; 2],
+    pub _pad: [f32; 2],
+}
+
+/// Vertex 2D untuk rendering teks dan panel Developer Console (Phase 10.5.x)
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Pod, Zeroable)]
+pub struct ConsoleVertex {
+    pub pos: [f32; 2],
+    pub uv: [f32; 2],
+    pub color: [f32; 4],
+}
+
+impl ConsoleVertex {
+    pub fn desc<'a>() -> wgpu::VertexBufferLayout<'a> {
+        wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<ConsoleVertex>() as wgpu::BufferAddress,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &[
+                wgpu::VertexAttribute {
+                    offset: 0,
+                    shader_location: 0,
+                    format: wgpu::VertexFormat::Float32x2,
+                },
+                wgpu::VertexAttribute {
+                    offset: std::mem::size_of::<[f32; 2]>() as wgpu::BufferAddress,
+                    shader_location: 1,
+                    format: wgpu::VertexFormat::Float32x2,
+                },
+                wgpu::VertexAttribute {
+                    offset: (std::mem::size_of::<[f32; 2]>() * 2) as wgpu::BufferAddress,
+                    shader_location: 2,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
+            ],
+        }
+    }
+}
 
 /// Uniform struct untuk pencahayaan global
 #[repr(C)]
@@ -69,6 +114,14 @@ pub struct Renderer {
     pub sky_pipeline: wgpu::RenderPipeline,
     pub sky_buffer: wgpu::Buffer,
     pub sky_bind_group: wgpu::BindGroup,
+
+    // Developer Console Overlay Resources (Phase 10.5.x, Amendments 11 & 12)
+    pub console_pipeline: wgpu::RenderPipeline,
+    pub console_screen_buffer: wgpu::Buffer,
+    pub console_bind_group: wgpu::BindGroup,
+    pub console_vertex_buffer: wgpu::Buffer,
+    pub console_vertex_capacity: usize,
+    pub console_vertex_cache: Vec<ConsoleVertex>,
 
     // GPU Mesh Cache (keyed by Chunk Coordinate)
     pub chunk_meshes: HashMap<IVec3, GpuChunkMesh>,
@@ -332,6 +385,178 @@ impl Renderer {
             cache: None,
         });
 
+        // 11. Developer Console Overlay Setup (Phase 10.5.x, Amendments 11 & 12)
+        let font_pixels = generate_font_atlas_pixels();
+        let font_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Console Font Atlas Texture"),
+            size: wgpu::Extent3d {
+                width: ATLAS_WIDTH as u32,
+                height: ATLAS_HEIGHT as u32,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::R8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &font_texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &font_pixels,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(ATLAS_WIDTH as u32),
+                rows_per_image: Some(ATLAS_HEIGHT as u32),
+            },
+            wgpu::Extent3d {
+                width: ATLAS_WIDTH as u32,
+                height: ATLAS_HEIGHT as u32,
+                depth_or_array_layers: 1,
+            },
+        );
+
+        let font_texture_view = font_texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+        let font_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("Console Font Sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Nearest,
+            min_filter: wgpu::FilterMode::Nearest,
+            mipmap_filter: wgpu::FilterMode::Nearest,
+            ..Default::default()
+        });
+
+        let console_screen_uniform = ConsoleScreenUniform {
+            screen_size: [width as f32, height as f32],
+            _pad: [0.0, 0.0],
+        };
+        let console_screen_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Console Screen Uniform Buffer"),
+            contents: bytemuck::cast_slice(&[console_screen_uniform]),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+
+        let console_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("Console Bind Group Layout"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::VERTEX,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                ],
+            });
+
+        let console_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Console Bind Group"),
+            layout: &console_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: console_screen_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&font_texture_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Sampler(&font_sampler),
+                },
+            ],
+        });
+
+        let console_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Omnisia Developer Console Shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("console.wgsl").into()),
+        });
+
+        let console_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("Console Render Pipeline Layout"),
+                bind_group_layouts: &[&console_bind_group_layout],
+                push_constant_ranges: &[],
+            });
+
+        let console_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Console Render Pipeline"),
+            layout: Some(&console_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &console_shader,
+                entry_point: Some("vs_main"),
+                buffers: &[ConsoleVertex::desc()],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &console_shader,
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: config.format,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: Default::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: None,
+                polygon_mode: wgpu::PolygonMode::Fill,
+                unclipped_depth: false,
+                conservative: false,
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: wgpu::TextureFormat::Depth32Float,
+                depth_write_enabled: false,
+                depth_compare: wgpu::CompareFunction::Always,
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: wgpu::MultisampleState::default(),
+            multiview: None,
+            cache: None,
+        });
+
+        let console_vertex_capacity = 16384;
+        let console_vertex_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Console Vertex Buffer"),
+            size: (console_vertex_capacity * std::mem::size_of::<ConsoleVertex>()) as u64,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
         Ok(Self {
             window,
             surface,
@@ -347,6 +572,12 @@ impl Renderer {
             sky_pipeline,
             sky_buffer,
             sky_bind_group,
+            console_pipeline,
+            console_screen_buffer,
+            console_bind_group,
+            console_vertex_buffer,
+            console_vertex_capacity,
+            console_vertex_cache: Vec::with_capacity(console_vertex_capacity),
             chunk_meshes: HashMap::new(),
         })
     }
@@ -465,17 +696,31 @@ impl Renderer {
             .retain(|coord, _| active_coords.contains(coord));
     }
 
-    /// Melakukan render frame lengkap dengan Frustum Culling dan Render-Distance filtering
+    /// Melakukan render frame lengkap dengan Frustum Culling, Render-Distance filtering, dan Developer Console overlay
     pub fn render(
         &mut self,
         frustum: &crate::camera::Frustum,
         camera_chunk: IVec3,
         render_radius: i32,
+        console: Option<&ConsoleState>,
     ) -> Result<RenderMetrics, wgpu::SurfaceError> {
         let output = self.surface.get_current_texture()?;
         let view = output
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
+
+        // Tahap Awal: Persiapkan Developer Console Overlay (Phase 10.5.x, Amendment 12)
+        // Jika konsol tertutup (is_open == false atau None), return 0:
+        // ZERO alokasi vertex, ZERO transfer buffer GPU, ZERO overhead!
+        let console_vertex_count = if let Some(c) = console {
+            if c.is_open() {
+                self.prepare_console_overlay(c)
+            } else {
+                0
+            }
+        } else {
+            0
+        };
 
         let mut encoder = self
             .device
@@ -557,6 +802,16 @@ impl Renderer {
             render_pass.set_pipeline(&self.sky_pipeline);
             render_pass.set_bind_group(0, &self.sky_bind_group, &[]);
             render_pass.draw(0..3, 0..1);
+
+            // 5. Developer Console Overlay Pass (Phase 10.5.x, Amendments 11 & 12)
+            if console_vertex_count > 0 {
+                render_pass.set_pipeline(&self.console_pipeline);
+                render_pass.set_bind_group(0, &self.console_bind_group, &[]);
+                let byte_size =
+                    (console_vertex_count * std::mem::size_of::<ConsoleVertex>()) as u64;
+                render_pass.set_vertex_buffer(0, self.console_vertex_buffer.slice(0..byte_size));
+                render_pass.draw(0..console_vertex_count as u32, 0..1);
+            }
         }
 
         self.queue.submit(std::iter::once(encoder.finish()));
@@ -575,5 +830,252 @@ impl Renderer {
             frame_time_ms: 0.0,
             fps: 0.0,
         })
+    }
+
+    /// Menghasilkan mesh 2D konsol dan mengunggah ke GPU buffer (Phase 10.5.x, Amendment 11 & 12).
+    /// Hanya dieksekusi jika konsol sedang terbuka (`is_open == true`).
+    fn prepare_console_overlay(&mut self, console: &ConsoleState) -> usize {
+        self.console_vertex_cache.clear();
+        let screen_w = self.config.width as f32;
+        let screen_h = self.config.height as f32;
+        let console_h = (screen_h * 0.48).clamp(240.0, 520.0);
+
+        let scale = if screen_w >= 1024.0 { 2.0 } else { 1.0 };
+        let char_w = 8.0 * scale;
+        let char_h = 8.0 * scale;
+        let line_h = 10.0 * scale;
+        let pad = 10.0 * scale;
+
+        let push_quad = |cache: &mut Vec<ConsoleVertex>,
+                         x0: f32,
+                         y0: f32,
+                         x1: f32,
+                         y1: f32,
+                         u0: f32,
+                         v0: f32,
+                         u1: f32,
+                         v1: f32,
+                         color: [f32; 4]| {
+            cache.push(ConsoleVertex {
+                pos: [x0, y0],
+                uv: [u0, v0],
+                color,
+            });
+            cache.push(ConsoleVertex {
+                pos: [x1, y0],
+                uv: [u1, v0],
+                color,
+            });
+            cache.push(ConsoleVertex {
+                pos: [x1, y1],
+                uv: [u1, v1],
+                color,
+            });
+            cache.push(ConsoleVertex {
+                pos: [x0, y0],
+                uv: [u0, v0],
+                color,
+            });
+            cache.push(ConsoleVertex {
+                pos: [x1, y1],
+                uv: [u1, v1],
+                color,
+            });
+            cache.push(ConsoleVertex {
+                pos: [x0, y1],
+                uv: [u0, v1],
+                color,
+            });
+        };
+
+        // 1. Background Panel (Translucent dark slate)
+        push_quad(
+            &mut self.console_vertex_cache,
+            0.0,
+            0.0,
+            screen_w,
+            console_h,
+            -1.0,
+            -1.0,
+            -1.0,
+            -1.0,
+            [0.04, 0.05, 0.08, 0.88],
+        );
+
+        // 2. Bottom Accent Border
+        push_quad(
+            &mut self.console_vertex_cache,
+            0.0,
+            console_h - (2.0 * scale),
+            screen_w,
+            console_h,
+            -1.0,
+            -1.0,
+            -1.0,
+            -1.0,
+            [0.25, 0.55, 0.90, 0.95],
+        );
+
+        let render_text =
+            |cache: &mut Vec<ConsoleVertex>, text: &str, mut x: f32, y: f32, color: [f32; 4]| {
+                for c in text.chars() {
+                    if x + char_w > screen_w - pad {
+                        break;
+                    }
+                    let uv = glyph_uv(c);
+                    push_quad(
+                        cache,
+                        x,
+                        y,
+                        x + char_w,
+                        y + char_h,
+                        uv[0],
+                        uv[1],
+                        uv[2],
+                        uv[3],
+                        color,
+                    );
+                    x += char_w;
+                }
+            };
+
+        // 3. Header Banner
+        let header_text =
+            "--- OMNISIA DEVELOPER CONSOLE --- (Type 'help' for commands, '`' or 'F1' to toggle)";
+        render_text(
+            &mut self.console_vertex_cache,
+            header_text,
+            pad,
+            pad,
+            [0.35, 0.75, 1.0, 1.0],
+        );
+
+        // Header divider line
+        let div_y = pad + line_h + 2.0;
+        push_quad(
+            &mut self.console_vertex_cache,
+            pad,
+            div_y,
+            screen_w - pad,
+            div_y + 1.0,
+            -1.0,
+            -1.0,
+            -1.0,
+            -1.0,
+            [0.2, 0.3, 0.45, 0.5],
+        );
+
+        // Scroll indicator if scrolled
+        if console.scroll_offset > 0 {
+            let scroll_text = format!("[SCROLLED +{}]", console.scroll_offset);
+            let scroll_x = screen_w - pad - (scroll_text.len() as f32 * char_w);
+            render_text(
+                &mut self.console_vertex_cache,
+                &scroll_text,
+                scroll_x,
+                pad,
+                [1.0, 0.8, 0.2, 1.0],
+            );
+        }
+
+        // 4. Output / Scrollback History
+        let input_line_y = console_h - line_h - pad;
+        let out_top_y = div_y + 4.0;
+        let available_out_h = input_line_y - out_top_y - 4.0;
+        let max_visible_lines = ((available_out_h / line_h).floor() as usize).max(1);
+
+        let total_lines = console.output_lines.len();
+        let end_idx = total_lines.saturating_sub(console.scroll_offset);
+        let start_idx = end_idx.saturating_sub(max_visible_lines);
+
+        let mut line_draw_y = out_top_y;
+        for i in start_idx..end_idx {
+            if let Some(line) = console.output_lines.get(i) {
+                let color = match line.kind {
+                    ConsoleLineKind::Input => [0.85, 0.92, 1.0, 1.0],
+                    ConsoleLineKind::Output => [0.78, 0.82, 0.88, 1.0],
+                    ConsoleLineKind::Info => [0.35, 0.75, 1.0, 1.0],
+                    ConsoleLineKind::Error => [1.0, 0.35, 0.35, 1.0],
+                };
+                render_text(
+                    &mut self.console_vertex_cache,
+                    &line.text,
+                    pad,
+                    line_draw_y,
+                    color,
+                );
+            }
+            line_draw_y += line_h;
+        }
+
+        // 5. Input Prompt Line Background
+        push_quad(
+            &mut self.console_vertex_cache,
+            pad,
+            input_line_y - 2.0,
+            screen_w - pad,
+            input_line_y + line_h + 2.0,
+            -1.0,
+            -1.0,
+            -1.0,
+            -1.0,
+            [0.08, 0.10, 0.14, 0.85],
+        );
+
+        // Prompt symbol "> "
+        render_text(
+            &mut self.console_vertex_cache,
+            "> ",
+            pad + 4.0,
+            input_line_y,
+            [0.3, 0.85, 1.0, 1.0],
+        );
+
+        // Current input buffer
+        let input_text_x = pad + 4.0 + 2.0 * char_w;
+        render_text(
+            &mut self.console_vertex_cache,
+            &console.input_buffer,
+            input_text_x,
+            input_line_y,
+            [1.0, 1.0, 1.0, 1.0],
+        );
+
+        // Cursor indicator
+        let cursor_x = input_text_x + (console.cursor_pos as f32 * char_w);
+        push_quad(
+            &mut self.console_vertex_cache,
+            cursor_x,
+            input_line_y,
+            cursor_x + (2.0 * scale),
+            input_line_y + char_h,
+            -1.0,
+            -1.0,
+            -1.0,
+            -1.0,
+            [0.3, 0.85, 1.0, 0.95],
+        );
+
+        let vertex_count = self
+            .console_vertex_cache
+            .len()
+            .min(self.console_vertex_capacity);
+        if vertex_count > 0 {
+            let screen_uniform = ConsoleScreenUniform {
+                screen_size: [screen_w, screen_h],
+                _pad: [0.0, 0.0],
+            };
+            self.queue.write_buffer(
+                &self.console_screen_buffer,
+                0,
+                bytemuck::cast_slice(&[screen_uniform]),
+            );
+            self.queue.write_buffer(
+                &self.console_vertex_buffer,
+                0,
+                bytemuck::cast_slice(&self.console_vertex_cache[0..vertex_count]),
+            );
+        }
+        vertex_count
     }
 }

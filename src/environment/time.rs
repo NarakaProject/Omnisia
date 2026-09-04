@@ -75,6 +75,8 @@ pub struct EnvironmentClock {
     pub day_length_secs: f32,
     /// Multiplier applied to elapsed delta time (default: 1.0).
     pub time_scale: f32,
+    /// Whether environment time advancement is currently frozen.
+    pub paused: bool,
     /// High-precision accumulated simulation seconds for lunar cycle derivation.
     pub total_elapsed_secs: f64,
     /// Number of game days in one full lunar cycle (default: 28.0 days).
@@ -90,6 +92,7 @@ impl Default for EnvironmentClock {
             day_fraction: 0.25,
             day_length_secs: 1200.0,
             time_scale: 1.0,
+            paused: false,
             total_elapsed_secs: 0.0,
             lunar_cycle_days: 28.0,
             initial_moon_phase: 0.5, // Default start with Full Moon for clear initial visuals
@@ -104,6 +107,7 @@ impl EnvironmentClock {
             day_fraction: initial_day_fraction.rem_euclid(1.0),
             day_length_secs: day_length_secs.max(1.0),
             time_scale: 1.0,
+            paused: false,
             total_elapsed_secs: 0.0,
             lunar_cycle_days: 28.0,
             initial_moon_phase: 0.5,
@@ -116,8 +120,9 @@ impl EnvironmentClock {
     /// - Deterministic: given the same state and `dt_secs`, produces identical results.
     /// - Independent of OS / wall-clock time (`SystemTime`).
     /// - Strictly keeps `day_fraction` inside `[0.0, 1.0)`.
+    /// - Respects `self.paused`: if paused, time does NOT advance.
     pub fn advance(&mut self, dt_secs: f32) {
-        if !dt_secs.is_finite() || dt_secs <= 0.0 {
+        if self.paused || !dt_secs.is_finite() || dt_secs <= 0.0 {
             return;
         }
 
@@ -125,6 +130,36 @@ impl EnvironmentClock {
         let day_delta = scaled_dt / self.day_length_secs;
         self.day_fraction = (self.day_fraction + day_delta).rem_euclid(1.0);
         self.total_elapsed_secs += scaled_dt as f64;
+    }
+
+    /// Freezes environment progression.
+    #[inline]
+    pub fn pause(&mut self) {
+        self.paused = true;
+    }
+
+    /// Resumes environment progression.
+    #[inline]
+    pub fn resume(&mut self) {
+        self.paused = false;
+    }
+
+    /// Returns whether the environment clock is currently paused.
+    #[inline]
+    pub fn is_paused(&self) -> bool {
+        self.paused
+    }
+
+    /// Sets the time progression scale within the bounded developer range `(0.0, 1000.0]`.
+    pub fn set_time_scale(&mut self, scale: f32) -> Result<(), &'static str> {
+        if !scale.is_finite() || scale <= 0.0 {
+            return Err("expected positive finite number");
+        }
+        if scale > 1000.0 {
+            return Err("time scale exceeds maximum developer bound of 1000.0");
+        }
+        self.time_scale = scale;
+        Ok(())
     }
 
     /// Sets the normalized day fraction directly, wrapping into `[0.0, 1.0)`.

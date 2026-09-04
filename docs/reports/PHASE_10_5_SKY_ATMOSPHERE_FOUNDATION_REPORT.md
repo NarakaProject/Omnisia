@@ -196,18 +196,26 @@ Phase 10.5 Sky Validation Complete: 7/7 Stages Passed (Total: 0.13 ms)
 
 ## 6. Benchmark 54 Results (`src/bin/benchmarks.rs`)
 
-Benchmark 54 isolates CPU execution overhead across three profiles:
+Benchmark 54 isolates CPU execution overhead across three profiles under both debug and optimized release builds:
 
-```text
-Benchmark 54: Phase 10.5 Sky & Celestial Environment
-  Profile 1: EnvironmentClock::advance & State Derivation: 188.19 ns/step (531,372 steps/s)
-  Profile 2: SkyUniform & LightUniform Preparation: 98.97 ns/prep (1,010,381 preps/s)
-  Profile 3: Multi-Day Wrap & Bounded Accumulation (100 days): 179.74 ns/step (556,361 steps/s)
-```
+### Profile Comparison (Apple Silicon M-Series)
+
+| Benchmark Profile | Debug Profile (`cargo run`) | Release Profile (`cargo run --release`) | Speedup | Throughput (Release) |
+|:---|:---:|:---:|:---:|:---:|
+| **Profile 1: Celestial Clock Advance & State Derivation** | $188.19\,\text{ns/step}$ | **$81.41\,\text{ns/step}$** | $2.31\times$ | $12,283,503\,\text{steps/s}$ |
+| **Profile 2: Uniform Packing (`SkyUniform` + `LightUniform`)** | $98.97\,\text{ns/prep}$ | **$17.97\,\text{ns/prep}$** | $5.51\times$ | $55,648,302\,\text{preps/s}$ |
+| **Profile 3: Multi-Day Wrap & Bounded Accumulation (100 days)** | $179.74\,\text{ns/step}$ | **$79.04\,\text{ns/step}$** | $2.27\times$ | $12,651,821\,\text{steps/s}$ |
+| **Full Pipeline (`Profile 1 + Profile 2`)** | $287.16\,\text{ns/frame}$ | **$99.38\,\text{ns/frame}$** | $2.89\times$ | **$< 0.0001\,\text{ms/frame}$** |
+
+Additionally, the standalone validation runner (`src/bin/sky_validation.rs`) executes in **$0.06\,\text{ms}$** under release vs **$0.13\,\text{ms}$** under debug.
+
+### Day Length Configuration Authority (Amendment 15)
+- **Production Default Day Length**: **$1200.0\,\text{s}$ ($20.0\,\text{minutes}$)** per full celestial day cycle (`EnvironmentClock::default()`).
+- **Test Configuration Day Length**: **$240.0\,\text{s}$ ($4.0\,\text{minutes}$)** instantiated explicitly via `EnvironmentClock::new(240.0, 0.0)` in `tests/sky_environment_tests.rs` to accelerate cycle progression across test assertions without altering mathematical formulas.
 
 ### Performance Characterization Note
 In accordance with Guardrail G12:
-- CPU environment updates require $\approx 287\,\text{ns}$ total per frame ($0.000287\,\text{ms}$), representing $< 0.02\%$ of a $16.67\,\text{ms}$ ($60\,\text{FPS}$) frame budget.
+- CPU environment updates require under $100\,\text{ns}$ total per frame in release ($0.0001\,\text{ms}$), representing $< 0.001\%$ of a $16.67\,\text{ms}$ ($60\,\text{FPS}$) frame budget.
 - The procedural sky fragment shader is evaluated only for pixels passing the depth test ($z \ge 1.0$), scaling with visible sky area.
 - In accordance with Guardrail G1, hardware early-Z execution behavior is implementation-dependent; zero universal GPU frame-time guarantees are claimed.
 

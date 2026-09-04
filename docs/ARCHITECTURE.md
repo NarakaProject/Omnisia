@@ -1,6 +1,6 @@
 # Omnisia — System Architecture & Source of Truth
 
-> **Current Milestone**: Phase 10.5 — Procedural Sky & Atmosphere Foundation  
+> **Current Milestone**: Phase 10.5.x — Developer Debug Console & Camera Tooling (`COMPLETED / VALIDATED`)  
 > **Core Architectural Paradigm**: Engine-First, Data-Driven, Deterministic Voxel Simulation with Authoritative Firewalls.
 
 ---
@@ -143,6 +143,12 @@ Omnisia separates simulation into distinct, non-overlapping architectural layers
 
 ### 2.10 Procedural Sky & Celestial Environment (`src/environment/`, `src/sky.wgsl`, Phase 10.5)
 - **Derived Visual Environment Model**: `EnvironmentState` is strictly a derived visual model driven by simulation/application time progression. It derives both `SkyUniform` (sky pass) and `LightUniform` (opaque terrain lighting). It maintains zero authority over `ChunkStore`, `StructuralSystem`, `PhysicsRuntime`, `DynamicBody`, CSG, persistence, or terrain simulation.
+- **Single Mutable Authority for Time Progression**:
+  - `EnvironmentClock` is the sole mutable authority for environment time progression, paused/running state, time scale, and day fraction.
+  - `EnvironmentState` delegates all time mutations (`pause()`, `resume()`, `is_paused()`, `set_time_scale()`, `set_day_fraction()`, `advance()`) directly to its internal `EnvironmentClock` instance, guaranteeing that zero duplicate mutable time state exists.
+  - Pausing environment time freezes celestial motion and day/night progression without affecting the gameplay/kinematic character physics simulation loop.
+  - Time scale is strictly bounded to finite values in $(0.0, 1000.0]$.
+  - Day length authority: Production default is $1200.0\,\text{s}$ ($20.0\,\text{minutes}$ per celestial cycle, defined in `EnvironmentClock::default()`). Accelerated test configurations explicitly instantiate $240.0\,\text{s}$ cycles (`EnvironmentClock::new(240.0, 0.0)`) for fast test turnaround.
 - **Preserved Terrain Lighting Authority**: `LightUniform { sun_direction, sun_color, ambient_color }` remains the single authoritative lighting contract for terrain chunk shaders via `Renderer::update_light()`. `EnvironmentState` harmonizes celestial solar angles and color temperatures with `LightUniform`, ensuring unified environmental lighting without duplicating terrain shader pipelines or introducing competing lighting systems.
 - **Celestial Coordinate Conventions & Semantic Anchors**:
   - Coordinate frame: $+Y = \text{world up}$, right-handed view transform (`Mat4::look_at_rh`, `Mat4::perspective_rh`, `wgpu` NDC depth $[0, 1]$).
@@ -167,6 +173,38 @@ Omnisia separates simulation into distinct, non-overlapping architectural layers
 - **Renderer Integration & Depth Rejection Semantics**:
   - The sky is rendered after opaque voxel geometry in the existing primary render pass via a single fullscreen triangle at depth $1.0$ (`depth_compare: LessEqual`, `depth_write_enabled: false`).
   - *Depth Rejection Specification*: The sky is depth-tested against already-rendered opaque terrain so pixels whose depth is already less than $1.0$ are rejected by the depth test. GPU early/hierarchical depth optimization may reduce fragment work, but exact fragment execution behavior is implementation-dependent. Universal zero-overdraw or hardware-specific performance guarantees are explicitly disclaimed.
+
+### 2.11 Developer Debug Console & Camera Tooling (`src/console/`, `src/console.wgsl`, Phase 10.5.x)
+- **Dedicated Non-Gameplay Developer Infrastructure**:
+  - Implemented as developer tooling to inspect, validate, and iterate on visual environments (particularly Phase 10.6 Procedural Aurora) without touching gameplay code, mutating player physics, or awaiting real-time day/night cycles.
+  - Strict scope firewall: zero cheats, godmode, noclip player mutation, item spawning, world block editing, or general UI dependencies.
+- **Zero-Cost When Closed**:
+  - When the console is closed, `Renderer::render(...)` generates exactly 0 console vertices, performs 0 GPU vertex buffer writes, binds 0 console pipelines/textures, and issues 0 draw calls. Memory and frame-time overhead during gameplay is completely eliminated.
+- **Decoupled Developer Free Camera (`CameraMode::Developer`)**:
+  - Managed via `DeveloperCameraContext`, which maintains a dedicated `Camera` instance distinct from the player camera.
+  - Switching to developer free camera preserves the player's physical coordinates, velocity, and ground state without mutation.
+  - Player input is suppressed when the developer camera is active or when the console is open, preventing stuck keys or unintended movement.
+  - WASD, Space, Shift, and mouse look control the developer camera using existing camera projection and look math. Speed is configurable in $[0.1, 500.0]\,\text{m/s}$ (default: $20.0\,\text{m/s}$).
+  - Toggling back to `CameraMode::Player` seamlessly restores player camera control with zero disruption to player trajectory or collision state.
+- **Bounded Command Parser & UTF-8 Safety**:
+  - Pure function `parse_command(input: &str) -> Result<ParsedCommand, ParseError>` operating over Unicode scalar values.
+  - Enforces a hard input limit of 4096 bytes (`MAX_CONSOLE_INPUT_BYTES`).
+  - Normalizes leading, trailing, and duplicate whitespace outside of quotes.
+  - Supports both single (`'`) and double (`"`) quotes for multi-token arguments, with unclosed quote detection.
+  - Cursor navigation, insertion, and backspace in `ConsoleState` index strictly along UTF-8 character boundaries (`char_indices()`) to eliminate byte-boundary panics.
+- **Command Registry & Execution Context**:
+  - Reflection-free dynamic registry (`CommandRegistry`) mapping canonical command names to implementations of the `ConsoleCommand` trait.
+  - Self-documenting: commands provide structured name, syntax, description, and usage metadata. The built-in `help` and `help <command>` inspect this metadata dynamically.
+  - Execution context (`DeveloperExecutionContext`) provides:
+    - Mutable access to `EnvironmentState` (which delegates time mutations to `EnvironmentClock`).
+    - Mutable access to `DeveloperCameraContext`.
+    - Read-only snapshot of the player (`&KinematicCharacterController`), exposing position, yaw, pitch, and velocity for diagnostics while firewalled against mutation.
+    - Read-only diagnostics (resident chunks, render stats, frame timing).
+  - Built-in commands: `help`, `clear` (via decoupled `CommandResult::Clear`), `time` (`get`, `pause`, `resume`, `scale`, `set`), `camera` (`free`, `player`, `speed`, `position`, `rotation`, `status`), `env` (`status`, `moon`), `status`.
+- **Embedded ASCII Font & Texture Atlas**:
+  - Embedded 760-byte 8x8 font bitmasks covering ASCII printable characters $32..126$ arranged in a $128 \times 48$ RGBA atlas ($24.5\,\text{KB}$ uncompressed GPU texture).
+  - Deterministic fallback: unsupported or non-ASCII Unicode characters render as `?` (ASCII 63), preventing glyph missing errors or crashes.
+  - WGSL shader `console.wgsl` maps pixel coordinates to NDC $[-1, 1]$ and renders character glyph quads and solid semi-transparent background panels (`ALPHA_BLENDING`, `depth_compare: Always`, `depth_write_enabled: false`).
 
 ---
 

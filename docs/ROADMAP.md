@@ -3,7 +3,7 @@
 > **Vision Statement**: *"Revive Chimeraland with a voxel soul."*  
 > **Core Substrate**: Procedural, structural, and rigid-body voxel world.  
 > **Core Gameplay Identity**: Creature ecosystem, taming, acquisition, pet companions, and modular devour/evolution.  
-> **Current Completed Phase**: **Phase 10.5 — Procedural Sky & Atmosphere Foundation**  
+> **Current Completed Phase**: **Phase 10.5.x — Developer Debug Console & Camera Tooling**  
 > **Next Active Phase**: **Phase 10.6 — Procedural Aurora** (`PLANNED / NEXT`)
 
 ---
@@ -129,27 +129,27 @@ Omnisia is an ambitious, high-performance voxel sandbox game built from scratch 
 
 ## 3. Active Milestone: Phase 10 — World Impact & Atmosphere
 
-> **Status**: `IN PROGRESS` (Track A: Phase 10.1 `VALIDATED`, Phase 10.2 `VALIDATED`, Phase 10.3 `VALIDATED`, Phase 10.4 `VALIDATED`; Track B: Phase 10.5 `VALIDATED`, Phase 10.6 `NEXT`)  
+> **Status**: `IN PROGRESS` (Track A: Phase 10.1 `VALIDATED`, Phase 10.2 `VALIDATED`, Phase 10.3 `VALIDATED`, Phase 10.4 `VALIDATED`; Track B: Phase 10.5 `VALIDATED`, Phase 10.5.x `VALIDATED`, Phase 10.6 `NEXT`)  
 > **Objective**: Connect the physical simulation substrate to destruction events (Track A) and atmospheric visuals (Track B).  
 > **Scope Firewall**: Phase 10 must **NOT** implement creature AI, taming, devour, inventory, or full weather simulation.
 
 ```
                                   PHASE 10
-                       WORLD IMPACT & ATMOSPHERE
-                                     │
-         ┌───────────────────────────┴───────────────────────────┐
-         ▼                                                       ▼
-      TRACK A:                                                TRACK B:
+                        WORLD IMPACT & ATMOSPHERE
+                                      │
+          ┌───────────────────────────┴───────────────────────────┐
+          ▼                                                       ▼
+       TRACK A:                                                TRACK B:
 WORLD IMPACT & CSG DESTRUCTION                          SKY & ATMOSPHERE
-         │                                                       │
-  10.1 Impact Foundation (VALIDATED)                      10.5 Sky Foundation (VALIDATED)
-  10.2 Terrain Mutation / CSG (VALIDATED)                 10.6 Procedural Aurora (NEXT)
-  10.3 Impact -> Structure -> Physics (VALIDATED)         10.7 Integration & Visual Stress
-  10.4 CSG Hardening & Revert (VALIDATED)                        │
-         │                                                       │
-         └───────────────────────────┬───────────────────────────┘
-                                     ▼
-                      10.7 Final Phase 10 Validation
+          │                                                       │
+   10.1 Impact Foundation (VALIDATED)                      10.5 Sky Foundation (VALIDATED)
+   10.2 Terrain Mutation / CSG (VALIDATED)                 10.5.x Debug Console & Camera (VALIDATED)
+   10.3 Impact -> Structure -> Physics (VALIDATED)         10.6 Procedural Aurora (NEXT)
+   10.4 CSG Hardening & Revert (VALIDATED)                 10.7 Integration & Visual Stress
+          │                                                       │
+          └───────────────────────────┬───────────────────────────┘
+                                      ▼
+                       10.7 Final Phase 10 Validation
 ```
 
 ### Track A: World Impact & Destruction
@@ -191,8 +191,18 @@ WORLD IMPACT & CSG DESTRUCTION                          SKY & ATMOSPHERE
   - Twilight smooth cosine bell curve centered on horizon crossing ($|e| \le 0.20$) ensuring $C^1$ continuity and smooth color transitions.
   - Temporally stable 3D angular hash star field on the celestial sphere, invariant under camera translation and rotation, with twinkle animation and daytime/twilight suppression.
   - Unified `EnvironmentState` driving both `SkyUniform` and the existing `LightUniform` (preserving existing terrain lighting pipeline).
+  - Single authority for environment clock: default production cycle is $1200.0\,\text{s}$ ($20.0\,\text{min}$); accelerated test cycle is $240.0\,\text{s}$.
   - Constraints respected: **NO HDRI dependencies, NO giant skybox textures, NO expensive volumetric raymarching**. 60 FPS target on integrated GPUs.
   - Verified with 23 regression tests (`tests/sky_environment_tests.rs`), 7-stage validation binary (`src/bin/sky_validation.rs`), and Benchmark 54 (3 CPU profiles).
+- **Phase 10.5.x — Developer Debug Console & Camera Tooling (`COMPLETED / VALIDATED`)**:
+  - Production-grade developer command console toggled via backquote (`` ` ``) or `F1`.
+  - Decoupled developer free camera mode (`camera free` / `camera player`): independent camera instance, 6-DOF flight, speeds in $[0.1, 500.0]\,\text{m/s}$, preserving player world coordinates, velocity, and ground contact without mutation.
+  - Single mutable authority for environment time progression in `EnvironmentClock` (`pause`, `resume`, time scale in $(0.0, 1000.0]$, day fraction set).
+  - Pure Bounded Command Parser: Unicode scalar iteration, single/double quoting with whitespace normalization, 4096-byte input hard cap.
+  - Command Registry with self-documenting metadata (`help`, `help <command>`), decoupled output (`CommandResult::Clear`), read-only player telemetry snapshot.
+  - Zero-overhead when closed: exactly 0 vertices, 0 GPU buffer writes, and 0 draw calls when closed.
+  - Embedded ASCII font ($128 \times 48$ atlas, 760-byte bitmasks) with deterministic fallback to `?` for non-ASCII/unsupported characters.
+  - Verified with 17 focused integration tests (`tests/console_tooling_tests.rs`) bringing total test suite to 823 tests across 17 targets (100% green).
 - **Phase 10.6 — Procedural Aurora (`PLANNED / NEXT`)**:
   - Animated multi-band procedural aurora borealis across night skies.
   - Altitude and parallax illusion using layered noise functions.

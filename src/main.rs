@@ -3,6 +3,10 @@ use std::time::Instant;
 
 use glam::IVec3;
 use omnisia::camera::Camera;
+use omnisia::console::{
+    create_default_registry, CameraMode, CommandRegistry, ConsoleState, DeveloperCameraContext,
+    DeveloperExecutionContext,
+};
 use omnisia::coord::{world_pos_to_world_voxel, world_voxel_to_chunk_and_local, CHUNK_SIZE};
 use omnisia::environment::EnvironmentState;
 use omnisia::modding::runtime::ContentRuntime;
@@ -17,19 +21,17 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowId};
 
-/// Mode kendali kamera dan pergerakan (Section 22)
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ControlMode {
-    Player,
-    FreeFlight,
-}
+/// Mode kendali kamera dan pergerakan (alias kompatibilitas untuk CameraMode)
+pub type ControlMode = CameraMode;
 
 struct AppState {
     window: Option<Arc<Window>>,
     renderer: Option<Renderer>,
     world: World,
-    camera: Camera,
-    control_mode: ControlMode,
+    player_camera: Camera,
+    camera_ctx: DeveloperCameraContext,
+    console: ConsoleState,
+    command_registry: CommandRegistry,
     player: PlayerController,
     environment: EnvironmentState,
 
@@ -45,18 +47,29 @@ struct AppState {
     last_frame_time: Instant,
     fps_timer: Instant,
     frame_count: u32,
+    current_fps: f32,
+    current_frame_ms: f32,
 }
 
 impl AppState {
     fn new(world: World) -> Self {
         let spawn_pos = glam::Vec3::new(0.0, 35.0, 0.0);
+        let player = PlayerController::new(spawn_pos);
+        let player_eye = player.eye_position();
+        let player_camera = Camera::new(player_eye, -90.0, -10.0);
+        let camera_ctx = DeveloperCameraContext::new(spawn_pos, player_eye);
+        let console = ConsoleState::new();
+        let command_registry = create_default_registry();
+
         Self {
             window: None,
             renderer: None,
             world,
-            camera: Camera::new(spawn_pos, -90.0, -10.0),
-            control_mode: ControlMode::Player,
-            player: PlayerController::new(spawn_pos),
+            player_camera,
+            camera_ctx,
+            console,
+            command_registry,
+            player,
             environment: EnvironmentState::new(),
             key_w: false,
             key_s: false,
@@ -68,6 +81,8 @@ impl AppState {
             last_frame_time: Instant::now(),
             fps_timer: Instant::now(),
             frame_count: 0,
+            current_fps: 60.0,
+            current_frame_ms: 16.6,
         }
     }
 }
@@ -114,30 +129,97 @@ impl ApplicationHandler for AppState {
             }
             WindowEvent::KeyboardInput { event, .. } => {
                 let pressed = event.state == ElementState::Pressed;
-                if let PhysicalKey::Code(key) = event.physical_key {
+                let key_code = match event.physical_key {
+                    PhysicalKey::Code(code) => Some(code),
+                    _ => None,
+                };
+
+                // 1. Console Toggle: Backquote (`) canonical, F1 optional alias (Amendment 6)
+                if let Some(code) = key_code {
+                    if (code == KeyCode::Backquote || code == KeyCode::F1) && pressed {
+                        self.console.toggle();
+                        if self.console.is_open() {
+                            // Clear player input keys to avoid stuck movement
+                            self.key_w = false;
+                            self.key_s = false;
+                            self.key_a = false;
+                            self.key_d = false;
+                            self.key_shift = false;
+                            self.key_crouch = false;
+                            self.key_jump = false;
+                            self.player.set_input(PlayerInput::default());
+                        }
+                        return;
+                    }
+                }
+
+                // 2. Intercept keyboard input when developer console is open
+                if self.console.is_open() {
+                    if pressed {
+                        if let Some(code) = key_code {
+                            match code {
+                                KeyCode::Enter | KeyCode::NumpadEnter => {
+                                    let mut ctx = DeveloperExecutionContext {
+                                        camera: &mut self.camera_ctx,
+                                        environment: &mut self.environment,
+                                        resident_chunks: self.world.store.resident_count(),
+                                        fps: self.current_fps,
+                                        frame_time_ms: self.current_frame_ms,
+                                    };
+                                    self.console.submit(&self.command_registry, &mut ctx);
+                                }
+                                KeyCode::Backspace => self.console.backspace(),
+                                KeyCode::Delete => self.console.delete(),
+                                KeyCode::ArrowLeft => self.console.cursor_left(),
+                                KeyCode::ArrowRight => self.console.cursor_right(),
+                                KeyCode::Home => self.console.cursor_home(),
+                                KeyCode::End => self.console.cursor_end(),
+                                KeyCode::ArrowUp => self.console.history_prev(),
+                                KeyCode::ArrowDown => self.console.history_next(),
+                                KeyCode::PageUp => self.console.scroll_up(5),
+                                KeyCode::PageDown => self.console.scroll_down(5),
+                                KeyCode::Escape => self.console.close(),
+                                _ => {
+                                    if let Some(text) = &event.text {
+                                        for c in text.chars() {
+                                            if !c.is_control() && c != '`' {
+                                                self.console.insert_char(c);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        } else if let Some(text) = &event.text {
+                            for c in text.chars() {
+                                if !c.is_control() && c != '`' {
+                                    self.console.insert_char(c);
+                                }
+                            }
+                        }
+                    }
+                    return;
+                }
+
+                // 3. Normal Gameplay / Camera Controls when Console is Closed
+                if let Some(key) = key_code {
                     match key {
                         KeyCode::KeyP | KeyCode::F3 => {
                             if pressed {
-                                self.control_mode = match self.control_mode {
-                                    ControlMode::Player => {
+                                match self.camera_ctx.mode() {
+                                    CameraMode::Player => {
                                         log::info!(
-                                            "Beralih ke FreeFlight Mode (Developer Diagnostic)"
+                                            "Beralih ke Developer Camera Mode (Free Camera)"
                                         );
-                                        ControlMode::FreeFlight
+                                        self.camera_ctx.set_mode(CameraMode::Developer);
                                     }
-                                    ControlMode::FreeFlight => {
+                                    CameraMode::Developer => {
                                         log::info!(
                                             "Beralih ke Player Mode (Kinematic Capsule Controller)"
                                         );
-                                        self.player.state.position = self.camera.position
-                                            - self
-                                                .player
-                                                .config
-                                                .eye_offset(self.player.state.crouching);
-                                        self.player.state.velocity = glam::Vec3::ZERO;
-                                        ControlMode::Player
+                                        self.camera_ctx.set_mode(CameraMode::Player);
+                                        // Developer camera does NOT mutate player position! (Amendment 2)
                                     }
-                                };
+                                }
                             }
                         }
                         KeyCode::KeyW => self.key_w = pressed,
@@ -151,8 +233,8 @@ impl ApplicationHandler for AppState {
                     }
                 }
 
-                if self.control_mode == ControlMode::FreeFlight {
-                    self.camera.handle_keyboard(&event);
+                if self.camera_ctx.is_developer() {
+                    self.camera_ctx.dev_camera.handle_keyboard(&event);
                 } else {
                     self.player.set_input(PlayerInput::from_raw(
                         self.key_w,
@@ -166,35 +248,57 @@ impl ApplicationHandler for AppState {
                 }
             }
             WindowEvent::MouseInput { button, state, .. } => {
-                self.camera.handle_mouse_button(button, state);
+                if !self.console.is_open() {
+                    if self.camera_ctx.is_developer() {
+                        self.camera_ctx
+                            .dev_camera
+                            .handle_mouse_button(button, state);
+                    } else {
+                        self.player_camera.handle_mouse_button(button, state);
+                    }
+                }
             }
             WindowEvent::RedrawRequested => {
                 let now = Instant::now();
                 let dt = (now - self.last_frame_time).as_secs_f32().min(0.1);
                 self.last_frame_time = now;
 
-                // Advance visual environment state (derived visual layer, Amendment 2)
+                // Advance visual environment state (derived visual layer, Amendment 1 & 8)
                 self.environment.advance(dt);
 
-                if self.control_mode == ControlMode::Player {
+                // Sync read-only player snapshot to camera context (Amendment 3)
+                self.camera_ctx
+                    .sync_player_snapshot(self.player.state.position, self.player.eye_position());
+
+                if self.camera_ctx.mode() == CameraMode::Player {
                     self.world
-                        .update_player(&mut self.player, dt, self.camera.yaw_deg);
-                    self.camera.position = self.player.eye_position();
+                        .update_player(&mut self.player, dt, self.player_camera.yaw_deg);
+                    self.player_camera.position = self.player.eye_position();
                 } else {
-                    self.camera.update(dt);
+                    // Developer camera updates independently
+                    self.camera_ctx.dev_camera.update(dt);
+                    // Crucial: Keep player physics updated without modifying player pos from dev camera (Amendment 2)
+                    self.world
+                        .update_player(&mut self.player, dt, self.player_camera.yaw_deg);
                 }
+
+                // Reference to the active camera consuming the effective transform (Amendment 2)
+                let active_camera = match self.camera_ctx.mode() {
+                    CameraMode::Player => &self.player_camera,
+                    CameraMode::Developer => &self.camera_ctx.dev_camera,
+                };
 
                 // Update Streaming World & Integrasi Mesh GPU
                 self.world
-                    .update(self.camera.position, dt, self.renderer.as_mut());
+                    .update(active_camera.position, dt, self.renderer.as_mut());
 
                 if let (Some(renderer), Some(window)) = (&mut self.renderer, &self.window) {
                     let aspect = renderer.size.width as f32 / renderer.size.height.max(1) as f32;
-                    let camera_uniform = self.camera.build_uniform(aspect);
+                    let camera_uniform = active_camera.build_uniform(aspect);
                     renderer.update_camera(&camera_uniform);
 
                     // Update Procedural Sky & Harmonized Light Uniforms (Phase 10.5, Amendment 2, 3, 9)
-                    let sky_vp = self.camera.build_sky_view_projection_matrix(aspect);
+                    let sky_vp = active_camera.build_sky_view_projection_matrix(aspect);
                     let inv_sky_vp = sky_vp.inverse();
                     let sky_uniform = self
                         .environment
@@ -204,16 +308,20 @@ impl ApplicationHandler for AppState {
                     let light_uniform = self.environment.build_light_uniform();
                     renderer.update_light(&light_uniform);
 
-                    let frustum = self.camera.extract_frustum(aspect);
-                    let camera_voxel = world_pos_to_world_voxel(self.camera.position);
+                    let frustum = active_camera.extract_frustum(aspect);
+                    let camera_voxel = world_pos_to_world_voxel(active_camera.position);
                     let center_chunk = IVec3::new(
                         camera_voxel.x.div_euclid(CHUNK_SIZE),
                         camera_voxel.y.div_euclid(CHUNK_SIZE),
                         camera_voxel.z.div_euclid(CHUNK_SIZE),
                     );
 
-                    let render_result =
-                        renderer.render(&frustum, center_chunk, self.world.render_radius);
+                    let render_result = renderer.render(
+                        &frustum,
+                        center_chunk,
+                        self.world.render_radius,
+                        Some(&self.console),
+                    );
 
                     match render_result {
                         Ok(mut metrics) => {
@@ -222,6 +330,8 @@ impl ApplicationHandler for AppState {
                             if elapsed >= 0.5 {
                                 let fps = self.frame_count as f32 / elapsed;
                                 let frame_ms = 1000.0 / fps.max(1.0);
+                                self.current_fps = fps;
+                                self.current_frame_ms = frame_ms;
                                 metrics.cpu_resident_chunks = self.world.store.resident_count();
                                 metrics.uploads_this_frame = self.world.last_uploads_count;
                                 metrics.upload_backlog = self.world.upload_backlog();
@@ -233,7 +343,7 @@ impl ApplicationHandler for AppState {
                                     world_voxel_to_chunk_and_local(camera_voxel);
                                 let mem = self.world.store.memory_usage(0);
 
-                                let title = if self.control_mode == ControlMode::Player {
+                                let title = if self.camera_ctx.mode() == CameraMode::Player {
                                     let crouch_str = if self.player.state.forced_crouch {
                                         "Yes(Forced)"
                                     } else if self.player.state.crouching {
@@ -259,7 +369,7 @@ impl ApplicationHandler for AppState {
                                         "Ineligible"
                                     };
                                     format!(
-                                        "Omnisia [8D: Player] | State: {:?} | Origin: {:?} | Glide: {} | HSpd: {:.2}m/s | VSpd: {:.2}m/s | Feet: ({:.1}, {:.1}, {:.1})m | Grd: {} | Crouch: {} | Grav: {:.2} | Coll[q:{}, h:{}, unk:{}] | Tick: {:.1}µs | FPS: {:.1} ({:.2}ms) | CPU: {} | GPU: {} | Vis: {}/{} | Mem: {:.1}MB",
+                                        "Omnisia [10.5.x: Player] | State: {:?} | Origin: {:?} | Glide: {} | HSpd: {:.2}m/s | VSpd: {:.2}m/s | Feet: ({:.1}, {:.1}, {:.1})m | Grd: {} | Crouch: {} | Grav: {:.2} | Coll[q:{}, h:{}, unk:{}] | Tick: {:.1}µs | FPS: {:.1} ({:.2}ms) | CPU: {} | GPU: {} | Vis: {}/{} | Mem: {:.1}MB",
                                         self.player.state.movement_state,
                                         self.player.state.airborne_origin,
                                         glide_str,
@@ -285,18 +395,18 @@ impl ApplicationHandler for AppState {
                                     )
                                 } else {
                                     format!(
-                                        "Omnisia [8D: FreeFlight] | Pos: ({:.1}, {:.1}, {:.1})m | Chunk: ({}, {}, {}) | Vox: ({}, {}, {}) | Speed: {:.0}m/s [{}] | FPS: {:.1} ({:.2}ms) | CPU: {} | GPU: {} | Vis: {}/{} | Culled: {} | Struct[Evt:{}, Pend:{}, Agg:{}] | Mem: {:.1}MB",
-                                        self.camera.position.x,
-                                        self.camera.position.y,
-                                        self.camera.position.z,
+                                        "Omnisia [10.5.x: Developer Camera] | Pos: ({:.1}, {:.1}, {:.1})m | Chunk: ({}, {}, {}) | Vox: ({}, {}, {}) | Speed: {:.0}m/s [{}] | FPS: {:.1} ({:.2}ms) | CPU: {} | GPU: {} | Vis: {}/{} | Culled: {} | Struct[Evt:{}, Pend:{}, Agg:{}] | Mem: {:.1}MB",
+                                        self.camera_ctx.dev_camera.position.x,
+                                        self.camera_ctx.dev_camera.position.y,
+                                        self.camera_ctx.dev_camera.position.z,
                                         chunk_coord.x,
                                         chunk_coord.y,
                                         chunk_coord.z,
                                         local_voxel.x,
                                         local_voxel.y,
                                         local_voxel.z,
-                                        self.camera.speed,
-                                        self.camera.active_preset.name(),
+                                        self.camera_ctx.dev_camera.speed,
+                                        self.camera_ctx.dev_camera.active_preset.name(),
                                         fps,
                                         frame_ms,
                                         metrics.cpu_resident_chunks,
@@ -316,10 +426,10 @@ impl ApplicationHandler for AppState {
                                 if self.fps_timer.elapsed().as_secs_f32() >= 2.0 {
                                     log::info!(
                                         "[TELEMETRY] Pos: ({:.1}m, {:.1}m, {:.1}m) | Chunk: ({}, {}, {}) | Vox: ({}, {}, {}) | Speed: {:.0}m/s [{}] | FPS: {:.1} | CPU: {} | GPU: {} | Vis: {}/{} | Culled: {} | Struct: [Evt:{}, Pend:{}, Agg:{}] | Mem: {:.1}MB",
-                                        self.camera.position.x, self.camera.position.y, self.camera.position.z,
+                                        self.camera_ctx.dev_camera.position.x, self.camera_ctx.dev_camera.position.y, self.camera_ctx.dev_camera.position.z,
                                         chunk_coord.x, chunk_coord.y, chunk_coord.z,
                                         local_voxel.x, local_voxel.y, local_voxel.z,
-                                        self.camera.speed, self.camera.active_preset.name(),
+                                        self.camera_ctx.dev_camera.speed, self.camera_ctx.dev_camera.active_preset.name(),
                                         fps,
                                         metrics.cpu_resident_chunks, metrics.gpu_mesh_count,
                                         metrics.frustum_visible_chunks, metrics.render_eligible_chunks,
@@ -358,8 +468,16 @@ impl ApplicationHandler for AppState {
         _device_id: DeviceId,
         event: DeviceEvent,
     ) {
-        if let DeviceEvent::MouseMotion { delta } = event {
-            self.camera.handle_mouse_motion(delta.0, delta.1);
+        if !self.console.is_open() {
+            if let DeviceEvent::MouseMotion { delta } = event {
+                if self.camera_ctx.is_developer() {
+                    self.camera_ctx
+                        .dev_camera
+                        .handle_mouse_motion(delta.0, delta.1);
+                } else {
+                    self.player_camera.handle_mouse_motion(delta.0, delta.1);
+                }
+            }
         }
     }
 
