@@ -2,6 +2,15 @@ use glam::{Quat, Vec3};
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::aabb::Aabb;
+use super::aggregate::{
+    calculate_aggregate_mass_properties,
+    commit_aggregate_reintegration as commit_aggregate_reintegration_fn,
+    generate_aggregate_colliders,
+    prepare_aggregate_reintegration as prepare_aggregate_reintegration_fn,
+    AggregateColliderStrategy, AggregatePhysicsError, AggregateReintegrationPlan,
+    DynamicAggregateRecord, OrientationQuantizationPolicy,
+};
+use super::body::DynamicBodyId;
 use super::broadphase::{
     BodyType, BroadphaseError, BroadphasePair, BroadphaseProxy, RigidBodyId, SpatialHashBroadphase,
 };
@@ -12,12 +21,15 @@ use super::island::{
     build_islands, IslandState, PhysicsIsland, PhysicsIslandId, SleepConfig, SleepError,
 };
 use super::narrowphase::{collide, NarrowphaseError};
+use super::reintegrate::ReintegrationError;
 use super::rigid_body::{MassProperties, RigidBody};
 use super::shape::Shape;
 use super::solver::{solve_contacts as solve_contacts_fn, SolverConfig, SolverError};
 use super::transform::Transform;
 use crate::coord::world_pos_to_world_voxel;
+use crate::material::MaterialRegistry;
 use crate::streaming::store::ChunkStore;
+use crate::structure::aggregate::DetachedAggregate;
 use crate::voxel::VOXEL_SIZE;
 
 /// Konfigurasi global untuk dunia fisika (PhysicsWorld).
@@ -49,8 +61,9 @@ impl Default for PhysicsWorldConfig {
 
 /// Abstraksi inti dunia fisika untuk Fase 9 (Rigid Body Physics).
 ///
-/// TANGGUNG JAWAB FASE 9.2:
+/// TANGGUNG JAWAB FASE 9.2 & 9.11:
 /// - Otoritas tunggal registri badan kaku (`rigid_bodies: BTreeMap<RigidBodyId, RigidBody>`).
+/// - Otoritas registri dynamic aggregate (`dynamic_aggregates: BTreeMap<DynamicBodyId, DynamicAggregateRecord>`).
 /// - Pendaftaran, pelacakan, dan penghapusan badan kaku (RigidBodyId).
 /// - Pembaruan bounding box dunia (Aabb) ke broadphase.
 /// - Pengindeksan spasial melalui SpatialHashBroadphase.
@@ -58,7 +71,8 @@ impl Default for PhysicsWorldConfig {
 /// - Generasi pasangan kandidat tabrakan kanonikal.
 ///
 /// INVARIAN ARSITEKTURAL:
-/// - PhysicsWorld BUKAN pemilik data voxel dunia (voxel dimiliki ChunkStore dan DynamicBody).
+/// - PhysicsWorld BUKAN pemilik data voxel dunia statis (dimiliki ChunkStore).
+/// - DynamicAggregateRecord memegang payload voxel dan topologi lokal aggregate secara eksklusif.
 /// - Tidak ada dependensi ke modul render (`wgpu`, mesh, dsb.).
 /// - Broadphase tidak pernah memindai voxel di dalam chunk atau badan dinamis.
 pub struct PhysicsWorld {
@@ -66,8 +80,10 @@ pub struct PhysicsWorld {
     pub broadphase: SpatialHashBroadphase,
     pub next_body_id: u64,
     pub next_collider_id: u64,
+    pub next_dynamic_body_id: u64,
     pub rigid_bodies: BTreeMap<RigidBodyId, RigidBody>,
     pub colliders: BTreeMap<ColliderId, Collider>,
+    pub dynamic_aggregates: BTreeMap<DynamicBodyId, DynamicAggregateRecord>,
 }
 
 impl Default for PhysicsWorld {
@@ -85,8 +101,10 @@ impl PhysicsWorld {
             broadphase,
             next_body_id: 1,
             next_collider_id: 1,
+            next_dynamic_body_id: 1,
             rigid_bodies: BTreeMap::new(),
             colliders: BTreeMap::new(),
+            dynamic_aggregates: BTreeMap::new(),
         }
     }
 
@@ -133,6 +151,8 @@ impl PhysicsWorld {
         let body = self.rigid_bodies.remove(&id)?;
         self.colliders.retain(|_, c| c.rigid_body_id() != id);
         self.broadphase.remove(id);
+        self.dynamic_aggregates
+            .retain(|_, rec| rec.rigid_body_id != id);
         Some(body)
     }
 
@@ -793,11 +813,173 @@ impl PhysicsWorld {
         })
     }
 
-    /// Mengosongkan seluruh badan, collider, dan broadphase dari dunia fisika.
+    // ========================================================================
+    // INTEGRASI STRUKTURAL AGGREGATE ↔ RIGIDBODY (PHASE 9.11)
+    // ========================================================================
+
+    /// Mendaftarkan DetachedAggregate ke PhysicsWorld secara transaksional (Phase 9.11).
+    ///
+    /// TAHAPAN TRANSAKSIONAL:
+    /// 1. Hitung massa, CoM, dan tensor inersia lokal via calculate_aggregate_mass_properties.
+    /// 2. Alokasikan DynamicBodyId dan RigidBodyId deterministik.
+    /// 3. Bangun RigidBody dinamis dengan posisi = center_of_mass_world dan rotasi = IDENTITY.
+    /// 4. Daftarkan RigidBody ke registri otoritatif.
+    /// 5. Bangun kumpulan Collider sesuai AggregateColliderStrategy dan daftarkan ke PhysicsWorld.
+    /// 6. Daftarkan DynamicAggregateRecord ke self.dynamic_aggregates.
+    ///
+    /// Jika terjadi kegagalan pada langkah mana pun, dilakukan rollback sehingga PhysicsWorld tidak termutasi sebagian.
+    pub fn physicalize_aggregate(
+        &mut self,
+        aggregate: DetachedAggregate,
+        materials: Option<&MaterialRegistry>,
+        collider_strategy: AggregateColliderStrategy,
+    ) -> Result<DynamicBodyId, AggregatePhysicsError> {
+        let props = calculate_aggregate_mass_properties(&aggregate, materials)?;
+
+        let dynamic_body_id = DynamicBodyId(self.next_dynamic_body_id);
+        let rigid_body_id = RigidBodyId(self.next_body_id);
+
+        let rigid_body = RigidBody::new(
+            rigid_body_id,
+            BodyType::Dynamic,
+            props.center_of_mass_world,
+            Quat::IDENTITY,
+            Vec3::ZERO,
+            Vec3::ZERO,
+            props.mass_properties,
+        )?;
+
+        // Transaksional: Simpan state sebelum mutasi
+        self.add_rigid_body(rigid_body, None)?;
+        self.next_dynamic_body_id += 1;
+
+        let mut collider_ids = Vec::new();
+        let colliders_res = generate_aggregate_colliders(
+            rigid_body_id,
+            &aggregate,
+            props.center_of_mass_local,
+            collider_strategy,
+            &mut self.next_collider_id,
+        );
+
+        let colliders = match colliders_res {
+            Ok(cols) => cols,
+            Err(e) => {
+                // Rollback
+                self.remove_rigid_body(rigid_body_id);
+                return Err(e);
+            }
+        };
+
+        for col in colliders {
+            match self.add_collider(col) {
+                Ok(col_id) => collider_ids.push(col_id),
+                Err(e) => {
+                    // Rollback
+                    self.remove_rigid_body(rigid_body_id);
+                    return Err(AggregatePhysicsError::BroadphaseFailed(e));
+                }
+            }
+        }
+
+        let record = DynamicAggregateRecord {
+            dynamic_body_id,
+            aggregate_id: aggregate.id,
+            rigid_body_id,
+            aggregate,
+            center_of_mass_local: props.center_of_mass_local,
+            collider_ids,
+            collider_strategy,
+        };
+
+        self.dynamic_aggregates.insert(dynamic_body_id, record);
+
+        Ok(dynamic_body_id)
+    }
+
+    /// Mengambil referensi ke DynamicAggregateRecord berdasarkan DynamicBodyId
+    #[inline(always)]
+    pub fn get_dynamic_aggregate(&self, id: DynamicBodyId) -> Option<&DynamicAggregateRecord> {
+        self.dynamic_aggregates.get(&id)
+    }
+
+    /// Mengambil referensi mutabel ke DynamicAggregateRecord berdasarkan DynamicBodyId
+    #[inline(always)]
+    pub fn get_dynamic_aggregate_mut(
+        &mut self,
+        id: DynamicBodyId,
+    ) -> Option<&mut DynamicAggregateRecord> {
+        self.dynamic_aggregates.get_mut(&id)
+    }
+
+    /// Mengambil referensi ke DynamicAggregateRecord yang memiliki RigidBodyId tertentu
+    pub fn get_dynamic_aggregate_by_rigid_body(
+        &self,
+        rb_id: RigidBodyId,
+    ) -> Option<&DynamicAggregateRecord> {
+        self.dynamic_aggregates
+            .values()
+            .find(|r| r.rigid_body_id == rb_id)
+    }
+
+    /// Menghapus representasi aggregate dinamis dan RigidBody beserta seluruh colliders miliknya.
+    pub fn remove_dynamic_aggregate(
+        &mut self,
+        id: DynamicBodyId,
+    ) -> Option<DynamicAggregateRecord> {
+        let record = self.dynamic_aggregates.remove(&id)?;
+        self.remove_rigid_body(record.rigid_body_id);
+        Some(record)
+    }
+
+    /// Fase 1 Reintegrasi: Memvalidasi dan menyiapkan rencana mutasi voxel ke ChunkStore
+    pub fn prepare_aggregate_reintegration(
+        &self,
+        id: DynamicBodyId,
+        store: &ChunkStore,
+        policy: OrientationQuantizationPolicy,
+    ) -> Result<AggregateReintegrationPlan, ReintegrationError> {
+        let record = self
+            .dynamic_aggregates
+            .get(&id)
+            .ok_or(ReintegrationError::BodyNotFound(id.0))?;
+
+        let rigid_body = self
+            .rigid_bodies
+            .get(&record.rigid_body_id)
+            .ok_or(ReintegrationError::BodyNotFound(record.rigid_body_id.0))?;
+
+        prepare_aggregate_reintegration_fn(record, rigid_body, store, policy)
+    }
+
+    /// Fase 2 Reintegrasi: Menulis voxel ke ChunkStore, memperbarui dirty flags, dan menghapus dari PhysicsWorld
+    pub fn commit_aggregate_reintegration(
+        &mut self,
+        plan: AggregateReintegrationPlan,
+        store: &mut ChunkStore,
+    ) -> Result<(), ReintegrationError> {
+        commit_aggregate_reintegration_fn(&plan, store);
+        self.remove_dynamic_aggregate(plan.dynamic_body_id);
+        Ok(())
+    }
+
+    /// Reintegrasi transaksional dua fase penuh untuk dynamic aggregate
+    pub fn reintegrate_aggregate(
+        &mut self,
+        id: DynamicBodyId,
+        store: &mut ChunkStore,
+        policy: OrientationQuantizationPolicy,
+    ) -> Result<(), ReintegrationError> {
+        let plan = self.prepare_aggregate_reintegration(id, store, policy)?;
+        self.commit_aggregate_reintegration(plan, store)
+    }
+
+    /// Mengosongkan seluruh badan, collider, broadphase, dan dynamic aggregates dari dunia fisika.
     pub fn clear(&mut self) {
         self.rigid_bodies.clear();
         self.colliders.clear();
         self.broadphase.clear();
+        self.dynamic_aggregates.clear();
     }
 }
 

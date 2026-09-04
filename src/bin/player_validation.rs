@@ -33,6 +33,12 @@ fn main() {
 
     // Spawn pemain di ketinggian y = 5.0m di atas lantai
     let mut player = PlayerController::new(Vec3::new(2.5, 5.0, 2.5));
+    // DOKUMENTASI HISTORIS (Phase 9.10 / 9.11 Regression Guard):
+    // Binary player_validation.rs ini adalah validator historis khusus Phase 8B yang menguji
+    // spesifikasi kinematik lama (walk_speed = 5.0 m/s, sprint_speed = 9.0 m/s).
+    // Nilai default produksi sebenarnya disempurnakan pada Phase 8D/9 (walk=4.317, sprint=5.612).
+    // Konfigurasi eksplisit di bawah sengaja mengisolasi pengujian validator historis 8B ini
+    // tanpa mengganggu nilai default PlayerController.
     player.config.walk_speed = 5.0;
     player.config.sprint_speed = 9.0;
     assert!(!player.state.grounded);

@@ -109,9 +109,7 @@ impl PlayerRigidBodyBridge {
         if self.config.support_carry {
             if let Some(support_id) = self.last_support_body {
                 if let Some(body) = world.get_rigid_body(support_id) {
-                    let contact_pt = self
-                        .last_support_point
-                        .unwrap_or(player.state.position);
+                    let contact_pt = self.last_support_point.unwrap_or(player.state.position);
                     let r = contact_pt - body.position();
                     let v_surf = body.linear_velocity() + body.angular_velocity().cross(r);
 
@@ -141,9 +139,7 @@ impl PlayerRigidBodyBridge {
             if let Some(support_id) = self.last_support_body {
                 if let Some(body) = world.get_rigid_body_mut(support_id) {
                     if body.is_dynamic() {
-                        let contact_pt = self
-                            .last_support_point
-                            .unwrap_or(player.state.position);
+                        let contact_pt = self.last_support_point.unwrap_or(player.state.position);
 
                         let was_sleeping = body.is_sleeping();
 

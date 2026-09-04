@@ -1,6 +1,7 @@
 use glam::{IVec3, Vec3};
 use std::fmt;
 
+use super::broadphase::RigidBodyId;
 use crate::coord::{world_pos_to_world_voxel, world_voxel_to_world_pos};
 use crate::structure::aggregate::DetachedAggregate;
 use crate::voxel::{VoxelBlock, VOXEL_SIZE};
@@ -27,12 +28,13 @@ pub enum DynamicBodyState {
     Settled,
 }
 
-/// Representasi entitas dinamis (Dynamic Aggregate Body) untuk Phase 8A.
+/// Representasi entitas dinamis (Dynamic Aggregate Body) untuk Phase 8A dan Phase 9.11.
 ///
 /// INVARIANT:
 /// - Menyimpan satu `DetachedAggregate` secara eksklusif (kepemilikan tunggal, tidak ada duplikasi).
 /// - Transformasi fisika dalam meter: `position` (m) dan `velocity` (m/s).
 /// - `position` adalah posisi dunia titik referensi aggregate (sudut minimum lokal).
+/// - `rigid_body_id` menghubungkan secara transaksional ke representasi fisik otoritatif di PhysicsWorld (Phase 9.11).
 /// - 1 Voxel = 0.5 meter (VOXEL_SIZE).
 #[derive(Debug, Clone)]
 pub struct DynamicBody {
@@ -50,6 +52,8 @@ pub struct DynamicBody {
     pub ticks_stationary: u32,
     /// Apakah badan ini sedang bersentuhan dengan permukaan tanah solid di bawahnya
     pub is_grounded: bool,
+    /// ID representasi fisik kaku otoritatif di PhysicsWorld (Phase 9.11)
+    pub rigid_body_id: Option<RigidBodyId>,
 }
 
 impl DynamicBody {
@@ -64,6 +68,7 @@ impl DynamicBody {
             state: DynamicBodyState::Active,
             ticks_stationary: 0,
             is_grounded: false,
+            rigid_body_id: None,
         }
     }
 
@@ -84,6 +89,18 @@ impl DynamicBody {
     pub fn with_velocity(mut self, velocity: Vec3) -> Self {
         self.velocity = velocity;
         self
+    }
+
+    /// Builder untuk mengasosiasikan RigidBodyId otoritatif (Phase 9.11)
+    pub fn with_rigid_body_id(mut self, rigid_body_id: RigidBodyId) -> Self {
+        self.rigid_body_id = Some(rigid_body_id);
+        self
+    }
+
+    /// Mengambil ID RigidBody fisik otoritatif jika terhubung
+    #[inline(always)]
+    pub fn rigid_body_id(&self) -> Option<RigidBodyId> {
+        self.rigid_body_id
     }
 
     /// Memvalidasi integritas internal dari badan dinamis:

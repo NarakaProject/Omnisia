@@ -1,4 +1,5 @@
 pub mod aabb;
+pub mod aggregate;
 pub mod body;
 pub mod broadphase;
 pub mod collider;
@@ -18,6 +19,13 @@ pub mod transform;
 pub mod world;
 
 pub use aabb::{Aabb, AabbError};
+pub use aggregate::{
+    audit_aggregate_ownership, calculate_aggregate_mass_properties, commit_aggregate_reintegration,
+    generate_aggregate_colliders, greedy_merge_voxels, prepare_aggregate_reintegration,
+    snap_to_nearest_lattice_rotation, AggregateColliderStrategy, AggregateOwnershipReport,
+    AggregatePhysicsError, AggregatePhysicsProperties, AggregateReintegrationPlan,
+    DynamicAggregateRecord, MergedVoxelBox, OrientationQuantizationPolicy,
+};
 pub use body::{DynamicBody, DynamicBodyId, DynamicBodyState};
 pub use broadphase::{
     world_pos_to_cell, BodyType, BroadphaseError, BroadphasePair, BroadphaseProxy, CellCoord,

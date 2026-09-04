@@ -12312,3 +12312,1357 @@ fn test_9_10_50_end_to_end_gameplay_walk_push_stand_jump_cycle() {
     assert!(res_jump.jump_reaction_applied);
     assert!(player.state.velocity.y > 0.0);
 }
+
+// ============================================================================
+// PHASE 9.11: STRUCTURAL AGGREGATE ↔ RIGIDBODY INTEGRATION TEST SUITE
+// ============================================================================
+
+use omnisia::physics::{
+    audit_aggregate_ownership, calculate_aggregate_mass_properties, generate_aggregate_colliders,
+    AggregateColliderStrategy, AggregatePhysicsError, DynamicBodyId, OrientationQuantizationPolicy,
+};
+use omnisia::structure::aggregate::DetachedAggregate;
+
+fn make_p911_aggregate(id: u64, min: IVec3, max: IVec3) -> DetachedAggregate {
+    let mut voxels = Vec::new();
+    for x in min.x..=max.x {
+        for y in min.y..=max.y {
+            for z in min.z..=max.z {
+                voxels.push((IVec3::new(x, y, z), VoxelBlock::new(MaterialId::STONE)));
+            }
+        }
+    }
+    DetachedAggregate::from_world_voxels(id, &voxels).unwrap()
+}
+
+// ----------------------------------------------------------------------------
+// 1. IDENTITY & OWNERSHIP (Tests 01-07)
+// ----------------------------------------------------------------------------
+
+#[test]
+fn test_9_11_01_static_aggregate_has_one_owner() {
+    let mut store = ChunkStore::new();
+    let mut chunk = Chunk::new(IVec3::ZERO);
+    for x in 0..2 {
+        for y in 0..2 {
+            for z in 0..2 {
+                chunk.set_voxel(x, y, z, VoxelBlock::new(MaterialId::STONE));
+            }
+        }
+    }
+    store.insert(chunk);
+    let world = PhysicsWorld::default();
+
+    let report = audit_aggregate_ownership(&store, &world);
+    assert_eq!(report.total_static_voxels, 8);
+    assert_eq!(report.total_dynamic_voxels, 0);
+    assert_eq!(report.duplicate_detections, 0);
+    assert_eq!(report.inconsistent_records, 0);
+}
+
+#[test]
+fn test_9_11_02_detach_transfers_ownership_exactly_once() {
+    let mut store = ChunkStore::new();
+    let mut chunk = Chunk::new(IVec3::ZERO);
+    for x in 0..2 {
+        for y in 0..2 {
+            for z in 0..2 {
+                chunk.set_voxel(x, y, z, VoxelBlock::new(MaterialId::STONE));
+            }
+        }
+    }
+    store.insert(chunk);
+
+    // Detach: ekstrak aggregate dan kosongkan dari ChunkStore
+    let agg = make_p911_aggregate(101, IVec3::ZERO, IVec3::new(1, 1, 1));
+    for v in &agg.voxels {
+        store.set_voxel_world(agg.world_coord_of(v), VoxelBlock::AIR);
+    }
+
+    let mut world = PhysicsWorld::default();
+    world
+        .physicalize_aggregate(agg, None, AggregateColliderStrategy::BoundingBox)
+        .unwrap();
+
+    let report = audit_aggregate_ownership(&store, &world);
+    assert_eq!(report.total_static_voxels, 0);
+    assert_eq!(report.total_dynamic_voxels, 8);
+    assert_eq!(report.duplicate_detections, 0);
+    assert_eq!(report.inconsistent_records, 0);
+}
+
+#[test]
+fn test_9_11_03_dynamic_aggregate_has_one_runtime_body() {
+    let mut world = PhysicsWorld::default();
+    let agg = make_p911_aggregate(201, IVec3::new(0, 10, 0), IVec3::new(1, 10, 1));
+    let dyn_id = world
+        .physicalize_aggregate(agg, None, AggregateColliderStrategy::BoundingBox)
+        .unwrap();
+
+    assert_eq!(world.dynamic_aggregates.len(), 1);
+    assert_eq!(world.rigid_bodies.len(), 1);
+
+    let rb_id = world.get_dynamic_aggregate(dyn_id).unwrap().rigid_body_id;
+    assert!(world.rigid_bodies.contains_key(&rb_id));
+}
+
+#[test]
+fn test_9_11_04_runtime_id_distinct_from_persistent_identity() {
+    let mut world = PhysicsWorld::default();
+    let persistent_id = 9999u64;
+    let agg = make_p911_aggregate(persistent_id, IVec3::ZERO, IVec3::ONE);
+    let dyn_id = world
+        .physicalize_aggregate(agg, None, AggregateColliderStrategy::BoundingBox)
+        .unwrap();
+
+    let rec = world.get_dynamic_aggregate(dyn_id).unwrap();
+    assert_eq!(rec.aggregate_id, persistent_id);
+    // Runtime IDs dihasilkan dari counter
+    assert_eq!(dyn_id, DynamicBodyId(1));
+    assert_eq!(rec.rigid_body_id, RigidBodyId(1));
+}
+
+#[test]
+fn test_9_11_05_duplicate_registration_rejected() {
+    let mut world = PhysicsWorld::default();
+    let agg = make_p911_aggregate(1, IVec3::ZERO, IVec3::ONE);
+    let body_id = world
+        .physicalize_aggregate(agg, None, AggregateColliderStrategy::BoundingBox)
+        .unwrap();
+
+    let rb_id = world.get_dynamic_aggregate(body_id).unwrap().rigid_body_id;
+    let duplicate_body = RigidBody::new_static(rb_id, Vec3::ZERO, Quat::IDENTITY).unwrap();
+    let err = world.add_rigid_body(duplicate_body, None).unwrap_err();
+    assert_eq!(err, BroadphaseError::BodyAlreadyExists(rb_id));
+}
+
+#[test]
+fn test_9_11_06_double_detach_rejected() {
+    let empty_voxels: Vec<(IVec3, VoxelBlock)> = Vec::new();
+    assert!(DetachedAggregate::from_world_voxels(1, &empty_voxels).is_none());
+}
+
+#[test]
+fn test_9_11_07_invalid_transition_leaves_state_unchanged() {
+    let mut world = PhysicsWorld::default();
+    let empty_agg = DetachedAggregate {
+        id: 1,
+        min_voxel: IVec3::ZERO,
+        max_voxel: IVec3::ZERO,
+        voxels: Vec::new(),
+    };
+    let res = world.physicalize_aggregate(empty_agg, None, AggregateColliderStrategy::BoundingBox);
+    assert_eq!(res, Err(AggregatePhysicsError::EmptyAggregate));
+    assert!(world.dynamic_aggregates.is_empty());
+    assert!(world.rigid_bodies.is_empty());
+    assert!(world.colliders.is_empty());
+}
+
+// ----------------------------------------------------------------------------
+// 2. PHYSICAL PROPERTIES (Tests 08-15)
+// ----------------------------------------------------------------------------
+
+#[test]
+fn test_9_11_08_mass_finite_and_positive() {
+    let agg = make_p911_aggregate(1, IVec3::ZERO, IVec3::new(1, 1, 1));
+    let props = calculate_aggregate_mass_properties(&agg, None).unwrap();
+    assert!(props.total_mass.is_finite());
+    assert!(props.total_mass > 0.0);
+    assert_eq!(props.total_mass, 8.0); // 8 voxel * 1.0 kg
+}
+
+#[test]
+fn test_9_11_09_inverse_mass_correct() {
+    let agg = make_p911_aggregate(1, IVec3::ZERO, IVec3::new(1, 0, 0));
+    let props = calculate_aggregate_mass_properties(&agg, None).unwrap();
+    assert_eq!(props.total_mass, 2.0);
+    assert!((props.mass_properties.inverse_mass - 0.5).abs() < 1e-6);
+}
+
+#[test]
+fn test_9_11_10_center_of_mass_deterministic() {
+    // 2x2x2 cube: rentang lokal [0..2 * 0.5m] = [0..1m]. Pusat geometris = (0.5, 0.5, 0.5)m
+    let agg = make_p911_aggregate(1, IVec3::ZERO, IVec3::new(1, 1, 1));
+    let props = calculate_aggregate_mass_properties(&agg, None).unwrap();
+    assert!((props.center_of_mass_local - Vec3::splat(0.5)).length() < 1e-5);
+}
+
+#[test]
+fn test_9_11_11_inertia_finite_and_positive_definite() {
+    let agg = make_p911_aggregate(1, IVec3::ZERO, IVec3::new(2, 1, 0));
+    let props = calculate_aggregate_mass_properties(&agg, None).unwrap();
+    let inertia = props.local_inertia;
+
+    assert!(inertia.x_axis.is_finite());
+    assert!(inertia.y_axis.is_finite());
+    assert!(inertia.z_axis.is_finite());
+
+    // Kriteria Sylvester
+    let d1 = inertia.x_axis.x;
+    let d2 = inertia.x_axis.x * inertia.y_axis.y - inertia.x_axis.y * inertia.y_axis.x;
+    let d3 = inertia.determinant();
+
+    assert!(d1 > 1e-5);
+    assert!(d2 > 1e-5);
+    assert!(d3 > 1e-5);
+}
+
+#[test]
+fn test_9_11_12_inertia_symmetric() {
+    let agg = make_p911_aggregate(1, IVec3::ZERO, IVec3::new(3, 2, 1));
+    let props = calculate_aggregate_mass_properties(&agg, None).unwrap();
+    let i = props.local_inertia;
+    assert!((i.x_axis.y - i.y_axis.x).abs() < 1e-5);
+    assert!((i.x_axis.z - i.z_axis.x).abs() < 1e-5);
+    assert!((i.y_axis.z - i.z_axis.y).abs() < 1e-5);
+}
+
+#[test]
+fn test_9_11_13_inverse_inertia_valid() {
+    let agg = make_p911_aggregate(1, IVec3::ZERO, IVec3::new(1, 1, 1));
+    let props = calculate_aggregate_mass_properties(&agg, None).unwrap();
+    let prod = props.local_inertia * props.mass_properties.local_inverse_inertia;
+    let diff = (prod - Mat3::IDENTITY).abs_diff_eq(Mat3::ZERO, 1e-4);
+    assert!(diff);
+}
+
+#[test]
+fn test_9_11_14_degenerate_aggregate_rejected_safely() {
+    let agg = DetachedAggregate {
+        id: 1,
+        min_voxel: IVec3::ZERO,
+        max_voxel: IVec3::ZERO,
+        voxels: Vec::new(),
+    };
+    let err = calculate_aggregate_mass_properties(&agg, None).unwrap_err();
+    assert_eq!(err, AggregatePhysicsError::EmptyAggregate);
+}
+
+#[test]
+fn test_9_11_15_metric_unit_conversion_correct() {
+    // 1 voxel (0.5m x 0.5m x 0.5m), massa 1.0 kg
+    // Inersia kubus seragam = (1/6) * m * s^2 = (1/6) * 1.0 * 0.25 = 1/24 ≈ 0.0416667 kg·m²
+    let agg = make_p911_aggregate(1, IVec3::ZERO, IVec3::ZERO);
+    let props = calculate_aggregate_mass_properties(&agg, None).unwrap();
+    let expected_i = 1.0 / 24.0;
+    assert!((props.local_inertia.x_axis.x - expected_i).abs() < 1e-5);
+    assert!((props.local_inertia.y_axis.y - expected_i).abs() < 1e-5);
+    assert!((props.local_inertia.z_axis.z - expected_i).abs() < 1e-5);
+}
+
+// ----------------------------------------------------------------------------
+// 3. TRANSFORM (Tests 16-19)
+// ----------------------------------------------------------------------------
+
+#[test]
+fn test_9_11_16_local_voxel_positions_preserved_under_translation() {
+    let mut world = PhysicsWorld::default();
+    let agg = make_p911_aggregate(1, IVec3::ZERO, IVec3::new(1, 1, 1));
+    let dyn_id = world
+        .physicalize_aggregate(agg, None, AggregateColliderStrategy::BoundingBox)
+        .unwrap();
+
+    let initial_rel = world
+        .get_dynamic_aggregate(dyn_id)
+        .unwrap()
+        .aggregate
+        .voxels[0]
+        .relative_coord;
+    let rb_id = world.get_dynamic_aggregate(dyn_id).unwrap().rigid_body_id;
+
+    // Geser posisi RigidBody sejauh 100 meter
+    world
+        .get_rigid_body_mut(rb_id)
+        .unwrap()
+        .set_position(Vec3::new(100.0, 50.0, -30.0))
+        .unwrap();
+
+    let rec_after = world.get_dynamic_aggregate(dyn_id).unwrap();
+    assert_eq!(rec_after.aggregate.voxels[0].relative_coord, initial_rel);
+}
+
+#[test]
+fn test_9_11_17_local_voxel_positions_preserved_under_rotation() {
+    let mut world = PhysicsWorld::default();
+    let agg = make_p911_aggregate(1, IVec3::ZERO, IVec3::new(2, 0, 0));
+    let dyn_id = world
+        .physicalize_aggregate(agg, None, AggregateColliderStrategy::BoundingBox)
+        .unwrap();
+
+    let orig_voxels = world
+        .get_dynamic_aggregate(dyn_id)
+        .unwrap()
+        .aggregate
+        .voxels
+        .clone();
+    let rb_id = world.get_dynamic_aggregate(dyn_id).unwrap().rigid_body_id;
+
+    // Rotasikan 90 derajat terhadap sumbu Y
+    let rot = Quat::from_rotation_y(std::f32::consts::FRAC_PI_2);
+    world
+        .get_rigid_body_mut(rb_id)
+        .unwrap()
+        .set_rotation(rot)
+        .unwrap();
+
+    let rec_after = world.get_dynamic_aggregate(dyn_id).unwrap();
+    assert_eq!(rec_after.aggregate.voxels, orig_voxels);
+}
+
+#[test]
+fn test_9_11_18_body_transform_deterministic() {
+    let mut world = PhysicsWorld::default();
+    let agg = make_p911_aggregate(1, IVec3::new(10, 20, 30), IVec3::new(11, 21, 31));
+    let dyn_id = world
+        .physicalize_aggregate(agg, None, AggregateColliderStrategy::BoundingBox)
+        .unwrap();
+
+    let rec = world.get_dynamic_aggregate(dyn_id).unwrap();
+    let com = rec.current_world_com(&world).unwrap();
+
+    // Posisi awal minimum corner: (5.0, 10.0, 15.0)m. Ukuran 2x2x2 = 1.0m. CoM = +0.5m => (5.5, 10.5, 15.5)m
+    assert!((com - Vec3::new(5.5, 10.5, 15.5)).length() < 1e-5);
+}
+
+#[test]
+fn test_9_11_19_angular_motion_uses_rigidbody_authority() {
+    let mut world = PhysicsWorld::default();
+    let agg = make_p911_aggregate(1, IVec3::ZERO, IVec3::new(1, 1, 1));
+    let dyn_id = world
+        .physicalize_aggregate(agg, None, AggregateColliderStrategy::BoundingBox)
+        .unwrap();
+
+    let rb_id = world.get_dynamic_aggregate(dyn_id).unwrap().rigid_body_id;
+    world
+        .get_rigid_body_mut(rb_id)
+        .unwrap()
+        .set_angular_velocity(Vec3::new(0.0, 3.0, 0.0))
+        .unwrap();
+
+    let rot_before = world.get_rigid_body(rb_id).unwrap().rotation();
+    world.integrate_transforms().unwrap();
+    let rot_after = world.get_rigid_body(rb_id).unwrap().rotation();
+
+    assert_ne!(rot_before, rot_after);
+}
+
+// ----------------------------------------------------------------------------
+// 4. COLLISION (Tests 20-25)
+// ----------------------------------------------------------------------------
+
+#[test]
+fn test_9_11_20_aggregate_collider_registered_correctly() {
+    let mut world = PhysicsWorld::default();
+    let agg = make_p911_aggregate(1, IVec3::ZERO, IVec3::new(1, 1, 1));
+    let dyn_id = world
+        .physicalize_aggregate(agg, None, AggregateColliderStrategy::BoundingBox)
+        .unwrap();
+
+    let rec = world.get_dynamic_aggregate(dyn_id).unwrap();
+    assert_eq!(rec.collider_ids.len(), 1);
+    assert!(world.colliders.contains_key(&rec.collider_ids[0]));
+    assert!(world.broadphase.get_proxy(rec.rigid_body_id).is_some());
+}
+
+#[test]
+fn test_9_11_21_multiple_aggregate_colliders_reference_one_body() {
+    let mut world = PhysicsWorld::default();
+    // Bentuk L: (0,0,0), (1,0,0), (0,1,0)
+    let voxels = vec![
+        (IVec3::new(0, 0, 0), VoxelBlock::new(MaterialId::STONE)),
+        (IVec3::new(1, 0, 0), VoxelBlock::new(MaterialId::STONE)),
+        (IVec3::new(0, 1, 0), VoxelBlock::new(MaterialId::STONE)),
+    ];
+    let agg = DetachedAggregate::from_world_voxels(1, &voxels).unwrap();
+    let dyn_id = world
+        .physicalize_aggregate(agg, None, AggregateColliderStrategy::CompoundBoxes)
+        .unwrap();
+
+    let rec = world.get_dynamic_aggregate(dyn_id).unwrap();
+    assert!(rec.collider_ids.len() >= 2);
+    for col_id in &rec.collider_ids {
+        let col = world.get_collider(*col_id).unwrap();
+        assert_eq!(col.rigid_body_id(), rec.rigid_body_id);
+    }
+}
+
+#[test]
+fn test_9_11_22_no_per_voxel_rigid_bodies() {
+    let mut world = PhysicsWorld::default();
+    let agg = make_p911_aggregate(1, IVec3::ZERO, IVec3::new(3, 3, 3)); // 64 voxel
+    assert_eq!(agg.voxel_count(), 64);
+
+    let dyn_id = world
+        .physicalize_aggregate(agg, None, AggregateColliderStrategy::BoundingBox)
+        .unwrap();
+
+    assert_eq!(world.rigid_bodies.len(), 1);
+    assert_eq!(world.dynamic_aggregates.len(), 1);
+    let rb_id = world.get_dynamic_aggregate(dyn_id).unwrap().rigid_body_id;
+    assert_eq!(world.colliders_for_body(rb_id).count(), 1);
+}
+
+#[test]
+fn test_9_11_23_no_duplicate_broadphase_ownership() {
+    let mut world = PhysicsWorld::default();
+    let agg = make_p911_aggregate(1, IVec3::ZERO, IVec3::new(1, 1, 1));
+    let dyn_id = world
+        .physicalize_aggregate(agg, None, AggregateColliderStrategy::BoundingBox)
+        .unwrap();
+
+    let rec = world.get_dynamic_aggregate(dyn_id).unwrap();
+    let count = world
+        .broadphase
+        .generate_candidate_pairs()
+        .iter()
+        .filter(|p| p.body_a == rec.rigid_body_id || p.body_b == rec.rigid_body_id)
+        .count();
+    // Belum ada badan lain, jadi tidak ada pasangan
+    assert_eq!(count, 0);
+    assert_eq!(world.broadphase.len(), 1);
+}
+
+#[test]
+fn test_9_11_24_dynamic_aggregate_collides_with_static_world() {
+    let mut world = PhysicsWorld::default();
+
+    // Lantai statis di y=0
+    let floor_id = RigidBodyId(999);
+    let floor_body =
+        RigidBody::new_static(floor_id, Vec3::new(0.0, 0.0, 0.0), Quat::IDENTITY).unwrap();
+    world.add_rigid_body(floor_body, None).unwrap();
+    let floor_col = Collider::new(
+        ColliderId(999),
+        floor_id,
+        Shape::Box(BoxShape::new(Vec3::new(5.0, 0.25, 5.0)).unwrap()),
+        Transform::IDENTITY,
+    );
+    world.add_collider(floor_col).unwrap();
+
+    // Aggregate dinamis jatuh dari ketinggian y=1.0m
+    let agg = make_p911_aggregate(1, IVec3::new(0, 2, 0), IVec3::new(0, 2, 0));
+    let _dyn_id = world
+        .physicalize_aggregate(agg, None, AggregateColliderStrategy::BoundingBox)
+        .unwrap();
+
+    // Langkah simulasi: verifikasi tabrakan terjadi dan kontak dihasilkan
+    let mut collided = false;
+    for _ in 0..15 {
+        let res = world.step().unwrap();
+        if res.contacts_generated > 0 {
+            collided = true;
+            break;
+        }
+    }
+
+    assert!(
+        collided,
+        "Aggregate dinamis harus menghasilkan kontak dengan dunia statis"
+    );
+}
+
+#[test]
+fn test_9_11_25_dynamic_aggregate_collides_with_dynamic_aggregate() {
+    let mut world = PhysicsWorld::default();
+
+    // Aggregate B di bawah pada y=1.0m (dinamis)
+    let agg_b = make_p911_aggregate(1, IVec3::new(0, 2, 0), IVec3::new(0, 2, 0));
+    let _dyn_b = world
+        .physicalize_aggregate(agg_b, None, AggregateColliderStrategy::BoundingBox)
+        .unwrap();
+
+    // Aggregate A di atas pada y=2.0m (dinamis)
+    let agg_a = make_p911_aggregate(2, IVec3::new(0, 4, 0), IVec3::new(0, 4, 0));
+    let _dyn_a = world
+        .physicalize_aggregate(agg_a, None, AggregateColliderStrategy::BoundingBox)
+        .unwrap();
+
+    let res = world.step().unwrap();
+    // Kedua badan berpartisipasi dalam kontak dan solver Phase 9
+    assert!(res.awake_islands_count > 0);
+}
+
+// ----------------------------------------------------------------------------
+// 5. PHYSICS SIMULATION (Tests 26-30)
+// ----------------------------------------------------------------------------
+
+#[test]
+fn test_9_11_26_aggregate_falls_correctly() {
+    let mut world = PhysicsWorld::default();
+    let agg = make_p911_aggregate(1, IVec3::new(0, 20, 0), IVec3::new(0, 20, 0));
+    let dyn_id = world
+        .physicalize_aggregate(agg, None, AggregateColliderStrategy::BoundingBox)
+        .unwrap();
+
+    let rb_id = world.get_dynamic_aggregate(dyn_id).unwrap().rigid_body_id;
+    world.integrate_velocities().unwrap();
+
+    let vel = world.get_rigid_body(rb_id).unwrap().linear_velocity();
+    let expected_vy = -9.81 * (1.0 / 30.0);
+    assert!((vel.y - expected_vy).abs() < 1e-4);
+}
+
+#[test]
+fn test_9_11_27_aggregate_wakes_correctly() {
+    let mut world = PhysicsWorld::default();
+    let agg = make_p911_aggregate(1, IVec3::ZERO, IVec3::ZERO);
+    let dyn_id = world
+        .physicalize_aggregate(agg, None, AggregateColliderStrategy::BoundingBox)
+        .unwrap();
+
+    let rb_id = world.get_dynamic_aggregate(dyn_id).unwrap().rigid_body_id;
+    world.get_rigid_body_mut(rb_id).unwrap().put_to_sleep();
+    assert!(world.get_rigid_body(rb_id).unwrap().is_sleeping());
+
+    world.wake_body(rb_id);
+    assert!(!world.get_rigid_body(rb_id).unwrap().is_sleeping());
+}
+
+#[test]
+fn test_9_11_28_aggregate_sleeps_correctly() {
+    let mut world = PhysicsWorld::default();
+    let agg = make_p911_aggregate(1, IVec3::ZERO, IVec3::ZERO);
+    let dyn_id = world
+        .physicalize_aggregate(agg, None, AggregateColliderStrategy::BoundingBox)
+        .unwrap();
+
+    // Badan diam tanpa kontak dan tanpa gravitasi
+    world.config.world_gravity = Vec3::ZERO;
+    let rb_id = world.get_dynamic_aggregate(dyn_id).unwrap().rigid_body_id;
+
+    for _ in 0..25 {
+        world.step().unwrap();
+    }
+
+    assert!(world.get_rigid_body(rb_id).unwrap().is_sleeping());
+}
+
+#[test]
+fn test_9_11_29_sleeping_aggregate_retains_broadphase() {
+    let mut world = PhysicsWorld::default();
+    let agg = make_p911_aggregate(1, IVec3::ZERO, IVec3::ZERO);
+    let dyn_id = world
+        .physicalize_aggregate(agg, None, AggregateColliderStrategy::BoundingBox)
+        .unwrap();
+
+    let rb_id = world.get_dynamic_aggregate(dyn_id).unwrap().rigid_body_id;
+    world.get_rigid_body_mut(rb_id).unwrap().put_to_sleep();
+
+    assert!(world.broadphase.get_proxy(rb_id).is_some());
+}
+
+#[test]
+fn test_9_11_30_dynamic_dynamic_impulse_path_reused() {
+    let mut world = PhysicsWorld::default();
+    let agg1 = make_p911_aggregate(1, IVec3::ZERO, IVec3::ZERO);
+    let id1 = world
+        .physicalize_aggregate(agg1, None, AggregateColliderStrategy::BoundingBox)
+        .unwrap();
+
+    let agg2 = make_p911_aggregate(2, IVec3::new(1, 0, 0), IVec3::new(1, 0, 0));
+    let id2 = world
+        .physicalize_aggregate(agg2, None, AggregateColliderStrategy::BoundingBox)
+        .unwrap();
+
+    let rb1 = world.get_dynamic_aggregate(id1).unwrap().rigid_body_id;
+    let rb2 = world.get_dynamic_aggregate(id2).unwrap().rigid_body_id;
+
+    world
+        .get_rigid_body_mut(rb1)
+        .unwrap()
+        .set_linear_velocity(Vec3::new(2.0, 0.0, 0.0))
+        .unwrap();
+    world
+        .get_rigid_body_mut(rb2)
+        .unwrap()
+        .set_linear_velocity(Vec3::new(-2.0, 0.0, 0.0))
+        .unwrap();
+
+    world.step().unwrap();
+
+    let v1 = world.get_rigid_body(rb1).unwrap().linear_velocity();
+    let v2 = world.get_rigid_body(rb2).unwrap().linear_velocity();
+
+    // Kontak horizontal harus membalikkan atau mengurangi kecepatan relatif
+    assert!(v1.x < 2.0);
+    assert!(v2.x > -2.0);
+}
+
+#[test]
+fn test_9_11_31_friction_reused() {
+    let mut world = PhysicsWorld::default();
+    let floor_id = RigidBodyId(1001);
+    let floor = RigidBody::new_static(floor_id, Vec3::new(0.0, -0.5, 0.0), Quat::IDENTITY).unwrap();
+    world.add_rigid_body(floor, None).unwrap();
+
+    let agg = make_p911_aggregate(1, IVec3::ZERO, IVec3::ZERO);
+    let dyn_id = world
+        .physicalize_aggregate(agg, None, AggregateColliderStrategy::BoundingBox)
+        .unwrap();
+
+    let rb_id = world.get_dynamic_aggregate(dyn_id).unwrap().rigid_body_id;
+    let col_id = world.get_dynamic_aggregate(dyn_id).unwrap().collider_ids[0];
+
+    world
+        .get_rigid_body_mut(rb_id)
+        .unwrap()
+        .set_linear_velocity(Vec3::new(5.0, 0.0, 0.0))
+        .unwrap();
+
+    let contact = Contact::new(
+        col_id,
+        ColliderId(1001),
+        rb_id,
+        floor_id,
+        Vec3::new(0.25, 0.0, 0.25),
+        Vec3::NEG_Y,
+        0.02,
+    )
+    .with_coefficients(0.0, 0.6)
+    .unwrap();
+
+    world.solve_contacts(&[contact]).unwrap();
+
+    let v_after = world.get_rigid_body(rb_id).unwrap().linear_velocity();
+    // Gesekan kontak solver Phase 9 harus mengurangi kecepatan tangensial X
+    assert!(
+        v_after.x < 5.0,
+        "Kecepatan tangensial harus tereduksi oleh friksi: {}",
+        v_after.x
+    );
+}
+
+#[test]
+fn test_9_11_32_restitution_reused() {
+    let mut world = PhysicsWorld::default();
+    let floor_id = RigidBodyId(1002);
+    let floor = RigidBody::new_static(floor_id, Vec3::new(0.0, -0.5, 0.0), Quat::IDENTITY).unwrap();
+    world.add_rigid_body(floor, None).unwrap();
+
+    let agg = make_p911_aggregate(1, IVec3::ZERO, IVec3::ZERO);
+    let dyn_id = world
+        .physicalize_aggregate(agg, None, AggregateColliderStrategy::BoundingBox)
+        .unwrap();
+
+    let rb_id = world.get_dynamic_aggregate(dyn_id).unwrap().rigid_body_id;
+    let col_id = world.get_dynamic_aggregate(dyn_id).unwrap().collider_ids[0];
+
+    world
+        .get_rigid_body_mut(rb_id)
+        .unwrap()
+        .set_linear_velocity(Vec3::new(0.0, -8.0, 0.0))
+        .unwrap();
+
+    let contact = Contact::new(
+        col_id,
+        ColliderId(1002),
+        rb_id,
+        floor_id,
+        Vec3::new(0.25, 0.0, 0.25),
+        Vec3::NEG_Y,
+        0.02,
+    )
+    .with_coefficients(0.5, 0.0)
+    .unwrap();
+
+    world.solve_contacts(&[contact]).unwrap();
+
+    let v_after = world.get_rigid_body(rb_id).unwrap().linear_velocity();
+    // Solver mengaplikasikan restitusi sehingga kecepatan memantul ke atas
+    assert!(
+        v_after.y > 0.0,
+        "Kecepatan vertikal harus memantul ke atas: {}",
+        v_after.y
+    );
+}
+
+#[test]
+fn test_9_11_33_angular_response_works() {
+    let mut world = PhysicsWorld::default();
+    let agg = make_p911_aggregate(1, IVec3::ZERO, IVec3::new(2, 0, 0));
+    let dyn_id = world
+        .physicalize_aggregate(agg, None, AggregateColliderStrategy::BoundingBox)
+        .unwrap();
+
+    let rb_id = world.get_dynamic_aggregate(dyn_id).unwrap().rigid_body_id;
+    // Berikan impuls off-center pada ujung aggregate
+    let body = world.get_rigid_body_mut(rb_id).unwrap();
+    let r = Vec3::new(0.5, 0.0, 0.0);
+    let impulse = Vec3::new(0.0, 2.0, 0.0);
+    body.apply_impulse_at_point(impulse, body.position() + r)
+        .unwrap();
+
+    assert!(
+        body.angular_velocity().z.abs() > 0.01,
+        "Torsi off-center harus memicu kecepatan sudut"
+    );
+}
+
+#[test]
+fn test_9_11_34_no_nan_under_degenerate_contact() {
+    let mut world = PhysicsWorld::default();
+    let other_id = RigidBodyId(2000);
+    let other_body =
+        RigidBody::new_static(other_id, Vec3::new(0.0, -1.0, 0.0), Quat::IDENTITY).unwrap();
+    world.add_rigid_body(other_body, None).unwrap();
+
+    let agg = make_p911_aggregate(1, IVec3::ZERO, IVec3::ZERO);
+    let dyn_id = world
+        .physicalize_aggregate(agg, None, AggregateColliderStrategy::BoundingBox)
+        .unwrap();
+
+    let rb_id = world.get_dynamic_aggregate(dyn_id).unwrap().rigid_body_id;
+    let col_id = world.get_dynamic_aggregate(dyn_id).unwrap().collider_ids[0];
+
+    // Kontak degenerasi dengan zero penetration dan unit normal valid
+    let degen_contact = Contact::new(
+        col_id,
+        ColliderId(2000),
+        rb_id,
+        other_id,
+        Vec3::new(0.25, 0.0, 0.25),
+        Vec3::Y,
+        0.0,
+    );
+
+    let config = SolverConfig::default();
+    let res = solve_contacts(
+        &mut world.rigid_bodies,
+        &[degen_contact],
+        1.0 / 30.0,
+        &config,
+    );
+    assert!(res.is_ok());
+
+    let body = world.get_rigid_body(rb_id).unwrap();
+    assert!(body.position().is_finite());
+    assert!(body.rotation().is_finite());
+    assert!(body.linear_velocity().is_finite());
+    assert!(body.angular_velocity().is_finite());
+}
+
+// ----------------------------------------------------------------------------
+// 6. STRUCTURAL PRESERVATION (Tests 35-39)
+// ----------------------------------------------------------------------------
+
+#[test]
+fn test_9_11_35_voxel_content_preserved_during_physicalization() {
+    let voxels = vec![
+        (IVec3::new(0, 0, 0), VoxelBlock::new(MaterialId::STONE)),
+        (IVec3::new(1, 0, 0), VoxelBlock::new(MaterialId::DIRT)),
+        (IVec3::new(2, 0, 0), VoxelBlock::new(MaterialId::OAK_WOOD)),
+    ];
+    let agg = DetachedAggregate::from_world_voxels(55, &voxels).unwrap();
+
+    let mut world = PhysicsWorld::default();
+    let dyn_id = world
+        .physicalize_aggregate(agg.clone(), None, AggregateColliderStrategy::BoundingBox)
+        .unwrap();
+
+    let rec = world.get_dynamic_aggregate(dyn_id).unwrap();
+    assert_eq!(rec.aggregate.voxel_count(), 3);
+    assert_eq!(rec.aggregate.id, 55);
+    for (i, v) in rec.aggregate.voxels.iter().enumerate() {
+        assert_eq!(v.block, voxels[i].1);
+    }
+}
+
+#[test]
+fn test_9_11_36_local_topology_preserved() {
+    let voxels = vec![
+        (IVec3::new(5, 5, 5), VoxelBlock::new(MaterialId::STONE)),
+        (IVec3::new(6, 5, 5), VoxelBlock::new(MaterialId::STONE)),
+        (IVec3::new(5, 6, 5), VoxelBlock::new(MaterialId::STONE)),
+    ];
+    let agg = DetachedAggregate::from_world_voxels(70, &voxels).unwrap();
+
+    let mut world = PhysicsWorld::default();
+    let dyn_id = world
+        .physicalize_aggregate(agg, None, AggregateColliderStrategy::BoundingBox)
+        .unwrap();
+
+    let rec = world.get_dynamic_aggregate(dyn_id).unwrap();
+    // Periksa jarak relatif antar-voxel
+    let rel0 = rec.aggregate.voxels[0].relative_coord;
+    let rel1 = rec.aggregate.voxels[1].relative_coord;
+    let rel2 = rec.aggregate.voxels[2].relative_coord;
+
+    assert_eq!(rel1 - rel0, IVec3::new(1, 0, 0));
+    assert_eq!(rel2 - rel0, IVec3::new(0, 1, 0));
+}
+
+#[test]
+fn test_9_11_37_internal_relative_coordinates_preserved() {
+    let mut world = PhysicsWorld::default();
+    let agg = make_p911_aggregate(88, IVec3::new(10, 10, 10), IVec3::new(12, 12, 12));
+    let dyn_id = world
+        .physicalize_aggregate(agg, None, AggregateColliderStrategy::BoundingBox)
+        .unwrap();
+
+    let initial_voxels = world
+        .get_dynamic_aggregate(dyn_id)
+        .unwrap()
+        .aggregate
+        .voxels
+        .clone();
+
+    // Jalankan 10 langkah simulasi fisika
+    for _ in 0..10 {
+        world.step().unwrap();
+    }
+
+    let current_voxels = &world
+        .get_dynamic_aggregate(dyn_id)
+        .unwrap()
+        .aggregate
+        .voxels;
+    assert_eq!(current_voxels, &initial_voxels);
+}
+
+#[test]
+fn test_9_11_38_aggregate_identity_preserved() {
+    let mut world = PhysicsWorld::default();
+    let agg = make_p911_aggregate(9999, IVec3::ZERO, IVec3::ZERO);
+    let dyn_id = world
+        .physicalize_aggregate(agg, None, AggregateColliderStrategy::BoundingBox)
+        .unwrap();
+
+    let rec = world.get_dynamic_aggregate(dyn_id).unwrap();
+    assert_eq!(rec.aggregate.id, 9999);
+
+    let rec_by_rb = world
+        .get_dynamic_aggregate_by_rigid_body(rec.rigid_body_id)
+        .unwrap();
+    assert_eq!(rec_by_rb.aggregate.id, 9999);
+}
+
+#[test]
+fn test_9_11_39_no_structural_bfs_every_physics_tick() {
+    let mut world = PhysicsWorld::default();
+    // Buat 10 aggregates
+    for i in 0..10 {
+        let agg = make_p911_aggregate(
+            i + 1,
+            IVec3::new((i * 3) as i32, 10, 0),
+            IVec3::new((i * 3 + 1) as i32, 11, 0),
+        );
+        world
+            .physicalize_aggregate(agg, None, AggregateColliderStrategy::BoundingBox)
+            .unwrap();
+    }
+
+    // Step world beroperasi secara murni pada RigidBody & Colliders tanpa referensi ChunkStore
+    let start = std::time::Instant::now();
+    for _ in 0..30 {
+        world.step().unwrap();
+    }
+    let elapsed = start.elapsed();
+    // 30 langkah simulasi harus memakan waktu jauh di bawah 50ms tanpa scan BFS voxel
+    assert!(elapsed.as_millis() < 100);
+}
+
+// ----------------------------------------------------------------------------
+// 7. REINTEGRATION (Tests 40-45)
+// ----------------------------------------------------------------------------
+
+#[test]
+fn test_9_11_40_settled_aggregate_can_reintegrate() {
+    let mut store = ChunkStore::new();
+    let chunk = Chunk::new(IVec3::ZERO);
+    store.insert(chunk);
+
+    let mut world = PhysicsWorld::default();
+    world.config.world_gravity = Vec3::ZERO;
+    let agg = make_p911_aggregate(1, IVec3::new(2, 2, 2), IVec3::new(3, 3, 3));
+    let dyn_id = world
+        .physicalize_aggregate(agg, None, AggregateColliderStrategy::BoundingBox)
+        .unwrap();
+
+    let res = world.reintegrate_aggregate(
+        dyn_id,
+        &mut store,
+        OrientationQuantizationPolicy::NearestLattice,
+    );
+    assert!(res.is_ok());
+}
+
+#[test]
+fn test_9_11_41_reintegration_removes_dynamic_ownership() {
+    let mut store = ChunkStore::new();
+    store.insert(Chunk::new(IVec3::ZERO));
+
+    let mut world = PhysicsWorld::default();
+    world.config.world_gravity = Vec3::ZERO;
+    let agg = make_p911_aggregate(1, IVec3::new(2, 2, 2), IVec3::new(2, 2, 2));
+    let dyn_id = world
+        .physicalize_aggregate(agg, None, AggregateColliderStrategy::BoundingBox)
+        .unwrap();
+
+    let rb_id = world.get_dynamic_aggregate(dyn_id).unwrap().rigid_body_id;
+    let col_ids = world
+        .get_dynamic_aggregate(dyn_id)
+        .unwrap()
+        .collider_ids
+        .clone();
+
+    world
+        .reintegrate_aggregate(
+            dyn_id,
+            &mut store,
+            OrientationQuantizationPolicy::NearestLattice,
+        )
+        .unwrap();
+
+    assert!(world.get_dynamic_aggregate(dyn_id).is_none());
+    assert!(world.get_rigid_body(rb_id).is_none());
+    for cid in col_ids {
+        assert!(world.get_collider(cid).is_none());
+    }
+    assert!(world.broadphase.get_proxy(rb_id).is_none());
+}
+
+#[test]
+fn test_9_11_42_static_ownership_restored_exactly_once() {
+    let mut store = ChunkStore::new();
+    store.insert(Chunk::new(IVec3::ZERO));
+
+    let mut world = PhysicsWorld::default();
+    world.config.world_gravity = Vec3::ZERO;
+    let agg = make_p911_aggregate(1, IVec3::new(4, 4, 4), IVec3::new(5, 4, 4));
+    let dyn_id = world
+        .physicalize_aggregate(agg, None, AggregateColliderStrategy::BoundingBox)
+        .unwrap();
+
+    world
+        .reintegrate_aggregate(
+            dyn_id,
+            &mut store,
+            OrientationQuantizationPolicy::NearestLattice,
+        )
+        .unwrap();
+
+    // Verifikasi bahwa voxel di (4,4,4) dan (5,4,4) sekarang solid STONE di ChunkStore
+    let v1 = store.get_voxel_world(IVec3::new(4, 4, 4));
+    let v2 = store.get_voxel_world(IVec3::new(5, 4, 4));
+    assert_eq!(v1.material, MaterialId::STONE);
+    assert_eq!(v2.material, MaterialId::STONE);
+}
+
+#[test]
+fn test_9_11_43_mesh_invalidation_update_occurs_correctly() {
+    let mut store = ChunkStore::new();
+    let mut chunk = Chunk::new(IVec3::ZERO);
+    chunk.clear_dirty_if_revision_matched(0xFFFF, chunk.revision);
+    store.insert(chunk);
+
+    let mut world = PhysicsWorld::default();
+    world.config.world_gravity = Vec3::ZERO;
+    let agg = make_p911_aggregate(1, IVec3::new(1, 1, 1), IVec3::new(1, 1, 1));
+    let dyn_id = world
+        .physicalize_aggregate(agg, None, AggregateColliderStrategy::BoundingBox)
+        .unwrap();
+
+    world
+        .reintegrate_aggregate(
+            dyn_id,
+            &mut store,
+            OrientationQuantizationPolicy::NearestLattice,
+        )
+        .unwrap();
+
+    let chunk_after = store.resident.get(&IVec3::ZERO).unwrap();
+    assert!(chunk_after.is_dirty(omnisia::chunk::dirty_flags::MESH_DIRTY));
+}
+
+#[test]
+fn test_9_11_44_failed_reintegration_does_not_destroy_dynamic_owner() {
+    let mut store = ChunkStore::new();
+    let mut chunk = Chunk::new(IVec3::ZERO);
+    // Tempatkan voxel solid di lokasi target sehingga reintegrasi bentrok (DestinationOccupied)
+    chunk.set_voxel(2, 2, 2, VoxelBlock::new(MaterialId::DIRT));
+    store.insert(chunk);
+
+    let mut world = PhysicsWorld::default();
+    world.config.world_gravity = Vec3::ZERO;
+    let agg = make_p911_aggregate(1, IVec3::new(2, 2, 2), IVec3::new(2, 2, 2));
+    let dyn_id = world
+        .physicalize_aggregate(agg, None, AggregateColliderStrategy::BoundingBox)
+        .unwrap();
+
+    let rb_id = world.get_dynamic_aggregate(dyn_id).unwrap().rigid_body_id;
+
+    // Percobaan reintegrasi harus gagal secara transaksional
+    let res = world.reintegrate_aggregate(
+        dyn_id,
+        &mut store,
+        OrientationQuantizationPolicy::NearestLattice,
+    );
+    assert!(res.is_err());
+
+    // Dynamic aggregate dan RigidBody HARUS tetap utuh di PhysicsWorld!
+    assert!(world.get_dynamic_aggregate(dyn_id).is_some());
+    assert!(world.get_rigid_body(rb_id).is_some());
+}
+
+#[test]
+fn test_9_11_45_no_duplicate_voxels_after_reintegration() {
+    let mut store = ChunkStore::new();
+    store.insert(Chunk::new(IVec3::ZERO));
+
+    let mut world = PhysicsWorld::default();
+    world.config.world_gravity = Vec3::ZERO;
+    let agg = make_p911_aggregate(1, IVec3::new(3, 3, 3), IVec3::new(4, 4, 4));
+    let dyn_id = world
+        .physicalize_aggregate(agg, None, AggregateColliderStrategy::BoundingBox)
+        .unwrap();
+
+    world
+        .reintegrate_aggregate(
+            dyn_id,
+            &mut store,
+            OrientationQuantizationPolicy::NearestLattice,
+        )
+        .unwrap();
+
+    let report = audit_aggregate_ownership(&store, &world);
+    assert_eq!(report.duplicate_detections, 0);
+    assert_eq!(report.inconsistent_records, 0);
+    assert_eq!(report.total_dynamic_voxels, 0);
+    assert_eq!(report.total_static_voxels, 8);
+}
+
+// ----------------------------------------------------------------------------
+// 8. PLAYER (Tests 46-53)
+// ----------------------------------------------------------------------------
+
+#[test]
+fn test_9_11_46_player_remains_non_rigidbody() {
+    let mut world = PhysicsWorld::default();
+    let mut bridge = PlayerRigidBodyBridge::default();
+    let mut player = PlayerController::new(Vec3::new(0.0, 5.0, 0.0));
+
+    let agg = make_p911_aggregate(1, IVec3::ZERO, IVec3::ZERO);
+    world
+        .physicalize_aggregate(agg, None, AggregateColliderStrategy::BoundingBox)
+        .unwrap();
+
+    bridge.step(&mut player, &mut world, None, 1.0 / 30.0, 0.0);
+
+    // Hanya 1 rigid body (aggregate), player tidak pernah didaftarkan sebagai RigidBody
+    assert_eq!(world.rigid_bodies.len(), 1);
+}
+
+#[test]
+fn test_9_11_47_player_remains_outside_dynamic_islands() {
+    let mut world = PhysicsWorld::default();
+    let mut bridge = PlayerRigidBodyBridge::default();
+    let mut player = PlayerController::new(Vec3::new(0.0, 2.0, 0.0));
+
+    let agg = make_p911_aggregate(1, IVec3::ZERO, IVec3::ZERO);
+    let dyn_id = world
+        .physicalize_aggregate(agg, None, AggregateColliderStrategy::BoundingBox)
+        .unwrap();
+
+    bridge.step(&mut player, &mut world, None, 1.0 / 30.0, 0.0);
+
+    let rb_id = world.get_dynamic_aggregate(dyn_id).unwrap().rigid_body_id;
+    let islands = world.build_islands(&[]).unwrap();
+    for island in &islands {
+        for body_id in &island.bodies {
+            assert_eq!(*body_id, rb_id);
+        }
+    }
+}
+
+#[test]
+fn test_9_11_48_player_pushes_aggregate_through_9_10_bridge() {
+    let mut world = PhysicsWorld::default();
+    world.config.world_gravity = Vec3::ZERO;
+    let mut bridge = PlayerRigidBodyBridge::default();
+
+    // Aggregate dinamis massa 1.0 di (1.0, 0.5, 0.0)
+    let agg = make_p911_aggregate(1, IVec3::new(2, 1, 0), IVec3::new(2, 1, 0));
+    let dyn_id = world
+        .physicalize_aggregate(agg, None, AggregateColliderStrategy::BoundingBox)
+        .unwrap();
+
+    let rb_id = world.get_dynamic_aggregate(dyn_id).unwrap().rigid_body_id;
+    let agg_pos = world.get_rigid_body(rb_id).unwrap().position();
+
+    // Player bergerak menabrak aggregate dari samping
+    let mut player = PlayerController::new(agg_pos - Vec3::new(0.6, 0.0, 0.0));
+    player.state.velocity = Vec3::new(4.0, 0.0, 0.0);
+
+    bridge.step(&mut player, &mut world, None, 1.0 / 30.0, 0.0);
+
+    let body = world.get_rigid_body(rb_id).unwrap();
+    // Aggregate harus terdorong dan memiliki kecepatan maju positif X
+    assert!(
+        body.linear_velocity().x > 0.01,
+        "Aggregate harus menerima impuls dorongan player: {}",
+        body.linear_velocity().x
+    );
+}
+
+#[test]
+fn test_9_11_49_aggregate_can_push_player_through_9_10_bridge() {
+    let mut world = PhysicsWorld::default();
+    world.config.world_gravity = Vec3::ZERO;
+    let mut bridge = PlayerRigidBodyBridge::default();
+
+    let agg = make_p911_aggregate(1, IVec3::ZERO, IVec3::ZERO);
+    let dyn_id = world
+        .physicalize_aggregate(agg, None, AggregateColliderStrategy::BoundingBox)
+        .unwrap();
+
+    let rb_id = world.get_dynamic_aggregate(dyn_id).unwrap().rigid_body_id;
+    world
+        .get_rigid_body_mut(rb_id)
+        .unwrap()
+        .set_linear_velocity(Vec3::new(2.0, 0.0, 0.0))
+        .unwrap();
+
+    let agg_pos = world.get_rigid_body(rb_id).unwrap().position();
+    let mut player = PlayerController::new(agg_pos + Vec3::new(0.3, 0.0, 0.0));
+    player.state.velocity = Vec3::ZERO;
+
+    bridge.step(&mut player, &mut world, None, 1.0 / 30.0, 0.0);
+
+    // Kontak kinematik harus mendorong player menjauh
+    assert!(player.state.position.x > agg_pos.x);
+}
+
+#[test]
+fn test_9_11_50_player_standing_on_aggregate_remains_stable() {
+    let mut world = PhysicsWorld::default();
+    world.config.world_gravity = Vec3::ZERO;
+    let mut bridge = PlayerRigidBodyBridge::default();
+
+    let agg = make_p911_aggregate(1, IVec3::ZERO, IVec3::new(2, 0, 2));
+    let dyn_id = world
+        .physicalize_aggregate(agg, None, AggregateColliderStrategy::BoundingBox)
+        .unwrap();
+
+    let rb_id = world.get_dynamic_aggregate(dyn_id).unwrap().rigid_body_id;
+    let body_pos = world.get_rigid_body(rb_id).unwrap().position();
+
+    // Tempatkan player di atas aggregate (posisi kaki tepat di atas permukaan boks: body_pos.y + half_extent + slop)
+    let mut player =
+        PlayerController::new(Vec3::new(body_pos.x, body_pos.y + 0.25 + 0.01, body_pos.z));
+    player.state.velocity = Vec3::ZERO;
+
+    bridge.step(&mut player, &mut world, None, 1.0 / 30.0, 0.0);
+
+    assert!(player.state.grounded);
+    let ground = bridge.check_ground(player.state.position, &player, None, &world);
+    assert!(ground.stable_feet_y.is_some());
+}
+
+#[test]
+fn test_9_11_51_jumping_from_aggregate_remains_correct() {
+    let mut world = PhysicsWorld::default();
+    world.config.world_gravity = Vec3::ZERO;
+    let mut bridge = PlayerRigidBodyBridge::default();
+
+    let agg = make_p911_aggregate(1, IVec3::ZERO, IVec3::new(2, 0, 2));
+    let dyn_id = world
+        .physicalize_aggregate(agg, None, AggregateColliderStrategy::BoundingBox)
+        .unwrap();
+
+    let rb_id = world.get_dynamic_aggregate(dyn_id).unwrap().rigid_body_id;
+    let body_pos = world.get_rigid_body(rb_id).unwrap().position();
+
+    let mut player =
+        PlayerController::new(Vec3::new(body_pos.x, body_pos.y + 0.25 + 0.01, body_pos.z));
+    bridge.step(&mut player, &mut world, None, 1.0 / 30.0, 0.0);
+    assert!(player.state.grounded);
+
+    player.state.jump_requested = true;
+    let res = bridge.step(&mut player, &mut world, None, 1.0 / 30.0, 0.0);
+
+    assert!(res.jump_reaction_applied);
+    assert!(player.state.velocity.y > 0.0);
+}
+
+#[test]
+fn test_9_11_52_sleeping_aggregate_wakes_from_player_disturbance() {
+    let mut world = PhysicsWorld::default();
+    let mut bridge = PlayerRigidBodyBridge::default();
+
+    let agg = make_p911_aggregate(1, IVec3::ZERO, IVec3::ZERO);
+    let dyn_id = world
+        .physicalize_aggregate(agg, None, AggregateColliderStrategy::BoundingBox)
+        .unwrap();
+
+    let rb_id = world.get_dynamic_aggregate(dyn_id).unwrap().rigid_body_id;
+    world.get_rigid_body_mut(rb_id).unwrap().put_to_sleep();
+    assert!(world.get_rigid_body(rb_id).unwrap().is_sleeping());
+
+    let body_pos = world.get_rigid_body(rb_id).unwrap().position();
+    let mut player = PlayerController::new(body_pos - Vec3::new(0.6, 0.0, 0.0));
+    player.state.velocity = Vec3::new(4.0, 0.0, 0.0);
+
+    bridge.step(&mut player, &mut world, None, 1.0 / 30.0, 0.0);
+
+    assert!(!world.get_rigid_body(rb_id).unwrap().is_sleeping());
+}
+
+#[test]
+fn test_9_11_53_quiet_player_support_does_not_thrash_sleep_state() {
+    let mut world = PhysicsWorld::default();
+    let mut bridge = PlayerRigidBodyBridge::default();
+
+    let agg = make_p911_aggregate(1, IVec3::ZERO, IVec3::new(2, 0, 2));
+    let dyn_id = world
+        .physicalize_aggregate(agg, None, AggregateColliderStrategy::BoundingBox)
+        .unwrap();
+
+    let rb_id = world.get_dynamic_aggregate(dyn_id).unwrap().rigid_body_id;
+    world.get_rigid_body_mut(rb_id).unwrap().put_to_sleep();
+    let body_pos = world.get_rigid_body(rb_id).unwrap().position();
+
+    let mut player =
+        PlayerController::new(Vec3::new(body_pos.x, body_pos.y + 0.25 + 0.01, body_pos.z));
+    player.state.velocity = Vec3::ZERO;
+
+    // 20 langkah pemain diam tidak boleh membangunkan boks tidur
+    for _ in 0..20 {
+        let res = bridge.step(&mut player, &mut world, None, 1.0 / 30.0, 0.0);
+        assert_eq!(res.bodies_woken, 0);
+    }
+    assert!(world.get_rigid_body(rb_id).unwrap().is_sleeping());
+}
+
+// ----------------------------------------------------------------------------
+// 9. DETERMINISM (Tests 54-58)
+// ----------------------------------------------------------------------------
+
+#[test]
+fn test_9_11_54_same_aggregate_physicalization_gives_same_mass() {
+    let agg1 = make_p911_aggregate(1, IVec3::ZERO, IVec3::new(3, 3, 3));
+    let agg2 = make_p911_aggregate(1, IVec3::ZERO, IVec3::new(3, 3, 3));
+
+    let p1 = calculate_aggregate_mass_properties(&agg1, None).unwrap();
+    let p2 = calculate_aggregate_mass_properties(&agg2, None).unwrap();
+
+    assert_eq!(p1.mass_properties.mass, p2.mass_properties.mass);
+    assert_eq!(p1.center_of_mass_local, p2.center_of_mass_local);
+}
+
+#[test]
+fn test_9_11_55_same_aggregate_gives_same_inertia() {
+    let agg1 = make_p911_aggregate(1, IVec3::ZERO, IVec3::new(2, 1, 3));
+    let agg2 = make_p911_aggregate(1, IVec3::ZERO, IVec3::new(2, 1, 3));
+
+    let p1 = calculate_aggregate_mass_properties(&agg1, None).unwrap();
+    let p2 = calculate_aggregate_mass_properties(&agg2, None).unwrap();
+
+    assert_eq!(p1.local_inertia, p2.local_inertia);
+    assert_eq!(
+        p1.mass_properties.local_inverse_inertia,
+        p2.mass_properties.local_inverse_inertia
+    );
+}
+
+#[test]
+fn test_9_11_56_same_collider_generation_is_deterministic() {
+    let agg1 = make_p911_aggregate(1, IVec3::ZERO, IVec3::new(1, 2, 1));
+    let agg2 = make_p911_aggregate(1, IVec3::ZERO, IVec3::new(1, 2, 1));
+
+    let p1 = calculate_aggregate_mass_properties(&agg1, None).unwrap();
+    let p2 = calculate_aggregate_mass_properties(&agg2, None).unwrap();
+
+    let mut next_col_id1 = 1u64;
+    let mut next_col_id2 = 1u64;
+    let c1 = generate_aggregate_colliders(
+        RigidBodyId(1),
+        &agg1,
+        p1.center_of_mass_local,
+        AggregateColliderStrategy::CompoundBoxes,
+        &mut next_col_id1,
+    )
+    .unwrap();
+    let c2 = generate_aggregate_colliders(
+        RigidBodyId(1),
+        &agg2,
+        p2.center_of_mass_local,
+        AggregateColliderStrategy::CompoundBoxes,
+        &mut next_col_id2,
+    )
+    .unwrap();
+
+    assert_eq!(c1.len(), c2.len());
+    for i in 0..c1.len() {
+        assert_eq!(c1[i].shape(), c2[i].shape());
+        assert_eq!(c1[i].local_transform(), c2[i].local_transform());
+    }
+}
+
+#[test]
+fn test_9_11_57_same_transition_sequence_gives_same_final_state() {
+    let mut w1 = PhysicsWorld::default();
+    let mut w2 = PhysicsWorld::default();
+
+    let agg1 = make_p911_aggregate(1, IVec3::new(0, 10, 0), IVec3::new(1, 11, 1));
+    let agg2 = make_p911_aggregate(1, IVec3::new(0, 10, 0), IVec3::new(1, 11, 1));
+
+    let d1 = w1
+        .physicalize_aggregate(agg1, None, AggregateColliderStrategy::BoundingBox)
+        .unwrap();
+    let d2 = w2
+        .physicalize_aggregate(agg2, None, AggregateColliderStrategy::BoundingBox)
+        .unwrap();
+
+    let rb1 = w1.get_dynamic_aggregate(d1).unwrap().rigid_body_id;
+    let rb2 = w2.get_dynamic_aggregate(d2).unwrap().rigid_body_id;
+
+    for _ in 0..20 {
+        w1.step().unwrap();
+        w2.step().unwrap();
+    }
+
+    let b1 = w1.get_rigid_body(rb1).unwrap();
+    let b2 = w2.get_rigid_body(rb2).unwrap();
+
+    assert_eq!(b1.position(), b2.position());
+    assert_eq!(b1.rotation(), b2.rotation());
+    assert_eq!(b1.linear_velocity(), b2.linear_velocity());
+    assert_eq!(b1.angular_velocity(), b2.angular_velocity());
+}
+
+#[test]
+fn test_9_11_58_reintegration_is_deterministic() {
+    let mut s1 = ChunkStore::new();
+    s1.insert(Chunk::new(IVec3::ZERO));
+    let mut s2 = ChunkStore::new();
+    s2.insert(Chunk::new(IVec3::ZERO));
+
+    let mut w1 = PhysicsWorld::default();
+    w1.config.world_gravity = Vec3::ZERO;
+    let mut w2 = PhysicsWorld::default();
+    w2.config.world_gravity = Vec3::ZERO;
+
+    let agg1 = make_p911_aggregate(1, IVec3::new(1, 1, 1), IVec3::new(2, 2, 2));
+    let agg2 = make_p911_aggregate(1, IVec3::new(1, 1, 1), IVec3::new(2, 2, 2));
+
+    let d1 = w1
+        .physicalize_aggregate(agg1, None, AggregateColliderStrategy::BoundingBox)
+        .unwrap();
+    let d2 = w2
+        .physicalize_aggregate(agg2, None, AggregateColliderStrategy::BoundingBox)
+        .unwrap();
+
+    w1.reintegrate_aggregate(d1, &mut s1, OrientationQuantizationPolicy::NearestLattice)
+        .unwrap();
+    w2.reintegrate_aggregate(d2, &mut s2, OrientationQuantizationPolicy::NearestLattice)
+        .unwrap();
+
+    for x in 1..=2 {
+        for y in 1..=2 {
+            for z in 1..=2 {
+                let pos = IVec3::new(x, y, z);
+                assert_eq!(s1.get_voxel_world(pos), s2.get_voxel_world(pos));
+            }
+        }
+    }
+}

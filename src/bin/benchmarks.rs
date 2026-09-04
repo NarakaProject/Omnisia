@@ -2089,6 +2089,124 @@ fn main() {
         }
     }
 
+    // 48. Benchmark Structural Aggregate ↔ RigidBody Integration (9.11)
+    {
+        use omnisia::chunk::Chunk;
+        use omnisia::physics::{
+            AggregateColliderStrategy, OrientationQuantizationPolicy, PhysicsWorld,
+            PhysicsWorldConfig,
+        };
+        use omnisia::streaming::store::ChunkStore;
+        use omnisia::structure::aggregate::DetachedAggregate;
+        use omnisia::voxel::VoxelBlock;
+
+        println!("------------------------------------------------------------");
+        println!(" [BENCHMARK 48] Structural Aggregate ↔ RigidBody (9.11)      ");
+        println!("------------------------------------------------------------");
+
+        // Helper pembangun aggregate sintetis
+        fn make_benchmark_aggregate(id: u64, size: IVec3, offset: IVec3) -> DetachedAggregate {
+            let mut voxels = Vec::new();
+            for x in 0..size.x {
+                for y in 0..size.y {
+                    for z in 0..size.z {
+                        voxels.push((
+                            offset + IVec3::new(x, y, z),
+                            VoxelBlock::new(MaterialId::STONE),
+                        ));
+                    }
+                }
+            }
+            DetachedAggregate::from_world_voxels(id, &voxels).unwrap()
+        }
+
+        let aggregate_configs = [
+            ("Small (2 voxels)", IVec3::new(2, 1, 1)),
+            ("Medium (8 voxels)", IVec3::new(2, 2, 2)),
+            ("Large (64 voxels)", IVec3::new(4, 4, 4)),
+        ];
+
+        let counts = [10, 100, 500];
+
+        for (desc, size) in &aggregate_configs {
+            println!("  Topology: {}", desc);
+
+            for &count in &counts {
+                let mut world = PhysicsWorld::new(PhysicsWorldConfig::default());
+                let grid_side = (count as f32).sqrt().ceil() as usize;
+
+                // 1. Ukur Waktu Physicalization
+                let start_phys = Instant::now();
+                let mut dyn_ids = Vec::with_capacity(count);
+                for i in 0..count {
+                    let gx = (i % grid_side) as i32 * 6;
+                    let gz = (i / grid_side) as i32 * 6;
+                    let agg =
+                        make_benchmark_aggregate((i + 1) as u64, *size, IVec3::new(gx, 20, gz));
+                    let id = world
+                        .physicalize_aggregate(agg, None, AggregateColliderStrategy::CompoundBoxes)
+                        .unwrap();
+                    dyn_ids.push(id);
+                }
+                let us_phys = start_phys.elapsed().as_micros() as f64 / count as f64;
+
+                // 2. Ukur Waktu Physics Step (30 Hz fixed timestep)
+                let num_steps = 20;
+                let start_step = Instant::now();
+                for _ in 0..num_steps {
+                    world.step().unwrap();
+                }
+                let us_step = start_step.elapsed().as_micros() as f64 / num_steps as f64;
+
+                // 3. Ukur Waktu Sleeping Step (tidurkan seluruh badan)
+                for id in &dyn_ids {
+                    if let Some(rec) = world.get_dynamic_aggregate(*id) {
+                        if let Some(b) = world.get_rigid_body_mut(rec.rigid_body_id) {
+                            b.put_to_sleep();
+                        }
+                    }
+                }
+                let start_sleep = Instant::now();
+                for _ in 0..num_steps {
+                    world.step().unwrap();
+                }
+                let us_sleep = start_sleep.elapsed().as_micros() as f64 / num_steps as f64;
+
+                // 4. Ukur Waktu Reintegrasi ke ChunkStore
+                let mut store = ChunkStore::new();
+                for cx in -2..=((grid_side as i32 * 6) / 32 + 2) {
+                    for cz in -2..=((grid_side as i32 * 6) / 32 + 2) {
+                        store.insert(Chunk::new(IVec3::new(cx, 0, cz)));
+                    }
+                }
+                let start_reint = Instant::now();
+                let mut reint_count = 0;
+                for id in &dyn_ids {
+                    if world
+                        .reintegrate_aggregate(
+                            *id,
+                            &mut store,
+                            OrientationQuantizationPolicy::NearestLattice,
+                        )
+                        .is_ok()
+                    {
+                        reint_count += 1;
+                    }
+                }
+                let us_reint = if reint_count > 0 {
+                    start_reint.elapsed().as_micros() as f64 / reint_count as f64
+                } else {
+                    0.0
+                };
+
+                println!(
+                    "    [BM48] N={:3} -> Phys: {:.2} µs/agg | Step: {:.2} µs/step | Sleep: {:.2} µs/step | Reint: {:.2} µs/agg (ok: {})",
+                    count, us_phys, us_step, us_sleep, us_reint, reint_count
+                );
+            }
+        }
+    }
+
     println!("============================================================");
     println!("             BENCHMARK SUITE COMPLETE                       ");
     println!("============================================================");
