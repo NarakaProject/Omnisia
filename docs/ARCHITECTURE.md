@@ -116,6 +116,14 @@ Omnisia separates simulation into distinct, non-overlapping architectural layers
 - **Deterministic Pipeline**: `DeterministicImpactPipeline` processes event batches in canonical total order (`Ord`), independent of input submission order.
 - **Strict Immutability Boundary**: Impact queries are 100% observational and never mutate `ChunkStore`, `PhysicsWorld`, or `PlayerController`.
 
+### 2.7 Terrain Mutation & CSG Foundation (`src/csg/`, Phase 10.2)
+- **Separation of Proposal vs Mutation**: `VoxelEdit` and `VoxelEditTransaction` are proposals. Authoritative voxel mutation occurs strictly inside `VoxelEditTransaction::commit()` against `ChunkStore`.
+- **Atomicity Guarantee & Proof**: `validate(&ChunkStore)` executes first with pure read-only inspection. Because target chunks are proven resident and local coordinates are bounded `0..32` by `rem_euclid(32)`, the subsequent array writes are provably infallible. Rollback snapshots are maintained for fail-safe atomicity.
+- **Deterministic Ordering**: Transactions reject conflicting duplicate edits targeting the same voxel and process deltas in canonical `(x, y, z)` spatial order, ensuring identical outputs regardless of edit submission order.
+- **Bounded Crater Geometry**: `CraterGenerator` evaluates candidate voxels within a sphere using Euclidean division. Work scales strictly with the affected volume $O(r^3)$ rather than the world size.
+- **Material-Aware Policy**: `MaterialDestructionPolicy` designates indestructible materials (such as `AG_CORE_CASING`) that are bypassed by crater carving without introducing speculative physics or damage values.
+- **Invalidation Signals without Simulation Coupling**: Committed edits mark in-memory `dirty_flags::MESH_DIRTY` (including border neighbor propagation) and emit `StructuralEvent` notifications. Crucially, CSG does **NOT** run structural BFS, does **NOT** detach aggregates, does **NOT** spawn `DynamicBody` or `RigidBody` instances, and does **NOT** perform disk I/O.
+
 ---
 
 ## 3. The 25 Architectural Invariants

@@ -1,8 +1,8 @@
 # Omnisia — Authoritative Project State
 
-> **Current Milestone**: Phase 10.1 — Impact Foundation (**COMPLETED / VALIDATED**)  
-> **Next Milestone**: Phase 10.2 — Terrain Mutation / CSG Foundation (**PLANNED / NEXT**)  
-> **Verified HEAD Commit**: `4f60bd6` (Phase 9.12) $\to$ Current Phase 10.1 Working State  
+> **Current Milestone**: Phase 10.2 — Terrain Mutation / CSG Foundation (**COMPLETED / VALIDATED**)  
+> **Next Milestone**: Phase 10.3 — Impact → Structure → Physics Integration (**PLANNED / NEXT**)  
+> **Verified HEAD Commit**: Current Phase 10.2 Working State  
 > **Branch**: `main`  
 > **Source-of-Truth Policy**: Source code and passing automated tests are the absolute source of truth.
 
@@ -16,12 +16,13 @@ Every count in this document has been directly audited and verified against the 
 - **Compiler**: Rust 2021 edition, `cargo build --release` compiles cleanly with zero errors.
 - **Formatting**: `cargo fmt --all -- --check` passes cleanly with zero diffs.
 - **Linter**: `cargo clippy --all-targets --all-features -- -D warnings` passes cleanly with zero warnings or errors.
-- **Test Suite**: `cargo test --all-targets` passes with **677 passed, 0 failed, 0 ignored** across 12 test targets.
+- **Test Suite**: `cargo test --all-targets` passes with **704 passed, 0 failed, 0 ignored** across 13 test targets.
 
-### Test Count Breakdown by Target (677 Total Tests)
+### Test Count Breakdown by Target (704 Total Tests)
 
 | Test Target Binary | Scope / Feature Area | Verified Test Count | Status |
 |:---|:---|:---:|:---:|
+| `tests/csg_tests.rs` | VoxelEdit, VoxelEditTransaction, Infallible Commit & Rollback, Duplicate Rejection, CraterGenerator, MaterialDestructionPolicy, Invalidation (Phase 10.2) | **27** | PASS |
 | `tests/impact_tests.rs` | ImpactEvent, ImpactSource, Magnitude, AffectedVolume, Euclidean Boundaries, Determinism (Phase 10.1) | **17** | PASS |
 | `tests/physics_9_tests.rs` | RigidBody Physics, Broadphase, Contacts, Solver, Sleeping, Islands, Dynamic-Dynamic, Bridges, Stress (Phase 9.1–9.12) | **415** | PASS |
 | `tests/movement_8d_tests.rs` | Kinematic Movement, Bounded Glide, Auto-Step Traversal, Slope Resolution (Phase 8D) | **81** | PASS |
@@ -34,18 +35,18 @@ Every count in this document has been directly audited and verified against the 
 | `tests/streaming_tests.rs` | ChunkStore Residency, Job Scheduler, Memory Budget, Eviction Lifecycle (Phase 3) | **11** | PASS |
 | `tests/structure_tests.rs` | 6-Connected Adjacency, Structural Anchors, Aggregate Extraction (Phase 7) | **11** | PASS |
 | `tests/scale_tests.rs` | Metric Coordinate Invariants (1 vx = 0.5m), Scale Ruler, Traversal Residency (Phase 7) | **7** | PASS |
-| **Workspace Total** | **All Subsystems** | **677** | **PASS** |
+| **Workspace Total** | **All Subsystems** | **704** | **PASS** |
 
 ### Verified Validation Binaries (6 Binaries)
 
 | Binary Path | Executable Target | Verification Summary | Status |
 |:---|:---|:---|:---:|
-| `src/bin/stress_validation.rs` | `cargo run --release --bin stress_validation` | Workloads A–K: Sparse/Dense Scaling, Sleeping, Islands, Stacks, Bridges, 10k Steps, Determinism | **PASS (1.33 s)** |
+| `src/bin/stress_validation.rs` | `cargo run --release --bin stress_validation` | Workloads A–K: Sparse/Dense Scaling, Sleeping, Islands, Stacks, Bridges, 10k Steps, Determinism | **PASS (1.30 s)** |
 | `src/bin/physics_validation.rs` | `cargo run --release --bin physics_validation` | Dynamic aggregate lifecycle, AntiGravity floating, unloaded boundary protection | **PASS (5/5 stages)** |
 | `src/bin/integration_validation.rs` | `cargo run --release --bin integration_validation` | Structural detachment, DynamicBody interaction, two-phase atomic reintegration | **PASS (6/6 stages)** |
 | `src/bin/player_validation.rs` | `cargo run --release --bin player_validation` | Kinematic locomotion, capsule crouching, jump edge-trigger, swept anti-tunneling | **PASS (8/8 stages)** |
 | `src/bin/traversal_validation.rs` | `cargo run --release --bin traversal_validation` | Multi-kilometer flight (-1km to +1km), streaming residency audit, memory stability | **PASS (10/10 stages)** |
-| `src/bin/benchmarks.rs` | `cargo run --release --bin benchmarks` | Full performance test suite covering 50 isolated benchmarks (including BM 50) | **PASS (50/50 runs)** |
+| `src/bin/benchmarks.rs` | `cargo run --release --bin benchmarks` | Full performance test suite covering 51 isolated benchmarks (including BM 51) | **PASS (51/51 runs)** |
 
 ---
 
@@ -74,8 +75,10 @@ Under Omnisia's engineering standard, every subsystem must be explicitly classif
 | **Structural Aggregate Bridge (9.11)** | `VALIDATED` | `src/physics/aggregate.rs` | 1 aggregate = 1 RigidBody ($M$ colliders), Parallel Axis Theorem inertia. |
 | **Physics Stress & Profiling (9.12)** | `VALIDATED` | `src/bin/stress_validation.rs`, `src/physics/world.rs` | Linear scaling up to 10,000 bodies, 45% sleeping CPU reduction, 1.41s suite. |
 | **Impact Foundation (10.1)** | `VALIDATED` | `src/impact/` (`event.rs`, `volume.rs`, `pipeline.rs`) | Generic `ImpactEvent`, `ImpactSource`, `ImpactMagnitude`, `AffectedVolume`, `DeterministicImpactPipeline`. |
-| **Terrain Mutation / CSG Destruction (10.2–10.4)** | `PLANNED` | — (Phase 10.2–10.4) | Spherical/directional crater carving in ChunkStore, structural detachment bridge. |
-| **Procedural Sky & Atmosphere** | `PLANNED` | — (Phase 10.5–10.7) | GPU-driven atmospheric gradient, sun/moon cycle, stars, procedural aurora. |
+| **Terrain Mutation / CSG Foundation (10.2)** | `VALIDATED` | `src/csg/` (`edit.rs`, `transaction.rs`, `crater.rs`, `policy.rs`) | Atomic multi-chunk `VoxelEditTransaction`, `CraterGenerator`, `DestructionPolicy`, 27 unit tests, Benchmark 51. |
+| **Impact → Structure → Physics (10.3)** | `PLANNED` | — (Phase 10.3) | Structural detachment and outward physical blast impulses triggered by committed voxel edits. |
+| **Destruction Hardening (10.4)** | `PLANNED` | — (Phase 10.4) | Arbitrary boundary stress, negative coordinate cratering, deterministic destruction replay. |
+| **Procedural Sky & Atmosphere (10.5–10.7)** | `PLANNED` | — (Phase 10.5–10.7) | GPU-driven atmospheric gradient, sun/moon cycle, stars, procedural aurora. |
 | **Player World Interaction (Tools/Harvest)**| `PLANNED` | — (Phase 11) | Voxel targeting, block placing/breaking, harvesting tools, interaction raycast. |
 | **Entity & Creature Foundation** | `PLANNED` | — (Phase 12) | `CreatureDefinition`, stats, health, AI states, animal & beast hierarchy. |
 | **Combat & Action System** | `PLANNED` | — (Phase 13) | Attack actions, hitboxes, damage, knockback, dodge, action architecture. |

@@ -2390,6 +2390,87 @@ fn main() {
                 us_total, ns_per_processed, processed.len()
             );
         }
+
+        // ========================================================================
+        // BENCHMARK 51: Terrain Mutation & CSG Foundation (Phase 10.2)
+        // ========================================================================
+        {
+            use omnisia::csg::{CraterGenerator, DefaultDestructionPolicy};
+            use omnisia::material::{MaterialId, MaterialRegistry};
+            use omnisia::streaming::store::ChunkStore;
+
+            println!("[BENCHMARK 51] CSG Crater Generation & Atomic Transaction (Phase 10.2)");
+
+            let materials = MaterialRegistry::new();
+            let policy = DefaultDestructionPolicy;
+
+            // Setup a 3x3x3 grid of filled stone chunks (total 27 chunks = 884,736 voxels)
+            let mut store = ChunkStore::new();
+            for cx in -1..=1 {
+                for cy in -1..=1 {
+                    for cz in -1..=1 {
+                        let mut chunk = Chunk::new(IVec3::new(cx, cy, cz));
+                        chunk.fill_material(MaterialId::STONE);
+                        store.insert(chunk);
+                    }
+                }
+            }
+
+            // 1. Crater Generation Scaling across Radii: r = 2, 4, 8, 16
+            let center = Vec3::new(0.0, 0.0, 0.0);
+            for &r in &[2.0f32, 4.0, 8.0, 16.0] {
+                let start = Instant::now();
+                let iterations = if r <= 4.0 {
+                    1_000
+                } else if r <= 8.0 {
+                    100
+                } else {
+                    10
+                };
+                let mut last_len = 0;
+                for _ in 0..iterations {
+                    let tx =
+                        CraterGenerator::generate(center, r, &policy, &materials, &store).unwrap();
+                    last_len = tx.len();
+                }
+                let dur = start.elapsed();
+                let us_per_gen = dur.as_micros() as f64 / iterations as f64;
+                println!(
+                    "    [BM51] CraterGen (r={:.0}m): {:.2} µs/call (edits: {}, iterations: {})",
+                    r, us_per_gen, last_len, iterations
+                );
+            }
+
+            // 2. Transaction Validation & Atomic Commit Throughput
+            let tx = CraterGenerator::generate(center, 4.0, &policy, &materials, &store).unwrap();
+            let edit_count = tx.len();
+            let start = Instant::now();
+            let val_iters = 500;
+            for _ in 0..val_iters {
+                let delta = tx.validate(&store).unwrap();
+                std::hint::black_box(delta);
+            }
+            let val_dur = start.elapsed();
+            let us_per_val = val_dur.as_micros() as f64 / val_iters as f64;
+            println!(
+                "    [BM51] Transaction Validate ({} edits): {:.2} µs ({:.1} ns/edit)",
+                edit_count,
+                us_per_val,
+                (us_per_val * 1000.0) / edit_count as f64
+            );
+
+            // Measure atomic commit
+            let start = Instant::now();
+            let res = tx.commit(&mut store).unwrap();
+            let commit_dur = start.elapsed();
+            println!(
+                "    [BM51] Atomic Commit ({} edits): {:?} (affected_chunks: {}, mesh_inv: {})",
+                edit_count,
+                commit_dur,
+                res.affected_chunks.len(),
+                res.mesh_invalidation_chunks.len()
+            );
+        }
     }
 
     println!("============================================================");

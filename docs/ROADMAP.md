@@ -129,7 +129,7 @@ Omnisia is an ambitious, high-performance voxel sandbox game built from scratch 
 
 ## 3. Active Milestone: Phase 10 — World Impact & Atmosphere
 
-> **Status**: `IN PROGRESS` (Phase 10.1 `VALIDATED`, Phase 10.2 `NEXT`)  
+> **Status**: `IN PROGRESS` (Phase 10.1 `VALIDATED`, Phase 10.2 `VALIDATED`, Phase 10.3 `NEXT`)  
 > **Objective**: Connect the physical simulation substrate to destruction events (Track A) and atmospheric visuals (Track B).  
 > **Scope Firewall**: Phase 10 must **NOT** implement creature AI, taming, devour, inventory, or full weather simulation.
 
@@ -143,8 +143,8 @@ Omnisia is an ambitious, high-performance voxel sandbox game built from scratch 
 WORLD IMPACT & CSG DESTRUCTION                          SKY & ATMOSPHERE
          │                                                       │
   10.1 Impact Foundation (VALIDATED)                      10.5 Sky Foundation
-  10.2 Terrain Mutation / CSG (NEXT)                      10.6 Procedural Aurora
-  10.3 Impact -> Structure -> Physics                     10.7 Integration & Visual Stress
+  10.2 Terrain Mutation / CSG (VALIDATED)                 10.6 Procedural Aurora
+  10.3 Impact -> Structure -> Physics (NEXT)              10.7 Integration & Visual Stress
   10.4 Destruction Hardening                                     │
          │                                                       │
          └───────────────────────────┬───────────────────────────┘
@@ -157,13 +157,16 @@ WORLD IMPACT & CSG DESTRUCTION                          SKY & ATMOSPHERE
   - `ImpactEvent` representation: source type (`ImpactSource`), world position, impact normal and direction, magnitude (`ImpactMagnitude`: energy vs impulse distinction), and bounded radius.
   - Generic spatial query (`AffectedVolume`) for affected voxel volumes and chunk bounds using authoritative Euclidean floor division (`div_euclid`) for seamless negative coordinate handling.
   - `DeterministicImpactPipeline`: deterministic sorting, deduplication, and pure observational queries without mutating world state.
-  - Verified with 17 focused unit tests (`tests/impact_tests.rs`) and Benchmark 50 ($38.3\text{ ns}$ construction, $47.0\text{ ns}$ volume query).
-- **Phase 10.2 — Terrain Mutation & CSG Foundation (`PLANNED / NEXT`)**:
-  - Transactional voxel edits: `add_voxel`, `remove_voxel`, `replace_voxel`.
-  - Spherical and geometric crater carving operating directly on authoritative `ChunkStore`.
-  - Material-aware resistance: hard rock resists blast radius; soft dirt yields easily.
-  - Chunk remeshing invalidation flags (`MESH_DIRTY`, `SAVE_DIRTY`).
-- **Phase 10.3 — Impact $\to$ Structure $\to$ Physics Pipeline**:
+  - Verified with 17 focused unit tests (`tests/impact_tests.rs`) and Benchmark 50 ($21.9\text{ ns}$ construction, $40.4\text{ ns}$ volume query).
+- **Phase 10.2 — Terrain Mutation & CSG Foundation (`COMPLETED / VALIDATED`)**:
+  - `VoxelEdit` and `VoxelEditOperation`: `Add` (on air), `Remove` (on solid), and `Replace` (with optional precondition).
+  - `VoxelEditTransaction`: Atomic multi-chunk commit guarantee; non-mutating `validate(&store)` returns inspectable `ProposedDelta`.
+  - Infallible commit phase with rollback guarantee: zero partial mutations on failure.
+  - `CraterGenerator`: Bounded, deterministic $O(r^3)$ spherical crater generation with Euclidean floor division across negative coordinates.
+  - `MaterialDestructionPolicy`: Configurable indestructible material preservation (e.g. `AG_CORE_CASING`).
+  - Dual invalidation signals: in-memory `MESH_DIRTY` (including border neighbor propagation) and `StructuralEvent` notifications without triggering structural BFS or physics.
+  - Verified with 27 focused unit tests (`tests/csg_tests.rs`) and Benchmark 51.
+- **Phase 10.3 — Impact $\to$ Structure $\to$ Physics Pipeline (`PLANNED / NEXT`)**:
   - Voxel removal triggers event-driven structural connectivity check (Phase 7).
   - Detached voxels extracted into `DynamicBody` (Phase 8A).
   - Physicalized into `RigidBody` owning greedy compound colliders (Phase 9.11).
