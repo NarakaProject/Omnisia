@@ -2,6 +2,7 @@ pub mod camera;
 pub mod chunk;
 pub mod coord;
 pub mod csg;
+pub mod environment;
 pub mod impact;
 pub mod lod;
 pub mod material;

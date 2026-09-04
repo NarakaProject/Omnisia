@@ -33,7 +33,11 @@ fn main() {
     let filter = std::env::args().nth(1);
     let run_all = filter.is_none() || filter.as_deref() == Some("all");
 
-    if run_all || (filter.as_deref() != Some("52") && filter.as_deref() != Some("53")) {
+    if run_all
+        || (filter.as_deref() != Some("52")
+            && filter.as_deref() != Some("53")
+            && filter.as_deref() != Some("54"))
+    {
         // 1. Benchmark Chunk Indexing
         {
             let start = Instant::now();
@@ -3140,6 +3144,71 @@ fn main() {
             println!(
                 "  [Profile 4] Revert Isolated Latency (preflight check + reverse delta + metadata restore): {:.2} µs/revert (iters: {})",
                 us_per_revert, iters
+            );
+        }
+    }
+
+    // ========================================================================
+    // BENCHMARK 54: Procedural Celestial Environment & Parameter Preparation
+    // ========================================================================
+    if run_all || filter.as_deref() == Some("54") {
+        println!("============================================================");
+        println!("BENCHMARK 54: Procedural Celestial Environment Performance  ");
+        println!("============================================================");
+
+        // Profile 1: Environment Clock & Celestial State Advance Throughput
+        {
+            let iters = 1_000_000;
+            let mut env = omnisia::environment::EnvironmentState::new();
+            let start = Instant::now();
+            for _ in 0..iters {
+                env.advance(0.016666);
+            }
+            let elapsed = start.elapsed();
+            let ns_per_step = elapsed.as_nanos() as f64 / iters as f64;
+            println!(
+                "  [Profile 1] Celestial State Advance (Clock + 3D Positions + Twilight + Stars): {:.2} ns/step (iters: {})",
+                ns_per_step, iters
+            );
+        }
+
+        // Profile 2: GPU SkyUniform & LightUniform CPU Buffer Preparation
+        {
+            let iters = 100_000;
+            let env = omnisia::environment::EnvironmentState::new();
+            let cam = omnisia::camera::Camera::new(Vec3::new(10.0, 30.0, 10.0), 0.0, 0.0);
+            let sky_vp = cam.build_sky_view_projection_matrix(16.0 / 9.0);
+            let inv_vp = sky_vp.inverse();
+
+            let start = Instant::now();
+            let mut sum = 0.0f32;
+            for _ in 0..iters {
+                let sky_u = env.build_sky_uniform(inv_vp, Vec3::ZERO);
+                let light_u = env.build_light_uniform();
+                sum += sky_u.sun_elevation + light_u.sun_direction[1];
+            }
+            let elapsed = start.elapsed();
+            let ns_per_prep = elapsed.as_nanos() as f64 / iters as f64;
+            println!(
+                "  [Profile 2] GPU Parameter Preparation (SkyUniform + LightUniform packing): {:.2} ns/prep (iters: {}, sum: {:.2})",
+                ns_per_prep, iters, sum
+            );
+        }
+
+        // Profile 3: Multi-Day Long-Cycle Accumulation & Bounded Float Determinism
+        {
+            let iters = 100_000;
+            let mut env = omnisia::environment::EnvironmentState::new();
+            let start = Instant::now();
+            for _ in 0..iters {
+                env.advance(1.0); // 1-second steps across 100,000s ≈ 83.3 game days
+            }
+            let elapsed = start.elapsed();
+            let ns_per_step = elapsed.as_nanos() as f64 / iters as f64;
+            assert!((0.0..1.0).contains(&env.clock.day_fraction));
+            println!(
+                "  [Profile 3] Multi-Day Bounded Accumulation (83.3 game days continuous): {:.2} ns/step (final day_fraction: {:.4})",
+                ns_per_step, env.clock.day_fraction
             );
         }
     }

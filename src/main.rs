@@ -4,6 +4,7 @@ use std::time::Instant;
 use glam::IVec3;
 use omnisia::camera::Camera;
 use omnisia::coord::{world_pos_to_world_voxel, world_voxel_to_chunk_and_local, CHUNK_SIZE};
+use omnisia::environment::EnvironmentState;
 use omnisia::modding::runtime::ContentRuntime;
 use omnisia::player::{PlayerController, PlayerInput};
 use omnisia::renderer::{LightUniform, Renderer};
@@ -30,6 +31,7 @@ struct AppState {
     camera: Camera,
     control_mode: ControlMode,
     player: PlayerController,
+    environment: EnvironmentState,
 
     // Status input keyboard untuk mode player
     key_w: bool,
@@ -55,6 +57,7 @@ impl AppState {
             camera: Camera::new(spawn_pos, -90.0, -10.0),
             control_mode: ControlMode::Player,
             player: PlayerController::new(spawn_pos),
+            environment: EnvironmentState::new(),
             key_w: false,
             key_s: false,
             key_a: false,
@@ -170,6 +173,9 @@ impl ApplicationHandler for AppState {
                 let dt = (now - self.last_frame_time).as_secs_f32().min(0.1);
                 self.last_frame_time = now;
 
+                // Advance visual environment state (derived visual layer, Amendment 2)
+                self.environment.advance(dt);
+
                 if self.control_mode == ControlMode::Player {
                     self.world
                         .update_player(&mut self.player, dt, self.camera.yaw_deg);
@@ -186,6 +192,17 @@ impl ApplicationHandler for AppState {
                     let aspect = renderer.size.width as f32 / renderer.size.height.max(1) as f32;
                     let camera_uniform = self.camera.build_uniform(aspect);
                     renderer.update_camera(&camera_uniform);
+
+                    // Update Procedural Sky & Harmonized Light Uniforms (Phase 10.5, Amendment 2, 3, 9)
+                    let sky_vp = self.camera.build_sky_view_projection_matrix(aspect);
+                    let inv_sky_vp = sky_vp.inverse();
+                    let sky_uniform = self
+                        .environment
+                        .build_sky_uniform(inv_sky_vp, glam::Vec3::ZERO);
+                    renderer.update_sky(&sky_uniform);
+
+                    let light_uniform = self.environment.build_light_uniform();
+                    renderer.update_light(&light_uniform);
 
                     let frustum = self.camera.extract_frustum(aspect);
                     let camera_voxel = world_pos_to_world_voxel(self.camera.position);

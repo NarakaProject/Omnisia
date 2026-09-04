@@ -1,6 +1,6 @@
 # Omnisia — System Architecture & Source of Truth
 
-> **Current Milestone**: Phase 10.4 — CSG / Destruction Hardening  
+> **Current Milestone**: Phase 10.5 — Procedural Sky & Atmosphere Foundation  
 > **Core Architectural Paradigm**: Engine-First, Data-Driven, Deterministic Voxel Simulation with Authoritative Firewalls.
 
 ---
@@ -57,6 +57,8 @@ Omnisia separates simulation into distinct, non-overlapping architectural layers
 │                     DERIVED & DISCARDABLE RENDER LAYERS                     │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │  • MeshCache: Culled & Greedy 32³ GPU vertex/index buffers (Metal / Vulkan) │
+│  • EnvironmentState: Derived visual environment model & GPU uniforms       │
+│  • SkyUniform & LightUniform: Harmonized GPU celestial buffers              │
 │  • Camera: First-person & developer free-flight perspective matrices        │
 │  • Frustum Culling: Sub-microsecond bounding box visibility queries         │
 │  • Renderers have ZERO authority over physics, collisions, or voxel data    │
@@ -138,6 +140,33 @@ Omnisia separates simulation into distinct, non-overlapping architectural layers
 - **Unloaded Neighbor Protection (`UNLOADED != AIR`)**: Target edits require resident chunks or fail validation. Neighbor mesh invalidation touches resident neighbors only; unloaded chunks are strictly left untouched with zero implicit chunk allocation, zero disk I/O, and zero phantom dirty flags.
 - **Transactional Pre-State Capture & Revert**: Captures exact chunk pre-states (`ChunkPreState`: `chunk_coord`, `dirty_flags`, `revision`, `non_air_count`) before the first mutation. Explicit `revert(&mut ChunkStore)` performs a full residency preflight check before applying inverse voxel deltas and restoring exact chunk metadata, leaving zero partial mutations on failure.
 - **Deterministic Ordering & Preservation**: Canonical `(x, y, z)` spatial ordering is maintained for deltas and structural events, while `LastWriteWins` strictly respects transaction insertion order without spatial reordering. CSG produces zero downstream physics or structural BFS side effects.
+
+### 2.10 Procedural Sky & Celestial Environment (`src/environment/`, `src/sky.wgsl`, Phase 10.5)
+- **Derived Visual Environment Model**: `EnvironmentState` is strictly a derived visual model driven by simulation/application time progression. It derives both `SkyUniform` (sky pass) and `LightUniform` (opaque terrain lighting). It maintains zero authority over `ChunkStore`, `StructuralSystem`, `PhysicsRuntime`, `DynamicBody`, CSG, persistence, or terrain simulation.
+- **Preserved Terrain Lighting Authority**: `LightUniform { sun_direction, sun_color, ambient_color }` remains the single authoritative lighting contract for terrain chunk shaders via `Renderer::update_light()`. `EnvironmentState` harmonizes celestial solar angles and color temperatures with `LightUniform`, ensuring unified environmental lighting without duplicating terrain shader pipelines or introducing competing lighting systems.
+- **Celestial Coordinate Conventions & Semantic Anchors**:
+  - Coordinate frame: $+Y = \text{world up}$, right-handed view transform (`Mat4::look_at_rh`, `Mat4::perspective_rh`, `wgpu` NDC depth $[0, 1]$).
+  - Explicit canonical solar anchors:
+    $$\text{day\_fraction } 0.00 \implies \text{midnight} \implies \text{sun } \approx (0, -1, 0)$$
+    $$\text{day\_fraction } 0.25 \implies \text{sunrise} \implies \text{sun } \approx (+1, 0, 0)$$
+    $$\text{day\_fraction } 0.50 \implies \text{noon} \implies \text{sun } \approx (0, +1, 0)$$
+    $$\text{day\_fraction } 0.75 \implies \text{sunset} \implies \text{sun } \approx (-1, 0, 0)$$
+- **Deterministic Moon Orbit & Continuous Phase**:
+  - Moon direction is derived from the same celestial clock with an explicit, bounded $5.0^\circ$ orbital declination tilt ($0.0872665\,\text{rad}$ rotation around $+Z$), resolving opposition and declination deterministically.
+  - The canonical rendering authority is continuous `moon_phase \in [0.0, 1.0)`. In `sky.wgsl`, the moon disc reconstructs 3D spherical surface normals to shade illuminated vs unshadowed lunar regions continuously without step quantization. The 8-phase enum (`MoonPhase`) is restricted to classification, debug, and UI.
+- **Twilight Smooth Cosine Bell Curve**:
+  - Twilight transition factor $T \in [0, 1]$ is evaluated as a cosine bell curve:
+    $$T(e) = \cos^2\left(\frac{|e|}{0.20} \cdot \frac{\pi}{2}\right) \quad \text{for } |e| \le 0.20, \quad 0 \text{ elsewhere}$$
+    where $e = \text{sun\_direction.y}$ is the solar elevation. This guarantees $C^1$ continuity with zero derivatives at horizon crossing ($e = 0$) and transition boundaries ($|e| = 0.20$), eliminating visual pops and color derivative discontinuities.
+- **Camera Translation Invariance**:
+  - Sky view unprojection matrix is constructed via `Camera::build_sky_view_projection_matrix(aspect)` with position forced to $\vec{0}$. This mathematically isolates camera rotation from world-space translation, guaranteeing that celestial bodies and atmospheric gradients remain at optical infinity with zero translation parallax or floating-point jitter across multi-kilometer movements.
+- **Temporally Stable Procedural Stars & Bounded Shader Time**:
+  - Procedural stars use a deterministic 3D angular hash on the unit celestial sphere: fixed angular positions, rotation-stable, translation-invariant, and texture-free.
+  - Star twinkling is modulated via a smooth periodic wave function without altering star spatial coordinates or hash cell assignments.
+  - Shader time inputs are strictly bounded (`day_fraction \in [0, 1)`, star animation time in $[0, 60.0)\,\text{s}$) to prevent long-run IEEE-754 precision loss during extended gameplay sessions.
+- **Renderer Integration & Depth Rejection Semantics**:
+  - The sky is rendered after opaque voxel geometry in the existing primary render pass via a single fullscreen triangle at depth $1.0$ (`depth_compare: LessEqual`, `depth_write_enabled: false`).
+  - *Depth Rejection Specification*: The sky is depth-tested against already-rendered opaque terrain so pixels whose depth is already less than $1.0$ are rejected by the depth test. GPU early/hierarchical depth optimization may reduce fragment work, but exact fragment execution behavior is implementation-dependent. Universal zero-overdraw or hardware-specific performance guarantees are explicitly disclaimed.
 
 ---
 

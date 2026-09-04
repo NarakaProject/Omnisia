@@ -8,6 +8,7 @@ use winit::dpi::PhysicalSize;
 use winit::window::Window;
 
 use crate::camera::CameraUniform;
+use crate::environment::SkyUniform;
 use crate::mesh::types::{MeshData, VoxelVertex};
 
 /// Uniform struct untuk pencahayaan global
@@ -63,6 +64,11 @@ pub struct Renderer {
     pub camera_buffer: wgpu::Buffer,
     pub light_buffer: wgpu::Buffer,
     pub uniform_bind_group: wgpu::BindGroup,
+
+    // Procedural Sky Pass Resources (Phase 10.5)
+    pub sky_pipeline: wgpu::RenderPipeline,
+    pub sky_buffer: wgpu::Buffer,
+    pub sky_bind_group: wgpu::BindGroup,
 
     // GPU Mesh Cache (keyed by Chunk Coordinate)
     pub chunk_meshes: HashMap<IVec3, GpuChunkMesh>,
@@ -243,6 +249,89 @@ impl Renderer {
             cache: None,
         });
 
+        // 10. Procedural Sky Pass Setup (Phase 10.5, Amendment 1 & 10)
+        let sky_uniform = SkyUniform::default();
+        let sky_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Sky Uniform Buffer"),
+            contents: bytemuck::cast_slice(&[sky_uniform]),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+
+        let sky_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("Sky Bind Group Layout"),
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                }],
+            });
+
+        let sky_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Sky Bind Group"),
+            layout: &sky_bind_group_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: sky_buffer.as_entire_binding(),
+            }],
+        });
+
+        let sky_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Omnisia Procedural Sky Shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("sky.wgsl").into()),
+        });
+
+        let sky_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("Sky Render Pipeline Layout"),
+            bind_group_layouts: &[&sky_bind_group_layout],
+            push_constant_ranges: &[],
+        });
+
+        let sky_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Sky Render Pipeline"),
+            layout: Some(&sky_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &sky_shader,
+                entry_point: Some("vs_sky"),
+                buffers: &[], // Fullscreen triangle without vertex buffer allocations
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &sky_shader,
+                entry_point: Some("fs_sky"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: config.format,
+                    blend: Some(wgpu::BlendState::REPLACE),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: Default::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: None,
+                polygon_mode: wgpu::PolygonMode::Fill,
+                unclipped_depth: false,
+                conservative: false,
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: wgpu::TextureFormat::Depth32Float,
+                depth_write_enabled: false,
+                depth_compare: wgpu::CompareFunction::LessEqual,
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: wgpu::MultisampleState::default(),
+            multiview: None,
+            cache: None,
+        });
+
         Ok(Self {
             window,
             surface,
@@ -255,6 +344,9 @@ impl Renderer {
             camera_buffer,
             light_buffer,
             uniform_bind_group,
+            sky_pipeline,
+            sky_buffer,
+            sky_bind_group,
             chunk_meshes: HashMap::new(),
         })
     }
@@ -305,6 +397,11 @@ impl Renderer {
             0,
             bytemuck::cast_slice(&[*light_uniform]),
         );
+    }
+
+    pub fn update_sky(&self, sky_uniform: &SkyUniform) {
+        self.queue
+            .write_buffer(&self.sky_buffer, 0, bytemuck::cast_slice(&[*sky_uniform]));
     }
 
     /// Mengunggah data mesh CPU ke GPU buffer cache
@@ -452,6 +549,14 @@ impl Renderer {
                     .set_index_buffer(gpu_mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
                 render_pass.draw_indexed(0..gpu_mesh.index_count, 0, 0..1);
             }
+
+            // 4. Procedural Sky Pass (Phase 10.5, Amendment 1 & 10)
+            // The sky is depth-tested against already-rendered opaque terrain so pixels whose depth
+            // is already less than 1.0 are rejected by the depth test. GPU early/hierarchical depth
+            // optimization may reduce fragment work, but exact fragment execution behavior is implementation-dependent.
+            render_pass.set_pipeline(&self.sky_pipeline);
+            render_pass.set_bind_group(0, &self.sky_bind_group, &[]);
+            render_pass.draw(0..3, 0..1);
         }
 
         self.queue.submit(std::iter::once(encoder.finish()));

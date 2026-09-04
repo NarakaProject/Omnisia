@@ -225,6 +225,13 @@ impl Camera {
         proj * view
     }
 
+    /// Menghitung matriks View-Projection terisolasi dari translasi kamera (khusus untuk background/sky tak berhingga)
+    pub fn build_sky_view_projection_matrix(&self, aspect: f32) -> Mat4 {
+        let view = Mat4::look_at_rh(Vec3::ZERO, self.forward(), Vec3::Y);
+        let proj = Mat4::perspective_rh(self.fov_y_rad, aspect, self.z_near, self.z_far);
+        proj * view
+    }
+
     /// Mengekstrak 6 bidang frustum dari kamera saat ini
     pub fn extract_frustum(&self, aspect: f32) -> Frustum {
         let vp = self.build_view_projection_matrix(aspect);

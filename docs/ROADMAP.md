@@ -3,8 +3,8 @@
 > **Vision Statement**: *"Revive Chimeraland with a voxel soul."*  
 > **Core Substrate**: Procedural, structural, and rigid-body voxel world.  
 > **Core Gameplay Identity**: Creature ecosystem, taming, acquisition, pet companions, and modular devour/evolution.  
-> **Current Completed Phase**: **Phase 10.4 — CSG / Destruction Hardening**  
-> **Next Active Phase**: **Phase 10.5 — Procedural Sky & Celestial Mechanics** (`PLANNED / NEXT`)
+> **Current Completed Phase**: **Phase 10.5 — Procedural Sky & Atmosphere Foundation**  
+> **Next Active Phase**: **Phase 10.6 — Procedural Aurora** (`PLANNED / NEXT`)
 
 ---
 
@@ -129,7 +129,7 @@ Omnisia is an ambitious, high-performance voxel sandbox game built from scratch 
 
 ## 3. Active Milestone: Phase 10 — World Impact & Atmosphere
 
-> **Status**: `IN PROGRESS` (Track A: Phase 10.1 `VALIDATED`, Phase 10.2 `VALIDATED`, Phase 10.3 `VALIDATED`, Phase 10.4 `VALIDATED`; Track B: Phase 10.5 `NEXT`)  
+> **Status**: `IN PROGRESS` (Track A: Phase 10.1 `VALIDATED`, Phase 10.2 `VALIDATED`, Phase 10.3 `VALIDATED`, Phase 10.4 `VALIDATED`; Track B: Phase 10.5 `VALIDATED`, Phase 10.6 `NEXT`)  
 > **Objective**: Connect the physical simulation substrate to destruction events (Track A) and atmospheric visuals (Track B).  
 > **Scope Firewall**: Phase 10 must **NOT** implement creature AI, taming, devour, inventory, or full weather simulation.
 
@@ -142,8 +142,8 @@ Omnisia is an ambitious, high-performance voxel sandbox game built from scratch 
       TRACK A:                                                TRACK B:
 WORLD IMPACT & CSG DESTRUCTION                          SKY & ATMOSPHERE
          │                                                       │
-  10.1 Impact Foundation (VALIDATED)                      10.5 Sky Foundation (NEXT)
-  10.2 Terrain Mutation / CSG (VALIDATED)                 10.6 Procedural Aurora
+  10.1 Impact Foundation (VALIDATED)                      10.5 Sky Foundation (VALIDATED)
+  10.2 Terrain Mutation / CSG (VALIDATED)                 10.6 Procedural Aurora (NEXT)
   10.3 Impact -> Structure -> Physics (VALIDATED)         10.7 Integration & Visual Stress
   10.4 CSG Hardening & Revert (VALIDATED)                        │
          │                                                       │
@@ -182,12 +182,18 @@ WORLD IMPACT & CSG DESTRUCTION                          SKY & ATMOSPHERE
   - Verified with 45 hardening tests (`tests/csg_hardening_tests.rs`) and Benchmark 53 (4 measurement profiles).
 
 ### Track B: Sky & Atmosphere
-- **Phase 10.5 — Sky & Atmosphere Foundation**:
-  - Lightweight GPU-driven procedural sky shader.
-  - Continuous day/night cycle with celestial clock.
-  - Sun, moon (phases & visibility), horizon twilight gradients, procedural stars.
-  - Constraints: **NO HDRI dependencies, NO giant skybox textures, NO expensive volumetric raymarching**. 60 FPS target on integrated GPUs.
-- **Phase 10.6 — Procedural Aurora**:
+- **Phase 10.5 — Sky & Atmosphere Foundation (`COMPLETED / VALIDATED`)**:
+  - Fullscreen procedural sky rendered after opaque voxel geometry in the primary render pass with `LessEqual` depth compare ($z = 1.0$) and `depth_write = false`. Depth testing against already-rendered opaque terrain rejects occluded sky pixels; GPU early/hierarchical depth optimization may reduce fragment work, subject to hardware implementation.
+  - Continuous day/night cycle via `EnvironmentClock` with `day_fraction \in [0.0, 1.0)`, time string formatting, continuous moon phase, and bounded star phase.
+  - Explicit celestial coordinate conventions (+Y up, right-handed view transform) with verified semantic anchors (midnight $(0,-1,0)$, sunrise $(+1,0,0)$, noon $(0,+1,0)$, sunset $(-1,0,0)$).
+  - Deterministic celestial clock deriving moon direction with an explicit $5.0^\circ$ declination tilt.
+  - Continuous moon phase $\in [0, 1)$ driving dynamic 3D sphere terminator shading in WGSL, with 8-phase enum for classification/debug/UI.
+  - Twilight smooth cosine bell curve centered on horizon crossing ($|e| \le 0.20$) ensuring $C^1$ continuity and smooth color transitions.
+  - Temporally stable 3D angular hash star field on the celestial sphere, invariant under camera translation and rotation, with twinkle animation and daytime/twilight suppression.
+  - Unified `EnvironmentState` driving both `SkyUniform` and the existing `LightUniform` (preserving existing terrain lighting pipeline).
+  - Constraints respected: **NO HDRI dependencies, NO giant skybox textures, NO expensive volumetric raymarching**. 60 FPS target on integrated GPUs.
+  - Verified with 23 regression tests (`tests/sky_environment_tests.rs`), 7-stage validation binary (`src/bin/sky_validation.rs`), and Benchmark 54 (3 CPU profiles).
+- **Phase 10.6 — Procedural Aurora (`PLANNED / NEXT`)**:
   - Animated multi-band procedural aurora borealis across night skies.
   - Altitude and parallax illusion using layered noise functions.
   - Visually stunning yet computationally lightweight.

@@ -3,8 +3,8 @@
 [![Rust](https://img.shields.io/badge/Rust-2021_Edition-orange.svg)](https://www.rust-lang.org/)
 [![wgpu](https://img.shields.io/badge/wgpu-v24_(Metal%20%2F%20Vulkan%20%2F%20DX12)-blue.svg)](https://wgpu.rs/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Phase](https://img.shields.io/badge/Phase-10.4_Validated-brightgreen.svg)](#completed-phases)
-[![Tests](https://img.shields.io/badge/Tests-783_Passing-brightgreen.svg)](#test-suite--validation-evidence)
+[![Phase](https://img.shields.io/badge/Phase-10.5_Validated-brightgreen.svg)](#completed-phases)
+[![Tests](https://img.shields.io/badge/Tests-806_Passing-brightgreen.svg)](#test-suite--validation-evidence)
 
 > **Vision**: *"Revive Chimeraland with a voxel soul."*  
 > Omnisia is a high-performance voxel sandbox engine and game built from scratch in pure Rust and `wgpu`. It merges continuous procedural world generation, structural connectivity, and rigid-body physical simulation with a deep creature ecosystem, taming, pet raising, and modular chimera devour/evolution.
@@ -20,10 +20,10 @@ For any developer or AI coding agent entering this repository for the first time
 | **What is Omnisia?** | A voxel sandbox game engine combining a procedural voxel substrate with modular creature and evolution gameplay. |
 | **What is the long-term vision?** | Revive the modular creature capture, chimera evolution, and open living world of *Chimeraland* on an authoritative, physically reactive voxel substrate. |
 | **What is the current gameplay reality?** | **Early physics & locomotion substrate.** The player can walk, sprint, crouch, jump, auto-step, glide, and push dynamic rigid bodies. There are **no creatures, combat, taming, inventory, crafting, or devour systems yet**. |
-| **What Phase is complete?** | **Phase 10.4 — CSG / Destruction Hardening** (Validated with 45 hardening tests, exact transactional revert, symmetric invalidation, negative coordinate roundtrips). |
-| **What is the next Phase?** | **Phase 10.5 — Procedural Sky & Celestial Mechanics** (Lightweight GPU sky shader, celestial clock, sun/moon/stars). |
+| **What Phase is complete?** | **Phase 10.5 — Procedural Sky & Atmosphere Foundation** (Validated with 23 sky environment tests, 7-stage validation binary, 3 Benchmark 54 CPU profiles, 806 total passing workspace tests). |
+| **What is the next Phase?** | **Phase 10.6 — Procedural Aurora** (Multi-band animated procedural aurora borealis across night skies). |
 | **What systems are authoritative?** | `ChunkStore` (static terrain), `DynamicBody` (detached voxels), `PhysicsWorld` (rigid bodies), `PlayerController` (kinematic locomotion), Data Registry (modding definitions). |
-| **What systems are derived / cache state?** | GPU mesh buffers (`MeshCache`), spatial broadphase grid, collision contact manifolds, transient structural BFS results. |
+| **What systems are derived / cache state?** | `EnvironmentState` (derived visual environment model), `SkyUniform` & `LightUniform` (GPU uniform buffers), `MeshCache` (GPU mesh buffers), spatial broadphase grid, collision contact manifolds, transient structural BFS results. |
 | **What are the top architectural invariants?** | (1) Player is Kinematic, NEVER a `RigidBody`, NEVER in islands. (2) 1 structural aggregate = 1 `RigidBody` owning $M$ colliders (never 1 voxel = 1 body). (3) Zero double-ownership of voxels. |
 | **What are the known limitations?** | Sequential impulse solver shows compliance under tall vertical stacks ($H \ge 20$ boxes). Warm starting and shock propagation are deferred. |
 | **What has been deliberately deferred?** | Full LOD meshing, volumetric clouds, dynamic weather simulation, multiplayer networking, advanced constraint solvers. |
@@ -66,6 +66,7 @@ PHASE 10.1 IMPACT FOUNDATION          Generic ImpactEvent + bounded volume query
 PHASE 10.2 CSG & TERRAIN MUTATION    VoxelEditTransaction + atomic commit + crater generator + invalidation
 PHASE 10.3 IMPACT -> STRUCTURE -> PHYSICS ImpactBridge + Phase A atomicity + Phase B impulse + 34 tests
 PHASE 10.4 CSG / DESTRUCTION HARDENING  Pre-state snapshotting + revert() + negative coords + 6-face invalidation + 45 tests
+PHASE 10.5 SKY & ATMOSPHERE FOUNDATION  Procedural GPU sky + continuous day/night + celestial anchors + 3D stars + 23 tests
 ```
 
 ### Authoritative Player Locomotion Semantics (Phase 8D / 9.10)
@@ -90,8 +91,8 @@ Phase 10 connects the completed physical simulation substrate to destruction eve
   - **10.3 Impact $\to$ Structure $\to$ Physics (`VALIDATED`)**: Terrain blast $\to$ structural detachment $\to$ `DynamicBody` $\to$ `RigidBody` outward impulse $\to$ settling $\to$ reintegration.
   - **10.4 Destruction Hardening (`VALIDATED`)**: Multi-chunk boundary craters, negative coordinates, persistence interaction, transactional revert.
 - **Track B: Sky & Atmosphere**
-  - **10.5 Sky & Atmosphere Foundation (`PLANNED / NEXT`)**: Lightweight procedural GPU sky, celestial clock (sun, moon phases), twilight gradients, procedural stars. (*No HDRIs, no giant skyboxes, no expensive volumetric raymarching*).
-  - **10.6 Procedural Aurora**: Multi-band animated procedural aurora borealis across night skies.
+  - **10.5 Sky & Atmosphere Foundation (`VALIDATED`)**: Lightweight procedural GPU sky shader, continuous day/night cycle, celestial anchors (sun, moon with $5^\circ$ declination and continuous phase), twilight cosine bell curve, temporally stable 3D stars, unified `SkyUniform` and `LightUniform` harmonization. (*No HDRIs, no giant skyboxes, no expensive volumetric raymarching*).
+  - **10.6 Procedural Aurora (`PLANNED / NEXT`)**: Multi-band animated procedural aurora borealis across night skies.
   - **10.7 Integration & Visual Stress**: Concurrent terrain destruction during real-time sky rendering at $\ge 60\text{ FPS}$.
 
 ---
@@ -191,6 +192,9 @@ cargo run --release
 
 ### 2. Run Validation Binaries
 ```bash
+# Phase 10.5 Sky & Celestial Environment Validation
+cargo run --release --bin sky_validation
+
 # Phase 9.12 RigidBody Stress & Performance Validation
 cargo run --release --bin stress_validation
 
@@ -206,7 +210,7 @@ cargo run --release --bin physics_validation
 # Phase 7 Real-World Multi-Kilometer Traversal Validation
 cargo run --release --bin traversal_validation
 
-# Full 49-Benchmark Suite
+# Full 54-Benchmark Suite
 cargo run --release --bin benchmarks
 ```
 
@@ -231,7 +235,8 @@ Omnisia/
 │   └── reports/         # Historical phase completion reports (Phases 4-8B)
 ├── mods/                # External modding test suites and asset overrides
 ├── src/                 # Authoritative engine source code
-│   ├── bin/             # 6 standalone validation and benchmark binaries
+│   ├── bin/             # 7 standalone validation and benchmark binaries
+│   ├── environment/     # Celestial clock, sun/moon orbits, SkyUniform, Light harmonization
 │   ├── mesh/            # Culled and Greedy 32³ mesh generation
 │   ├── modding/         # ResourceIdentifier, manifest loader, registry
 │   ├── physics/         # RigidBody, SAT narrowphase, solver, islands, bridges
@@ -239,7 +244,7 @@ Omnisia/
 │   ├── streaming/       # ChunkStore, scheduler, eviction, memory budget
 │   ├── structure/       # 6-connected localized BFS, anchor components
 │   └── worldgen/        # Deterministic 3D volumetric noise, biomes, vegetation
-└── tests/               # 11 regression test targets (660 automated tests)
+└── tests/               # 16 regression test targets (806 automated tests)
 ```
 
 ---

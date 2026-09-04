@@ -1,8 +1,8 @@
 # Omnisia — Authoritative Project State
 
-> **Current Milestone**: Phase 10.4 — CSG / Destruction Hardening (**COMPLETED / VALIDATED**)  
-> **Next Milestone**: Phase 10.5 — Procedural Sky & Celestial Mechanics (**PLANNED / NEXT**)  
-> **Verified HEAD Commit**: Current Phase 10.4 Working State  
+> **Current Milestone**: Phase 10.5 — Procedural Sky & Atmosphere Foundation (**COMPLETED / VALIDATED**)  
+> **Next Milestone**: Phase 10.6 — Procedural Aurora (**PLANNED / NEXT**)  
+> **Verified HEAD Commit**: Current Phase 10.5 Working State  
 > **Branch**: `main`  
 > **Source-of-Truth Policy**: Source code and passing automated tests are the absolute source of truth.
 
@@ -16,12 +16,13 @@ Every count in this document has been directly audited and verified against the 
 - **Compiler**: Rust 2021 edition, `cargo build --release` compiles cleanly with zero errors.
 - **Formatting**: `cargo fmt --all -- --check` passes cleanly with zero diffs.
 - **Linter**: `cargo clippy --all-targets --all-features -- -D warnings` passes cleanly with zero warnings or errors.
-- **Test Suite**: `cargo test --all-targets` passes with **783 passed, 0 failed, 0 ignored** across 15 test targets.
+- **Test Suite**: `cargo test --all-targets` passes with **806 passed, 0 failed, 0 ignored** across 16 test targets.
 
-### Test Count Breakdown by Target (783 Total Tests)
+### Test Count Breakdown by Target (806 Total Tests)
 
 | Test Target Binary | Scope / Feature Area | Verified Test Count | Status |
 |:---|:---|:---:|:---:|
+| `tests/sky_environment_tests.rs` | Deterministic Clock, Sun Anchors (Midnight/Sunrise/Noon/Sunset), Moon Opposition & $5^\circ$ Declination, Continuous Moon Phase, Twilight Cosine Bell Curve, Temporally Stable 3D Stars, LightUniform Harmonization, Camera Translation Invariance, Offscreen Headless Depth Rejection (Phase 10.5) | **23** | PASS |
 | `tests/csg_hardening_tests.rs` | Arbitrary Add/Remove/Replace, Cross-Chunk Boundaries, Negative Euclidean Coordinates, Structural Consistency, Persistence/Revision Invariants, Deterministic Replay, Symmetric 6-Face Invalidation, Transactional Revert & Preflight Safety (Phase 10.4) | **45** | PASS |
 | `tests/impact_physics_integration_tests.rs` | ImpactBridge, Multi-Aggregate Atomicity, Phase A Rollback, Phase B Impulse Response, Reintegration Guardrails, Infallible Physics Deregistration, Zero-Motion Roundtrip, Negative Coordinates, Cross-Chunk Boundaries, Unloaded Chunk Safety (Phase 10.3) | **34** | PASS |
 | `tests/csg_tests.rs` | VoxelEdit, VoxelEditTransaction, Infallible Commit & Rollback, Duplicate Rejection, CraterGenerator, MaterialDestructionPolicy, Invalidation (Phase 10.2) | **27** | PASS |
@@ -37,18 +38,19 @@ Every count in this document has been directly audited and verified against the 
 | `tests/streaming_tests.rs` | ChunkStore Residency, Job Scheduler, Memory Budget, Eviction Lifecycle (Phase 3) | **11** | PASS |
 | `tests/structure_tests.rs` | 6-Connected Adjacency, Structural Anchors, Aggregate Extraction (Phase 7) | **11** | PASS |
 | `tests/scale_tests.rs` | Metric Coordinate Invariants (1 vx = 0.5m), Scale Ruler, Traversal Residency (Phase 7) | **7** | PASS |
-| **Workspace Total** | **All Subsystems** | **783** | **PASS** |
+| **Workspace Total** | **All Subsystems** | **806** | **PASS** |
 
-### Verified Validation Binaries (6 Binaries)
+### Verified Validation Binaries (7 Binaries)
 
 | Binary Path | Executable Target | Verification Summary | Status |
 |:---|:---|:---|:---:|
+| `src/bin/sky_validation.rs` | `cargo run --release --bin sky_validation` | 7-stage deterministic sky validation: clock progression, sun anchors, moon declination, continuous phase, twilight continuity, star stability, offscreen depth rejection | **PASS (0.13 ms)** |
 | `src/bin/stress_validation.rs` | `cargo run --release --bin stress_validation` | Workloads A–K: Sparse/Dense Scaling, Sleeping, Islands, Stacks, Bridges, 10k Steps, Determinism | **PASS (1.30 s)** |
 | `src/bin/physics_validation.rs` | `cargo run --release --bin physics_validation` | Dynamic aggregate lifecycle, AntiGravity floating, unloaded boundary protection | **PASS (5/5 stages)** |
 | `src/bin/integration_validation.rs` | `cargo run --release --bin integration_validation` | Structural detachment, DynamicBody interaction, two-phase atomic reintegration | **PASS (6/6 stages)** |
 | `src/bin/player_validation.rs` | `cargo run --release --bin player_validation` | Kinematic locomotion, capsule crouching, jump edge-trigger, swept anti-tunneling | **PASS (8/8 stages)** |
 | `src/bin/traversal_validation.rs` | `cargo run --release --bin traversal_validation` | Multi-kilometer flight (-1km to +1km), streaming residency audit, memory stability | **PASS (10/10 stages)** |
-| `src/bin/benchmarks.rs` | `cargo run --release --bin benchmarks` | Full performance test suite covering 53 isolated benchmarks (including BM 53 with all 4 profiles) | **PASS (53/53 runs)** |
+| `src/bin/benchmarks.rs` | `cargo run --release --bin benchmarks` | Full performance test suite covering 54 isolated benchmarks (including BM 54 with all 3 environment & GPU uniform profiles) | **PASS (54/54 runs)** |
 
 ---
 
@@ -80,7 +82,9 @@ Under Omnisia's engineering standard, every subsystem must be explicitly classif
 | **Terrain Mutation / CSG Foundation (10.2)** | `VALIDATED` | `src/csg/` (`edit.rs`, `transaction.rs`, `crater.rs`, `policy.rs`) | Atomic multi-chunk `VoxelEditTransaction`, `CraterGenerator`, `DestructionPolicy`, 27 unit tests, Benchmark 51. |
 | **Impact → Structure → Physics (10.3)** | `VALIDATED` | `src/impact/bridge.rs`, `src/structure/manager.rs` | Whole-impact Phase A atomicity, exact rollback, Phase B impulse response (\|\|J\|\| = J), dynamic aggregate single ownership, 34 tests, Benchmark 52. |
 | **Destruction Hardening (10.4)** | `VALIDATED` | `src/csg/` (`transaction.rs`, `edit.rs`), `tests/csg_hardening_tests.rs` | Pre-state snapshotting, explicit `revert()` with preflight safety, arbitrary boundary stress, negative Euclidean coordinates, symmetric 6-face invalidation, 45 tests, Benchmark 53. |
-| **Procedural Sky & Atmosphere (10.5–10.7)** | `PLANNED` | — (Phase 10.5–10.7) | GPU-driven atmospheric gradient, sun/moon cycle, stars, procedural aurora. |
+| **Procedural Sky & Atmosphere (10.5)** | `VALIDATED` | `src/environment/` (`time.rs`, `celestial.rs`, `sky.rs`), `src/sky.wgsl` | Continuous day/night clock, celestial anchors, $5^\circ$ moon declination, continuous phase, twilight bell curve, 3D stars, `SkyUniform`/`LightUniform` harmonization, early-Z depth rejection, 23 tests, Benchmark 54. |
+| **Procedural Aurora (10.6)** | `PLANNED` | — (Phase 10.6) | Multi-band animated procedural aurora borealis across night skies. |
+| **Integration & Visual Stress (10.7)** | `PLANNED` | — (Phase 10.7) | Concurrent terrain destruction during real-time sky rendering at $\ge 60\text{ FPS}$. |
 | **Player World Interaction (Tools/Harvest)**| `PLANNED` | — (Phase 11) | Voxel targeting, block placing/breaking, harvesting tools, interaction raycast. |
 | **Entity & Creature Foundation** | `PLANNED` | — (Phase 12) | `CreatureDefinition`, stats, health, AI states, animal & beast hierarchy. |
 | **Combat & Action System** | `PLANNED` | — (Phase 13) | Attack actions, hitboxes, damage, knockback, dodge, action architecture. |
@@ -120,6 +124,7 @@ Omnisia strictly maintains architectural firewalls between simulation substrates
 │ 3. Broadphase Acceleration Proxies   │ Spatial Grid Cells                   │
 │ 4. Collision Contact Cache           │ Transient Manifold Contacts          │
 │ 5. Frame Render Interpolation        │ Visual Transform Smoothing           │
+│ 6. Visual Environment & Lighting     │ EnvironmentState / Sky & LightUniform│
 └──────────────────────────────────────┴──────────────────────────────────────┘
 ```
 
