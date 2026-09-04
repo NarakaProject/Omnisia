@@ -13666,3 +13666,418 @@ fn test_9_11_58_reintegration_is_deterministic() {
         }
     }
 }
+
+// ============================================================================
+// PHASE 9.12 STRESS / PERFORMANCE VALIDATION & REGRESSION TESTS
+// ============================================================================
+
+#[test]
+fn test_9_12_01_body_colliders_indexing_and_removal_consistency() {
+    let mut world = PhysicsWorld::default();
+    let body_id = RigidBodyId(10);
+    let body = RigidBody::new_dynamic(
+        body_id,
+        Vec3::ZERO,
+        Quat::IDENTITY,
+        1.0,
+        Mat3::from_diagonal(Vec3::ONE),
+    )
+    .unwrap();
+    world.add_rigid_body(body, None).unwrap();
+
+    let c1 = Collider::new(
+        ColliderId(101),
+        body_id,
+        Shape::Box(BoxShape::new(Vec3::splat(0.5)).unwrap()),
+        Transform::IDENTITY,
+    );
+    let c2 = Collider::new(
+        ColliderId(102),
+        body_id,
+        Shape::Box(BoxShape::new(Vec3::splat(0.5)).unwrap()),
+        Transform::IDENTITY,
+    );
+    world.add_collider(c1).unwrap();
+    world.add_collider(c2).unwrap();
+
+    assert_eq!(world.body_colliders.get(&body_id).unwrap().len(), 2);
+    assert_eq!(world.colliders_for_body(body_id).count(), 2);
+
+    // Remove one collider
+    let removed = world.remove_collider(ColliderId(101));
+    assert!(removed.is_some());
+    assert_eq!(world.body_colliders.get(&body_id).unwrap().len(), 1);
+    assert_eq!(world.colliders_for_body(body_id).count(), 1);
+
+    // Remove body
+    let removed_body = world.remove_rigid_body(body_id);
+    assert!(removed_body.is_some());
+    assert!(!world.body_colliders.contains_key(&body_id));
+    assert!(!world.colliders.contains_key(&ColliderId(102)));
+    assert_eq!(world.colliders_for_body(body_id).count(), 0);
+}
+
+#[test]
+fn test_9_12_02_box_box_contact_point_on_floor_has_zero_lever_arm() {
+    let mut world = PhysicsWorld::default();
+
+    let ground_id = RigidBodyId(1);
+    let ground =
+        RigidBody::new_static(ground_id, Vec3::new(0.0, -0.5, 0.0), Quat::IDENTITY).unwrap();
+    world.add_rigid_body(ground, None).unwrap();
+    let col_ground = Collider::new(
+        ColliderId(1),
+        ground_id,
+        Shape::Box(BoxShape::new(Vec3::new(10.0, 0.5, 10.0)).unwrap()),
+        Transform::IDENTITY,
+    );
+    world.add_collider(col_ground).unwrap();
+
+    let box_id = RigidBodyId(2);
+    let body = RigidBody::new_dynamic(
+        box_id,
+        Vec3::new(0.0, 0.49, 0.0), // 0.01m penetration
+        Quat::IDENTITY,
+        1.0,
+        Mat3::from_diagonal(Vec3::ONE),
+    )
+    .unwrap();
+    world.add_rigid_body(body, None).unwrap();
+    let col_box = Collider::new(
+        ColliderId(2),
+        box_id,
+        Shape::Box(BoxShape::new(Vec3::splat(0.5)).unwrap()),
+        Transform::IDENTITY,
+    );
+    world.add_collider(col_box).unwrap();
+
+    let contacts = world.generate_contacts().unwrap();
+    assert_eq!(contacts.len(), 1);
+    let c = &contacts[0];
+
+    // Verify contact point on orthogonal axes (X, Z) is exactly centered (no artificial corner offset)
+    assert!(c.point.x.abs() < 1e-4);
+    assert!(c.point.z.abs() < 1e-4);
+    // Contact normal points from ground towards box or vice versa
+    assert!((c.normal.y.abs() - 1.0).abs() < 1e-4);
+}
+
+#[test]
+fn test_9_12_03_box_settling_under_gravity_finite_and_stable() {
+    let mut world = PhysicsWorld::new(PhysicsWorldConfig::default());
+    world.config.world_gravity = Vec3::new(0.0, -9.81, 0.0);
+
+    let ground_id = RigidBodyId(999);
+    let ground =
+        RigidBody::new_static(ground_id, Vec3::new(0.0, -0.5, 0.0), Quat::IDENTITY).unwrap();
+    world.add_rigid_body(ground, None).unwrap();
+    let col_ground = Collider::new(
+        ColliderId(999),
+        ground_id,
+        Shape::Box(BoxShape::new(Vec3::new(10.0, 0.5, 10.0)).unwrap()),
+        Transform::IDENTITY,
+    );
+    world.add_collider(col_ground).unwrap();
+
+    let box_id = RigidBodyId(1);
+    let body = RigidBody::new(
+        box_id,
+        BodyType::Dynamic,
+        Vec3::new(0.0, 3.0, 0.0),
+        Quat::IDENTITY,
+        Vec3::ZERO,
+        Vec3::ZERO,
+        MassProperties::from_box(1.0, Vec3::splat(1.0)).unwrap(),
+    )
+    .unwrap();
+    world.add_rigid_body(body, None).unwrap();
+    let col_box = Collider::new(
+        ColliderId(1),
+        box_id,
+        Shape::Box(BoxShape::new(Vec3::splat(0.5)).unwrap()),
+        Transform::IDENTITY,
+    );
+    world.add_collider(col_box).unwrap();
+
+    for _ in 0..100 {
+        world.step().unwrap();
+    }
+
+    let b = world.get_rigid_body(box_id).unwrap();
+    assert!(b.position().is_finite());
+    assert!(b.linear_velocity().is_finite());
+    // Settled on ground top at Y=0.0 with half-extent 0.5 -> center at 0.5 ± 0.02
+    assert!((b.position().y - 0.5).abs() < 0.02);
+    assert!(b.linear_velocity().length() < 0.1);
+}
+
+#[test]
+fn test_9_12_04_static_anchor_barrier_strictly_isolates_islands() {
+    let mut world = PhysicsWorld::new(PhysicsWorldConfig {
+        world_gravity: Vec3::ZERO,
+        ..Default::default()
+    });
+
+    let static_id = RigidBodyId(10);
+    world
+        .add_rigid_body(
+            RigidBody::new_static(static_id, Vec3::ZERO, Quat::IDENTITY).unwrap(),
+            None,
+        )
+        .unwrap();
+    world
+        .add_collider(Collider::new(
+            ColliderId(10),
+            static_id,
+            Shape::Box(BoxShape::new(Vec3::splat(1.0)).unwrap()),
+            Transform::IDENTITY,
+        ))
+        .unwrap();
+
+    // Left dynamic box (asleep)
+    let left_id = RigidBodyId(1);
+    let mut left_body = RigidBody::new_dynamic(
+        left_id,
+        Vec3::new(-1.95, 0.0, 0.0),
+        Quat::IDENTITY,
+        1.0,
+        Mat3::from_diagonal(Vec3::ONE),
+    )
+    .unwrap();
+    left_body.put_to_sleep();
+    world.add_rigid_body(left_body, None).unwrap();
+    world
+        .add_collider(Collider::new(
+            ColliderId(1),
+            left_id,
+            Shape::Box(BoxShape::new(Vec3::splat(1.0)).unwrap()),
+            Transform::IDENTITY,
+        ))
+        .unwrap();
+
+    // Right dynamic box (asleep)
+    let right_id = RigidBodyId(2);
+    let mut right_body = RigidBody::new_dynamic(
+        right_id,
+        Vec3::new(1.95, 0.0, 0.0),
+        Quat::IDENTITY,
+        1.0,
+        Mat3::from_diagonal(Vec3::ONE),
+    )
+    .unwrap();
+    right_body.put_to_sleep();
+    world.add_rigid_body(right_body, None).unwrap();
+    world
+        .add_collider(Collider::new(
+            ColliderId(2),
+            right_id,
+            Shape::Box(BoxShape::new(Vec3::splat(1.0)).unwrap()),
+            Transform::IDENTITY,
+        ))
+        .unwrap();
+
+    // Both are asleep initially
+    assert!(world.get_rigid_body(left_id).unwrap().is_sleeping());
+    assert!(world.get_rigid_body(right_id).unwrap().is_sleeping());
+
+    // Wake left body with velocity disturbance
+    world
+        .get_rigid_body_mut(left_id)
+        .unwrap()
+        .set_linear_velocity(Vec3::new(1.0, 0.0, 0.0))
+        .unwrap();
+    world.get_rigid_body_mut(left_id).unwrap().wake();
+
+    // Step world
+    world.step().unwrap();
+
+    // Left is awake, but static anchor barrier prevents wake propagation to right!
+    assert!(world.get_rigid_body(left_id).unwrap().is_awake());
+    assert!(world.get_rigid_body(right_id).unwrap().is_sleeping());
+}
+
+#[test]
+fn test_9_12_05_player_kinematic_invariants_during_dynamic_push() {
+    use omnisia::physics::PlayerRigidBodyBridge;
+    use omnisia::player::controller::PlayerController;
+
+    let mut world = PhysicsWorld::new(PhysicsWorldConfig::default());
+    world.config.world_gravity = Vec3::ZERO;
+
+    let body_id = RigidBodyId(1);
+    let body = RigidBody::new_dynamic(
+        body_id,
+        Vec3::new(1.0, 0.5, 0.0),
+        Quat::IDENTITY,
+        5.0,
+        Mat3::from_diagonal(Vec3::ONE),
+    )
+    .unwrap();
+    world.add_rigid_body(body, None).unwrap();
+    world
+        .add_collider(Collider::new(
+            ColliderId(1),
+            body_id,
+            Shape::Box(BoxShape::new(Vec3::splat(0.5)).unwrap()),
+            Transform::IDENTITY,
+        ))
+        .unwrap();
+
+    let mut player = PlayerController::new(Vec3::new(0.0, 0.5, 0.0));
+    player.state.velocity = Vec3::new(3.0, 0.0, 0.0);
+    let mut bridge = PlayerRigidBodyBridge::default();
+
+    for _ in 0..10 {
+        bridge.step(&mut player, &mut world, None, 1.0 / 30.0, 0.0);
+        world.step().unwrap();
+    }
+
+    // Critical Invariants
+    assert_eq!(world.rigid_bodies.len(), 1);
+    assert!(!world.contains_body(RigidBodyId(0)));
+    assert!(player.state.position.is_finite());
+    assert!(world.get_rigid_body(body_id).unwrap().linear_velocity().x > 0.0);
+}
+
+#[test]
+fn test_9_12_06_numerical_adversarial_mass_ratio_and_high_spin() {
+    let mut world = PhysicsWorld::new(PhysicsWorldConfig::default());
+    world.config.world_gravity = Vec3::ZERO;
+
+    let id_big = RigidBodyId(1);
+    let id_small = RigidBodyId(2);
+
+    let body_big = RigidBody::new(
+        id_big,
+        BodyType::Dynamic,
+        Vec3::new(0.0, 0.0, 0.0),
+        Quat::IDENTITY,
+        Vec3::new(5.0, 0.0, 0.0),
+        Vec3::ZERO,
+        MassProperties::from_box(100_000.0, Vec3::splat(2.0)).unwrap(),
+    )
+    .unwrap();
+
+    let body_small = RigidBody::new(
+        id_small,
+        BodyType::Dynamic,
+        Vec3::new(1.8, 0.0, 0.0),
+        Quat::IDENTITY,
+        Vec3::ZERO,
+        Vec3::new(50.0, 50.0, 50.0),
+        MassProperties::from_box(0.1, Vec3::splat(1.0)).unwrap(),
+    )
+    .unwrap();
+
+    world.add_rigid_body(body_big, None).unwrap();
+    world
+        .add_collider(Collider::new(
+            ColliderId(1),
+            id_big,
+            Shape::Box(BoxShape::new(Vec3::splat(1.0)).unwrap()),
+            Transform::IDENTITY,
+        ))
+        .unwrap();
+
+    world.add_rigid_body(body_small, None).unwrap();
+    world
+        .add_collider(Collider::new(
+            ColliderId(2),
+            id_small,
+            Shape::Box(BoxShape::new(Vec3::splat(0.5)).unwrap()),
+            Transform::IDENTITY,
+        ))
+        .unwrap();
+
+    for _ in 0..50 {
+        world.step().unwrap();
+    }
+
+    let b1 = world.get_rigid_body(id_big).unwrap();
+    let b2 = world.get_rigid_body(id_small).unwrap();
+
+    assert!(b1.position().is_finite());
+    assert!(b1.rotation().is_finite());
+    assert!(b1.linear_velocity().is_finite());
+    assert!((b1.rotation().length() - 1.0).abs() < 1e-4);
+
+    assert!(b2.position().is_finite());
+    assert!(b2.rotation().is_finite());
+    assert!(b2.linear_velocity().is_finite());
+    assert!((b2.rotation().length() - 1.0).abs() < 1e-4);
+}
+
+#[test]
+fn test_9_12_07_deterministic_replay_bitwise_identity() {
+    fn run_sim() -> (Vec3, Quat, Vec3) {
+        let mut world = PhysicsWorld::new(PhysicsWorldConfig::default());
+        world.config.world_gravity = Vec3::new(0.0, -9.81, 0.0);
+
+        let id = RigidBodyId(1);
+        let body = RigidBody::new(
+            id,
+            BodyType::Dynamic,
+            Vec3::new(1.0, 5.0, 2.0),
+            Quat::from_rotation_x(0.25),
+            Vec3::new(1.0, 0.0, -1.0),
+            Vec3::new(0.1, 0.2, 0.3),
+            MassProperties::from_box(2.0, Vec3::splat(1.0)).unwrap(),
+        )
+        .unwrap();
+        world.add_rigid_body(body, None).unwrap();
+        world
+            .add_collider(Collider::new(
+                ColliderId(1),
+                id,
+                Shape::Box(BoxShape::new(Vec3::splat(0.5)).unwrap()),
+                Transform::IDENTITY,
+            ))
+            .unwrap();
+
+        for _ in 0..30 {
+            world.step().unwrap();
+        }
+
+        let b = world.get_rigid_body(id).unwrap();
+        (b.position(), b.rotation(), b.linear_velocity())
+    }
+
+    let run1 = run_sim();
+    let run2 = run_sim();
+    assert_eq!(run1.0, run2.0);
+    assert_eq!(run1.1, run2.1);
+    assert_eq!(run1.2, run2.2);
+}
+
+#[test]
+fn test_9_12_08_negative_coordinate_cross_chunk_reintegration() {
+    let mut world = PhysicsWorld::default();
+    let mut store = ChunkStore::new();
+
+    for cx in -3..=0 {
+        for cy in 0..=1 {
+            for cz in -3..=0 {
+                store.insert(Chunk::new(IVec3::new(cx, cy, cz)));
+            }
+        }
+    }
+
+    let agg = make_p911_aggregate(1, IVec3::new(-33, 10, -65), IVec3::new(-32, 11, -64));
+    let dyn_id = world
+        .physicalize_aggregate(agg, None, AggregateColliderStrategy::BoundingBox)
+        .unwrap();
+
+    let plan = world
+        .prepare_aggregate_reintegration(
+            dyn_id,
+            &store,
+            OrientationQuantizationPolicy::NearestLattice,
+        )
+        .unwrap();
+
+    assert_eq!(plan.voxels.len(), 8);
+    world
+        .commit_aggregate_reintegration(plan, &mut store)
+        .unwrap();
+    assert!(world.get_dynamic_aggregate(dyn_id).is_none());
+}

@@ -2207,6 +2207,113 @@ fn main() {
         }
     }
 
+    // 49. Benchmark RigidBody Stress & Scaling (Phase 9.12)
+    {
+        use glam::Quat;
+        use omnisia::physics::world::{PhysicsWorld, PhysicsWorldConfig};
+        use omnisia::physics::{
+            BodyType, BoxShape, Collider, ColliderId, MassProperties, RigidBody, RigidBodyId,
+            Shape, Transform,
+        };
+
+        println!("------------------------------------------------------------");
+        println!("[BENCHMARK 49] RigidBody Stress & Scaling (Phase 9.12)");
+
+        // 1. Sparse Active Scaling (100 to 5000 bodies)
+        let body_counts = [100, 500, 1000, 2500, 5000];
+        for &count in &body_counts {
+            let mut world = PhysicsWorld::new(PhysicsWorldConfig::default());
+            world.config.world_gravity = Vec3::ZERO;
+            let spacing = 15.0f32;
+            let grid_side = (count as f32).cbrt().ceil() as i32;
+
+            for i in 0..count {
+                let id = RigidBodyId((i + 1) as u64);
+                let gx = (i % grid_side) as f32 * spacing;
+                let gy = ((i / grid_side) % grid_side) as f32 * spacing;
+                let gz = (i / (grid_side * grid_side)) as f32 * spacing;
+
+                let body = RigidBody::new(
+                    id,
+                    BodyType::Dynamic,
+                    Vec3::new(gx, gy, gz),
+                    Quat::IDENTITY,
+                    Vec3::new(0.01, 0.0, 0.0),
+                    Vec3::ZERO,
+                    MassProperties::from_box(1.0, Vec3::splat(1.0)).unwrap(),
+                )
+                .unwrap();
+                world.add_rigid_body(body, None).unwrap();
+                let col = Collider::new(
+                    ColliderId((i + 1) as u64),
+                    id,
+                    Shape::Box(BoxShape::new(Vec3::splat(0.5)).unwrap()),
+                    Transform::IDENTITY,
+                );
+                world.add_collider(col).unwrap();
+            }
+
+            // Warm-up 2 steps
+            world.step().unwrap();
+            world.step().unwrap();
+
+            // Profiled step
+            let prof = world.step_profiled().unwrap();
+            let total_ms = prof.timings.total_step_ns as f64 / 1_000_000.0;
+            let bp_us = prof.timings.broadphase_candidates_ns as f64 / 1_000.0;
+            let island_us = prof.timings.island_build_ns as f64 / 1_000.0;
+            let integ_us = prof.timings.transform_integration_ns as f64 / 1_000.0;
+
+            println!(
+                "    [BM49] N={:4} Active -> Total: {:.3} ms | BP: {:.1} µs | Island: {:.1} µs | Integ: {:.1} µs",
+                count, total_ms, bp_us, island_us, integ_us
+            );
+        }
+
+        // 2. Sleeping Speedup at N=5000
+        {
+            let mut world = PhysicsWorld::new(PhysicsWorldConfig::default());
+            world.config.world_gravity = Vec3::ZERO;
+            let count = 5000;
+            let spacing = 15.0f32;
+            let grid_side = (count as f32).cbrt().ceil() as i32;
+
+            for i in 0..count {
+                let id = RigidBodyId((i + 1) as u64);
+                let gx = (i % grid_side) as f32 * spacing;
+                let gy = ((i / grid_side) % grid_side) as f32 * spacing;
+                let gz = (i / (grid_side * grid_side)) as f32 * spacing;
+
+                let mut body = RigidBody::new(
+                    id,
+                    BodyType::Dynamic,
+                    Vec3::new(gx, gy, gz),
+                    Quat::IDENTITY,
+                    Vec3::ZERO,
+                    Vec3::ZERO,
+                    MassProperties::from_box(1.0, Vec3::splat(1.0)).unwrap(),
+                )
+                .unwrap();
+                body.put_to_sleep();
+                world.add_rigid_body(body, None).unwrap();
+                let col = Collider::new(
+                    ColliderId((i + 1) as u64),
+                    id,
+                    Shape::Box(BoxShape::new(Vec3::splat(0.5)).unwrap()),
+                    Transform::IDENTITY,
+                );
+                world.add_collider(col).unwrap();
+            }
+
+            let prof = world.step_profiled().unwrap();
+            let sleep_ms = prof.timings.total_step_ns as f64 / 1_000_000.0;
+            println!(
+                "    [BM49] N=5000 Sleeping -> Total: {:.3} ms (Bypassed integration & solver)",
+                sleep_ms
+            );
+        }
+    }
+
     println!("============================================================");
     println!("             BENCHMARK SUITE COMPLETE                       ");
     println!("============================================================");

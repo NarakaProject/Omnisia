@@ -55,5 +55,6 @@ pub use solver::{
 };
 pub use transform::Transform;
 pub use world::{
-    PhysicsStepError, PhysicsWorld, PhysicsWorldConfig, StaticTerrainQuery, StepResult,
+    PhysicsStepError, PhysicsWorld, PhysicsWorldConfig, ProfiledStepResult, StaticTerrainQuery,
+    StepResult, StepTimings,
 };

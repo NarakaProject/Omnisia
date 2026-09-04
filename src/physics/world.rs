@@ -83,6 +83,7 @@ pub struct PhysicsWorld {
     pub next_dynamic_body_id: u64,
     pub rigid_bodies: BTreeMap<RigidBodyId, RigidBody>,
     pub colliders: BTreeMap<ColliderId, Collider>,
+    pub body_colliders: BTreeMap<RigidBodyId, Vec<ColliderId>>,
     pub dynamic_aggregates: BTreeMap<DynamicBodyId, DynamicAggregateRecord>,
 }
 
@@ -104,6 +105,7 @@ impl PhysicsWorld {
             next_dynamic_body_id: 1,
             rigid_bodies: BTreeMap::new(),
             colliders: BTreeMap::new(),
+            body_colliders: BTreeMap::new(),
             dynamic_aggregates: BTreeMap::new(),
         }
     }
@@ -149,7 +151,11 @@ impl PhysicsWorld {
     /// Menghapus badan dari registri fisik, menghapus seluruh collider miliknya, dan membersihkan broadphase.
     pub fn remove_rigid_body(&mut self, id: RigidBodyId) -> Option<RigidBody> {
         let body = self.rigid_bodies.remove(&id)?;
-        self.colliders.retain(|_, c| c.rigid_body_id() != id);
+        if let Some(collider_ids) = self.body_colliders.remove(&id) {
+            for cid in collider_ids {
+                self.colliders.remove(&cid);
+            }
+        }
         self.broadphase.remove(id);
         self.dynamic_aggregates
             .retain(|_, rec| rec.rigid_body_id != id);
@@ -196,6 +202,10 @@ impl PhysicsWorld {
             self.next_collider_id = collider_id.0 + 1;
         }
         self.colliders.insert(collider_id, collider);
+        self.body_colliders
+            .entry(body_id)
+            .or_default()
+            .push(collider_id);
 
         Ok(collider_id)
     }
@@ -229,30 +239,14 @@ impl PhysicsWorld {
         let collider = self.colliders.remove(&id)?;
         let body_id = collider.rigid_body_id();
 
-        // Hitung ulang AABB gabungan untuk badan ini dari collider yang tersisa
-        let mut combined_aabb: Option<Aabb> = None;
-        if let Some(body) = self.rigid_bodies.get(&body_id) {
-            let body_transform = body.transform();
-            for c in self
-                .colliders
-                .values()
-                .filter(|c| c.rigid_body_id() == body_id)
-            {
-                if let Ok(aabb) = c.compute_world_aabb(&body_transform) {
-                    combined_aabb = Some(match combined_aabb {
-                        Some(prev) => prev.union(&aabb),
-                        None => aabb,
-                    });
-                }
+        if let Some(list) = self.body_colliders.get_mut(&body_id) {
+            list.retain(|&cid| cid != id);
+            if list.is_empty() {
+                self.body_colliders.remove(&body_id);
             }
         }
 
-        if let Some(new_aabb) = combined_aabb {
-            let _ = self.broadphase.update(body_id, new_aabb);
-        } else {
-            // Jika tidak ada collider tersisa untuk badan ini, bersihkan proksi broadphase
-            self.broadphase.remove(body_id);
-        }
+        let _ = self.sync_body_broadphase(body_id);
 
         Some(collider)
     }
@@ -260,9 +254,11 @@ impl PhysicsWorld {
     /// Mengambil iterator untuk seluruh collider yang terpasang pada suatu badan kaku tertentu.
     #[inline(always)]
     pub fn colliders_for_body(&self, body_id: RigidBodyId) -> impl Iterator<Item = &Collider> {
-        self.colliders
-            .values()
-            .filter(move |c| c.rigid_body_id() == body_id)
+        self.body_colliders
+            .get(&body_id)
+            .into_iter()
+            .flat_map(|ids| ids.iter())
+            .filter_map(|id| self.colliders.get(id))
     }
 
     /// Jumlah total collider yang terdaftar.
@@ -449,19 +445,28 @@ impl PhysicsWorld {
             let transform_body_a = body_a.transform();
             let transform_body_b = body_b.transform();
 
-            for (_, collider_a) in self
-                .colliders
-                .iter()
-                .filter(|(_, c)| c.rigid_body_id() == pair.body_a)
-            {
+            let cids_a = match self.body_colliders.get(&pair.body_a) {
+                Some(ids) => ids,
+                None => continue,
+            };
+            let cids_b = match self.body_colliders.get(&pair.body_b) {
+                Some(ids) => ids,
+                None => continue,
+            };
+
+            for cid_a in cids_a {
+                let collider_a = match self.colliders.get(cid_a) {
+                    Some(c) => c,
+                    None => continue,
+                };
                 let transform_world_a =
                     transform_body_a.mul_transform(collider_a.local_transform());
 
-                for (_, collider_b) in self
-                    .colliders
-                    .iter()
-                    .filter(|(_, c)| c.rigid_body_id() == pair.body_b)
-                {
+                for cid_b in cids_b {
+                    let collider_b = match self.colliders.get(cid_b) {
+                        Some(c) => c,
+                        None => continue,
+                    };
                     let transform_world_b =
                         transform_body_b.mul_transform(collider_b.local_transform());
 
@@ -504,16 +509,16 @@ impl PhysicsWorld {
 
         let body_transform = body.transform();
         let mut combined_aabb: Option<Aabb> = None;
-        for c in self
-            .colliders
-            .values()
-            .filter(|c| c.rigid_body_id() == body_id)
-        {
-            let aabb = c.compute_world_aabb(&body_transform)?;
-            combined_aabb = Some(match combined_aabb {
-                Some(prev) => prev.union(&aabb),
-                None => aabb,
-            });
+        if let Some(collider_ids) = self.body_colliders.get(&body_id) {
+            for cid in collider_ids {
+                if let Some(c) = self.colliders.get(cid) {
+                    let aabb = c.compute_world_aabb(&body_transform)?;
+                    combined_aabb = Some(match combined_aabb {
+                        Some(prev) => prev.union(&aabb),
+                        None => aabb,
+                    });
+                }
+            }
         }
 
         if let Some(new_aabb) = combined_aabb {
@@ -813,6 +818,251 @@ impl PhysicsWorld {
         })
     }
 
+    /// Mengeksekusi satu fixed step simulasi fisika dengan pengukuran profil waktu eksekusi presisi tinggi (Phase 9.12).
+    /// Mengukur waktu nanodetik untuk masing-masing subsistem: broadphase, narrowphase, island build,
+    /// wake propagation, integrasi kecepatan, sequential impulse solver, integrasi transform, dan sleep evaluation.
+    pub fn step_profiled(&mut self) -> Result<ProfiledStepResult, PhysicsStepError> {
+        let t_total_start = std::time::Instant::now();
+
+        self.config.sleep_config.validate()?;
+
+        // Tahap 1: Generasi kontak narrowphase dari pasangan kandidat broadphase
+        let t_bp_start = std::time::Instant::now();
+        let pairs = self.broadphase.generate_candidate_pairs();
+        let broadphase_candidates_ns = t_bp_start.elapsed().as_nanos() as u64;
+
+        let t_np_start = std::time::Instant::now();
+        let mut contacts = Vec::new();
+        for pair in pairs {
+            let body_a = match self.rigid_bodies.get(&pair.body_a) {
+                Some(b) => b,
+                None => continue,
+            };
+            let body_b = match self.rigid_bodies.get(&pair.body_b) {
+                Some(b) => b,
+                None => continue,
+            };
+
+            let transform_body_a = body_a.transform();
+            let transform_body_b = body_b.transform();
+
+            let cids_a = match self.body_colliders.get(&pair.body_a) {
+                Some(ids) => ids,
+                None => continue,
+            };
+            let cids_b = match self.body_colliders.get(&pair.body_b) {
+                Some(ids) => ids,
+                None => continue,
+            };
+
+            for cid_a in cids_a {
+                let collider_a = match self.colliders.get(cid_a) {
+                    Some(c) => c,
+                    None => continue,
+                };
+                let transform_world_a =
+                    transform_body_a.mul_transform(collider_a.local_transform());
+
+                for cid_b in cids_b {
+                    let collider_b = match self.colliders.get(cid_b) {
+                        Some(c) => c,
+                        None => continue,
+                    };
+                    let transform_world_b =
+                        transform_body_b.mul_transform(collider_b.local_transform());
+
+                    if let Some(contact) = collide(
+                        collider_a,
+                        &transform_world_a,
+                        collider_b,
+                        &transform_world_b,
+                    )? {
+                        contacts.push(contact);
+                    }
+                }
+            }
+        }
+        let narrowphase_contacts_ns = t_np_start.elapsed().as_nanos() as u64;
+
+        // Tahap 2: Konstruksi pulau fisika
+        let t_island_start = std::time::Instant::now();
+        let mut islands = self.build_islands(&contacts)?;
+        let island_build_ns = t_island_start.elapsed().as_nanos() as u64;
+
+        // Tahap 3: Deteksi pemicu gangguan bangun (wake seeds)
+        let t_wake_start = std::time::Instant::now();
+        let mut bodies_to_wake: BTreeSet<RigidBodyId> = BTreeSet::new();
+        for contact in &contacts {
+            let body_a = match self.rigid_bodies.get(&contact.body_a) {
+                Some(b) => b,
+                None => continue,
+            };
+            let body_b = match self.rigid_bodies.get(&contact.body_b) {
+                Some(b) => b,
+                None => continue,
+            };
+
+            if body_a.is_dynamic() && body_b.is_dynamic() {
+                if body_a.is_awake() && body_b.is_sleeping() {
+                    let v_sq = body_a.linear_velocity().length_squared()
+                        + body_a.angular_velocity().length_squared();
+                    if v_sq > 1e-6 || contact.penetration > 1e-4 {
+                        bodies_to_wake.insert(contact.body_b);
+                    }
+                } else if body_b.is_awake() && body_a.is_sleeping() {
+                    let v_sq = body_b.linear_velocity().length_squared()
+                        + body_b.angular_velocity().length_squared();
+                    if v_sq > 1e-6 || contact.penetration > 1e-4 {
+                        bodies_to_wake.insert(contact.body_a);
+                    }
+                }
+            } else if body_a.is_kinematic() && body_b.is_dynamic() && body_b.is_sleeping() {
+                let v_sq = body_a.linear_velocity().length_squared()
+                    + body_a.angular_velocity().length_squared();
+                if v_sq > 1e-6 || contact.penetration > 1e-4 {
+                    bodies_to_wake.insert(contact.body_b);
+                }
+            } else if body_b.is_kinematic() && body_a.is_dynamic() && body_a.is_sleeping() {
+                let v_sq = body_b.linear_velocity().length_squared()
+                    + body_b.angular_velocity().length_squared();
+                if v_sq > 1e-6 || contact.penetration > 1e-4 {
+                    bodies_to_wake.insert(contact.body_a);
+                }
+            }
+        }
+
+        for island in &mut islands {
+            let has_disturbance = island.bodies.iter().any(|id| bodies_to_wake.contains(id));
+            let has_awake = island
+                .bodies
+                .iter()
+                .any(|id| self.rigid_bodies.get(id).is_some_and(|b| b.is_awake()));
+            let has_sleeping = island
+                .bodies
+                .iter()
+                .any(|id| self.rigid_bodies.get(id).is_some_and(|b| b.is_sleeping()));
+
+            if has_disturbance || (has_awake && has_sleeping) {
+                island.state = IslandState::Awake;
+                for &id in &island.bodies {
+                    if let Some(b) = self.rigid_bodies.get_mut(&id) {
+                        if b.is_sleeping() {
+                            b.wake();
+                        }
+                    }
+                }
+            }
+        }
+        let wake_propagation_ns = t_wake_start.elapsed().as_nanos() as u64;
+
+        // Tahap 4: Integrasi kecepatan (gravitasi) untuk badan aktif
+        let t_vel_start = std::time::Instant::now();
+        self.integrate_velocities()?;
+        let velocity_integration_ns = t_vel_start.elapsed().as_nanos() as u64;
+
+        // Tahap 5: Penyelesaian batasan kontak aktif (Sequential Impulse Solver)
+        let t_solver_start = std::time::Instant::now();
+        let mut active_contacts: Vec<Contact> = Vec::new();
+        let mut solved_contact_indices: BTreeSet<usize> = BTreeSet::new();
+        for island in &islands {
+            if island.state == IslandState::Awake {
+                for &contact_idx in &island.contact_indices {
+                    if solved_contact_indices.insert(contact_idx) {
+                        active_contacts.push(contacts[contact_idx]);
+                    }
+                }
+            }
+        }
+
+        if !active_contacts.is_empty() {
+            self.solve_contacts(&active_contacts)?;
+        }
+        let solver_ns = t_solver_start.elapsed().as_nanos() as u64;
+
+        // Tahap 6: Integrasi transform & sinkronisasi broadphase
+        let t_trans_start = std::time::Instant::now();
+        self.integrate_transforms()?;
+        let transform_integration_ns = t_trans_start.elapsed().as_nanos() as u64;
+
+        // Tahap 7: Evaluasi kondisi tenang dan transisi tidur pulau
+        let t_sleep_start = std::time::Instant::now();
+        let dt = self.config.fixed_dt;
+        let lin_thresh_sq = self.config.sleep_config.linear_velocity_threshold
+            * self.config.sleep_config.linear_velocity_threshold;
+        let ang_thresh_sq = self.config.sleep_config.angular_velocity_threshold
+            * self.config.sleep_config.angular_velocity_threshold;
+        let sleep_duration = self.config.sleep_config.sleep_duration;
+
+        for body in self.rigid_bodies.values_mut() {
+            if body.is_dynamic() && body.is_awake() {
+                let v_sq = body.linear_velocity().length_squared();
+                let w_sq = body.angular_velocity().length_squared();
+                let is_quiet = v_sq.is_finite()
+                    && w_sq.is_finite()
+                    && v_sq <= lin_thresh_sq
+                    && w_sq <= ang_thresh_sq;
+                body.update_sleep_timer(dt, is_quiet);
+            }
+        }
+
+        for island in &mut islands {
+            if island.state == IslandState::Awake {
+                let all_eligible = island.bodies.iter().all(|id| {
+                    if let Some(b) = self.rigid_bodies.get(id) {
+                        let v_sq = b.linear_velocity().length_squared();
+                        let w_sq = b.angular_velocity().length_squared();
+                        let is_quiet = v_sq.is_finite()
+                            && w_sq.is_finite()
+                            && v_sq <= lin_thresh_sq
+                            && w_sq <= ang_thresh_sq;
+                        is_quiet && b.sleep_timer() >= sleep_duration
+                    } else {
+                        false
+                    }
+                });
+
+                if all_eligible && !island.bodies.is_empty() {
+                    island.state = IslandState::Sleeping;
+                    for &id in &island.bodies {
+                        if let Some(b) = self.rigid_bodies.get_mut(&id) {
+                            b.put_to_sleep();
+                        }
+                    }
+                }
+            }
+        }
+        let sleep_evaluation_ns = t_sleep_start.elapsed().as_nanos() as u64;
+
+        let awake_islands_count = islands
+            .iter()
+            .filter(|i| i.state == IslandState::Awake)
+            .count();
+        let sleeping_islands_count = islands.len() - awake_islands_count;
+        let total_step_ns = t_total_start.elapsed().as_nanos() as u64;
+
+        let result = StepResult {
+            contacts_generated: contacts.len(),
+            active_contacts_solved: active_contacts.len(),
+            islands_count: islands.len(),
+            awake_islands_count,
+            sleeping_islands_count,
+        };
+
+        let timings = StepTimings {
+            broadphase_candidates_ns,
+            narrowphase_contacts_ns,
+            island_build_ns,
+            wake_propagation_ns,
+            velocity_integration_ns,
+            solver_ns,
+            transform_integration_ns,
+            sleep_evaluation_ns,
+            total_step_ns,
+        };
+
+        Ok(ProfiledStepResult { result, timings })
+    }
+
     // ========================================================================
     // INTEGRASI STRUKTURAL AGGREGATE ↔ RIGIDBODY (PHASE 9.11)
     // ========================================================================
@@ -978,6 +1228,7 @@ impl PhysicsWorld {
     pub fn clear(&mut self) {
         self.rigid_bodies.clear();
         self.colliders.clear();
+        self.body_colliders.clear();
         self.broadphase.clear();
         self.dynamic_aggregates.clear();
     }
@@ -996,6 +1247,36 @@ pub struct StepResult {
     pub awake_islands_count: usize,
     /// Jumlah pulau berstatus tidur (Sleeping)
     pub sleeping_islands_count: usize,
+}
+
+/// Rincian waktu eksekusi presisi tinggi (nanodetik) untuk setiap tahapan langkah simulasi fisika (Phase 9.12).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct StepTimings {
+    /// Waktu deteksi broadphase candidate pairs (nanodetik)
+    pub broadphase_candidates_ns: u64,
+    /// Waktu deteksi kontak narrowphase (nanodetik)
+    pub narrowphase_contacts_ns: u64,
+    /// Waktu konstruksi graf kontak dan partisi pulau fisika (nanodetik)
+    pub island_build_ns: u64,
+    /// Waktu deteksi wake seeds dan propagasi aktivasi pulau (nanodetik)
+    pub wake_propagation_ns: u64,
+    /// Waktu integrasi kecepatan linier/gravitasi (nanodetik)
+    pub velocity_integration_ns: u64,
+    /// Waktu penyelesaian batasan kontak Sequential Impulse Solver (nanodetik)
+    pub solver_ns: u64,
+    /// Waktu integrasi transform dan sinkronisasi broadphase (nanodetik)
+    pub transform_integration_ns: u64,
+    /// Waktu evaluasi kondisi tenang dan transisi tidur pulau (nanodetik)
+    pub sleep_evaluation_ns: u64,
+    /// Total waktu keseluruhan satu langkah fisika (nanodetik)
+    pub total_step_ns: u64,
+}
+
+/// Hasil langkah simulasi fisika yang dilengkapi profil waktu eksekusi tahapan internal.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProfiledStepResult {
+    pub result: StepResult,
+    pub timings: StepTimings,
 }
 
 /// Kesalahan dalam eksekusi langkah simulasi fisika terpadu (PhysicsWorld::step).

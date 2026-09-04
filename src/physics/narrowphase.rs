@@ -677,19 +677,32 @@ fn collide_box_box(
 
     let penetration = min_penetration.max(0.0);
 
-    // Titik kontak representatif deterministik berbasis titik penyangga (support points):
-    // Titik terjauh pada Box A searah +normal:
+    // Titik kontak representatif deterministik:
+    // Titik penyangga pada Box A searah +normal:
     let mut s_a = p_a;
     for (i, axis) in a_axes.iter().enumerate() {
-        let sign = if axis.dot(normal) >= 0.0 { 1.0 } else { -1.0 };
-        s_a += *axis * (sign * h_a[i]);
+        let proj = axis.dot(normal);
+        if proj > 1e-4 {
+            s_a += *axis * h_a[i];
+        } else if proj < -1e-4 {
+            s_a -= *axis * h_a[i];
+        }
     }
 
-    // Titik terjauh pada Box B searah -normal:
+    // Titik penyangga pada Box B searah -normal:
     let mut s_b = p_b;
     for (j, axis) in b_axes.iter().enumerate() {
-        let sign = if axis.dot(-normal) >= 0.0 { 1.0 } else { -1.0 };
-        s_b += *axis * (sign * h_b[j]);
+        let proj = axis.dot(-normal);
+        if proj > 1e-4 {
+            s_b += *axis * h_b[j];
+        } else if proj < -1e-4 {
+            s_b -= *axis * h_b[j];
+        } else {
+            // Sumbu ortogonal terhadap normal: proyeksikan s_a ke sumbu Box B dan klem
+            let d = (s_a - p_b).dot(*axis);
+            let clamped_d = d.clamp(-h_b[j], h_b[j]);
+            s_b += *axis * clamped_d;
+        }
     }
 
     let point = 0.5 * (s_a + s_b);
