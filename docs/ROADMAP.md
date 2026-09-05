@@ -3,8 +3,8 @@
 > **Vision Statement**: *"Revive Chimeraland with a voxel soul."*  
 > **Core Substrate**: Procedural, structural, and rigid-body voxel world.  
 > **Core Gameplay Identity**: Creature ecosystem, taming, acquisition, pet companions, and modular devour/evolution.  
-> **Current Completed Phase**: **Phase 11.4 — Block Placement & Build Rules**  
-> **Next Active Phase**: **Phase 11.5 — Tools & Tool Actions** (`PLANNED / NEXT`)
+> **Current Completed Phase**: **Phase 11.6 — Generic Interactable World Objects & Feedback** (`VALIDATED`)  
+> **Next Active Phase**: **Phase 11.7 — Interaction Audio / Feedback Integration** (`PLANNED / NEXT`)
 
 ---
 
@@ -274,8 +274,19 @@ Omnisia is an ambitious, high-performance voxel sandbox game built from scratch 
   - Backward compatibility: hand gathering preserved for `ToolRequirement::None`.
   - Rate-limiting debounce cooldown integration (`InteractionCooldown`).
   - Verified with 21 focused unit and integration tests (`tests/tool_action_tests.rs`).
-- **Phase 11.6 — Generic Interactable World Objects & Feedback (`PLANNED / NEXT`)**:
-  - Generic interaction abstraction, audio/visual cues.
+- **Phase 11.6 — Generic Interactable World Objects & Feedback (`COMPLETED / VALIDATED`)**:
+  - Smallest useful semantic interaction seam for non-voxel-breaking world interactions (switches, levers, doors, examine targets).
+  - Semantically distinct `InteractableId` (`namespace:path`, isolated from `ResourceId` and `ToolId`).
+  - Content-authoritative `InteractableComponent` in `BlockDefinition`, with derived runtime `InteractableRegistry`.
+  - Stale-state validation invariant: `MaterialId` is a consistency/sanity check, not sufficient object identity (`current_id == instance.interactable_id && current_material == instance.expected_material`).
+  - Truly read-only query paths (`detect_interactable_target`, `query_interactable_target` taking immutable `&World`), ignoring stale instances with zero registry mutation.
+  - Primitive deterministic action set (`Activate`, `Toggle`, `Open`, `Close`, `Examine`) and state set (`Idle`, `Active`, `Open`, `Closed`, `Disabled`).
+  - Unambiguous cooldown ownership in `handle_player_generic_interaction()`; cooldown is checked early and triggered strictly post-commit after successful state transition.
+  - Purely semantic feedback data (`InteractionFeedback`, `AudioCue`, `VisualCue`, `FeedbackId`) with zero strings, lore copy, UI, or rendering side effects.
+  - Mandatory TOCTOU revalidation in `execute_interaction()`: verifies `current_id == proposal.id`, `current_material == proposal.expected_material`, and `current_state == proposal.previous_state` before atomic commit.
+  - Verified with 28 unit and integration tests (`tests/interactable_tests.rs`) including all 4 mandatory TOCTOU edge cases.
+- **Phase 11.7 — Interaction Audio / Feedback Integration (`PLANNED / NEXT`)**:
+  - Audio and visual runtime binding for interaction feedback cues.
 
 ### PHASE 12 — ENTITY & CREATURE FOUNDATION (`PLANNED`)
 - Entity identity architecture decoupled from voxel data.

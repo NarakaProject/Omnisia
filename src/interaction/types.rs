@@ -7,7 +7,8 @@ use crate::csg::transaction::VoxelEditCommitResult;
 use crate::material::MaterialId;
 use crate::mesh::types::FaceDirection;
 pub use crate::modding::definitions::{
-    SupportRule, ToolCategory, ToolDefinition, ToolEffectiveness, ToolId, ToolRequirement,
+    InteractableComponent, InteractableId, SupportRule, ToolCategory, ToolDefinition,
+    ToolEffectiveness, ToolId, ToolRequirement,
 };
 pub use crate::modding::resource_id::ResourceId;
 use crate::structure::aggregate::DetachedAggregate;
@@ -1157,3 +1158,296 @@ impl From<InteractionMutationError> for ToolError {
         }
     }
 }
+
+// ============================================================================
+// Generic Interactables & Feedback Primitives (Phase 11.6)
+// ============================================================================
+
+/// Primitive semantic states for interactable world objects (Phase 11.6).
+/// INVARIANT: Small Phase 11.6 data primitive, not a state machine framework.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum InteractableState {
+    #[default]
+    Idle,
+    Active,
+    Open,
+    Closed,
+    Disabled,
+}
+
+impl fmt::Display for InteractableState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Idle => write!(f, "idle"),
+            Self::Active => write!(f, "active"),
+            Self::Open => write!(f, "open"),
+            Self::Closed => write!(f, "closed"),
+            Self::Disabled => write!(f, "disabled"),
+        }
+    }
+}
+
+/// Intentionally small, typed set of interactable actions (Phase 11.6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InteractableAction {
+    Activate,
+    Toggle,
+    Open,
+    Close,
+    Examine,
+}
+
+impl fmt::Display for InteractableAction {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Activate => write!(f, "activate"),
+            Self::Toggle => write!(f, "toggle"),
+            Self::Open => write!(f, "open"),
+            Self::Close => write!(f, "close"),
+            Self::Examine => write!(f, "examine"),
+        }
+    }
+}
+
+/// Semantic audio cue for interactable feedback (Phase 11.6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AudioCue {
+    Click,
+    SwitchToggle,
+    DoorOpen,
+    DoorClose,
+    Thud,
+    FailLocked,
+}
+
+/// Semantic visual cue for interactable feedback (Phase 11.6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VisualCue {
+    Pulse,
+    StateTransition,
+    ErrorShake,
+}
+
+/// Semantic feedback identifier (Phase 11.6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FeedbackId {
+    Activated,
+    Deactivated,
+    Toggled,
+    Opened,
+    Closed,
+    Examined,
+    Locked,
+    Disabled,
+}
+
+/// Semantic feedback payload (Phase 11.6). Pure data; zero UI copy, zero audio handles.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct InteractionFeedback {
+    pub audio_cue: Option<AudioCue>,
+    pub visual_cue: Option<VisualCue>,
+    pub feedback_id: Option<FeedbackId>,
+}
+
+impl InteractionFeedback {
+    pub fn new(
+        audio_cue: Option<AudioCue>,
+        visual_cue: Option<VisualCue>,
+        feedback_id: Option<FeedbackId>,
+    ) -> Self {
+        Self {
+            audio_cue,
+            visual_cue,
+            feedback_id,
+        }
+    }
+}
+
+/// Runtime cache definition of an interactable world object derived from `BlockDefinition`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InteractableDefinition {
+    pub id: InteractableId,
+    pub source_block: ResourceId,
+    pub expected_material: MaterialId,
+    pub allowed_actions: Vec<InteractableAction>,
+    pub initial_state: InteractableState,
+    pub audio_cue: Option<AudioCue>,
+    pub visual_cue: Option<VisualCue>,
+}
+
+/// Description of a detected interactable target (Phase 11.6).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InteractableTarget {
+    pub interactable_id: InteractableId,
+    pub source_block: ResourceId,
+    pub expected_material: MaterialId,
+    pub coord: IVec3,
+    pub current_state: InteractableState,
+    pub available_actions: Vec<InteractableAction>,
+    pub preferred_action: Option<InteractableAction>,
+}
+
+/// Validated interaction intent ready for execution (Phase 11.6).
+/// INVARIANT: Read-only; generating a proposal never mutates world state or cooldown.
+/// Captures expected_material for mandatory TOCTOU revalidation before execution.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InteractionProposal {
+    pub interactable_id: InteractableId,
+    pub coord: IVec3,
+    pub expected_material: MaterialId,
+    pub action: InteractableAction,
+    pub previous_state: InteractableState,
+    pub target_state: InteractableState,
+    pub feedback: InteractionFeedback,
+}
+
+/// Final deterministic result of an executed interaction (Phase 11.6).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InteractionResult {
+    pub interactable_id: InteractableId,
+    pub coord: IVec3,
+    pub action: InteractableAction,
+    pub previous_state: InteractableState,
+    pub new_state: InteractableState,
+    pub feedback: InteractionFeedback,
+}
+
+/// Kategori kesalahan saat kueri, validasi, atau eksekusi interaksi generik (Phase 11.6).
+#[derive(Debug, Clone, PartialEq)]
+pub enum InteractionError {
+    NoTargetHit,
+    TargetNotResident {
+        coord: IVec3,
+    },
+    ExceedsReach {
+        distance: f32,
+        max_reach: f32,
+    },
+    TargetIsAir {
+        coord: IVec3,
+    },
+    NotInteractable {
+        coord: IVec3,
+    },
+    ObjectDisabled {
+        interactable_id: InteractableId,
+    },
+    InvalidActionForState {
+        action: InteractableAction,
+        state: InteractableState,
+    },
+    ActionNotAllowed {
+        action: InteractableAction,
+        interactable_id: InteractableId,
+    },
+    CooldownActive {
+        remaining: f32,
+    },
+    UnknownInteractable {
+        id: InteractableId,
+    },
+    /// TOCTOU failure: current interactable ID does not match proposal.interactable_id
+    InteractableMismatch {
+        expected: InteractableId,
+        actual: Option<InteractableId>,
+    },
+    /// TOCTOU failure: current physical material does not match proposal.expected_material
+    MaterialMismatch {
+        expected: MaterialId,
+        actual: MaterialId,
+    },
+    /// TOCTOU failure: current state does not match proposal.previous_state
+    StateMismatch {
+        expected: InteractableState,
+        actual: InteractableState,
+    },
+}
+
+impl fmt::Display for InteractionError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NoTargetHit => write!(f, "Raycast meleset, tidak ada voxel yang tertabrak"),
+            Self::TargetNotResident { coord } => {
+                write!(
+                    f,
+                    "Chunk target pada koordinat {:?} belum termuat di memori",
+                    coord
+                )
+            }
+            Self::ExceedsReach {
+                distance,
+                max_reach,
+            } => {
+                write!(
+                    f,
+                    "Target berjarak {:.2}m, melebihi jangkauan maksimum {:.2}m",
+                    distance, max_reach
+                )
+            }
+            Self::TargetIsAir { coord } => {
+                write!(f, "Target pada koordinat {:?} berupa udara (air)", coord)
+            }
+            Self::NotInteractable { coord } => {
+                write!(f, "Voxel pada koordinat {:?} bukan objek interaktif", coord)
+            }
+            Self::ObjectDisabled { interactable_id } => {
+                write!(
+                    f,
+                    "Objek interaktif {} dalam status dinonaktifkan (disabled)",
+                    interactable_id
+                )
+            }
+            Self::InvalidActionForState { action, state } => {
+                write!(f, "Aksi {:?} tidak valid untuk status {:?}", action, state)
+            }
+            Self::ActionNotAllowed {
+                action,
+                interactable_id,
+            } => {
+                write!(
+                    f,
+                    "Aksi {:?} tidak diizinkan pada definisi {}",
+                    action, interactable_id
+                )
+            }
+            Self::CooldownActive { remaining } => {
+                write!(
+                    f,
+                    "Cooldown interaksi masih aktif ({:.3}s tersisa)",
+                    remaining
+                )
+            }
+            Self::UnknownInteractable { id } => {
+                write!(f, "Definisi interactable {} tidak terdaftar", id)
+            }
+            Self::InteractableMismatch { expected, actual } => {
+                write!(
+                    f,
+                    "TOCTOU: Identitas interactable berubah (diharapkan {}, aktual {:?})",
+                    expected, actual
+                )
+            }
+            Self::MaterialMismatch { expected, actual } => {
+                write!(
+                    f,
+                    "TOCTOU: Material voxel berubah (diharapkan {:?}, aktual {:?})",
+                    expected, actual
+                )
+            }
+            Self::StateMismatch { expected, actual } => {
+                write!(
+                    f,
+                    "TOCTOU: Status interactable berubah (diharapkan {:?}, aktual {:?})",
+                    expected, actual
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for InteractionError {}

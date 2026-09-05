@@ -3,8 +3,8 @@
 [![Rust](https://img.shields.io/badge/Rust-2021_Edition-orange.svg)](https://www.rust-lang.org/)
 [![wgpu](https://img.shields.io/badge/wgpu-v24_(Metal%20%2F%20Vulkan%20%2F%20DX12)-blue.svg)](https://wgpu.rs/)
 [![License: Proprietary](https://img.shields.io/badge/License-Proprietary-red.svg)](LICENSE)
-[![Phase](https://img.shields.io/badge/Phase-11.5_Validated-brightgreen.svg)](#completed-phases)
-[![Tests](https://img.shields.io/badge/Tests-954_Passing-brightgreen.svg)](#test-suite--validation-evidence)
+[![Phase](https://img.shields.io/badge/Phase-11.6_Validated-brightgreen.svg)](#completed-phases)
+[![Tests](https://img.shields.io/badge/Tests-982_Passing-brightgreen.svg)](#test-suite--validation-evidence)
 
 ## License & Proprietary Notice
 
@@ -28,8 +28,8 @@ For any developer or AI coding agent entering this repository for the first time
 | **What is Omnisia?** | A voxel sandbox game engine combining a procedural voxel substrate with modular creature and evolution gameplay. |
 | **What is the long-term vision?** | Revive the modular creature capture, chimera evolution, and open living world of *Chimeraland* on an authoritative, physically reactive voxel substrate. |
 | **What is the current gameplay reality?** | **Early physics & locomotion substrate with developer tooling & interaction mutation.** The player can walk, sprint, crouch, jump, auto-step, glide, push dynamic rigid bodies, query targeted voxels via deterministic 3D DDA raycasting, destroy and place voxels with player capsule overlap protection, use tools with durability and category requirements to gather resources, and use the Developer Debug Console (`` ` ``) / Free Camera (`camera free`). There are **no creatures, combat, taming, inventory, crafting, or devour systems yet**. |
-| **What Phase is complete?** | **Phase 11.5 — Tools & Tool Actions** (Validated with 954 total passing workspace tests across 22 test targets, 8 validation binaries, 54 benchmarks). |
-| **What is the next Phase?** | **Phase 11.6 — Generic Interactable World Objects & Feedback** (Generic interaction abstraction, audio/visual cues). |
+| **What Phase is complete?** | **Phase 11.6 — Generic Interactable World Objects & Feedback** (Validated with 982 total passing workspace tests across 23 test targets, 8 validation binaries, 54 benchmarks). |
+| **What is the next Phase?** | **Phase 11.7 — Interaction Audio / Feedback Integration** (Audio and visual runtime binding for interaction feedback cues). |
 | **What systems are authoritative?** | `ChunkStore` (static terrain), `DynamicBody` (detached voxels), `PhysicsWorld` (rigid bodies), `PlayerController` (kinematic locomotion), `EnvironmentClock` (environment time), Data Registry (modding definitions). |
 | **What systems are derived / cache state?** | `EnvironmentState` (derived visual environment model), `DeveloperCameraContext` (observational free camera mode), `SkyUniform` & `LightUniform` (GPU uniform buffers), `MeshCache` (GPU mesh buffers), spatial broadphase grid, collision contact manifolds, transient structural BFS results. |
 | **What are the top architectural invariants?** | (1) Player is Kinematic, NEVER a `RigidBody`, NEVER in islands. (2) 1 structural aggregate = 1 `RigidBody` owning $M$ colliders (never 1 voxel = 1 body). (3) Zero double-ownership of voxels. (4) Single authority for environment time in `EnvironmentClock`. (5) Developer camera does NOT mutate player position or physics. |
@@ -85,6 +85,7 @@ PHASE 11.2 VOXEL INTERACTION            Voxel removal + placement + capsule over
 PHASE 11.3 RESOURCE GATHERING           Data-driven harvestable component + yield determinism + CSG + 27 tests
 PHASE 11.4 BLOCK PLACEMENT & RULES     Placement proposal + discrete orientation + support rules + 15 tests
 PHASE 11.5 TOOLS & TOOL ACTIONS        Tool requirements + durability invariant + CSG commit + 21 tests
+PHASE 11.6 GENERIC INTERACTABLES       Semantic interaction seam + TOCTOU revalidation + 28 tests
 ```
 
 ### Authoritative Player Locomotion Semantics (Phase 8D / 9.10)

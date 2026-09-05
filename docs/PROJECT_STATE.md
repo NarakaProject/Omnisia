@@ -1,8 +1,8 @@
 # Omnisia — Authoritative Project State
 
-> **Current Milestone**: Phase 11.5 — Tools & Tool Actions (**COMPLETED / VALIDATED**)  
-> **Next Milestone**: Phase 11.6 — Generic Interactable World Objects & Feedback (**PLANNED / NEXT**)  
-> **Verified HEAD Commit**: Current Phase 11.5 Working State  
+> **Current Milestone**: Phase 11.6 — Generic Interactable World Objects & Feedback (**COMPLETED / VALIDATED**)  
+> **Next Milestone**: Phase 11.7 — Interaction Audio / Feedback Integration (**PLANNED / NEXT**)  
+> **Verified HEAD Commit**: Current Phase 11.6 Working State  
 > **Branch**: `main`  
 > **Source-of-Truth Policy**: Source code and passing automated tests are the absolute source of truth.
 
@@ -16,9 +16,9 @@ Every count in this document has been directly audited and verified against the 
 - **Compiler**: Rust 2021 edition, `cargo build --release` compiles cleanly with zero errors.
 - **Formatting**: `cargo fmt --all -- --check` passes cleanly with zero diffs.
 - **Linter**: `cargo clippy --all-targets --all-features -- -D warnings` passes cleanly with zero warnings or errors.
-- **Test Suite**: `cargo test --all-targets` passes with **954 passed, 0 failed, 0 ignored** across 22 test targets.
+- **Test Suite**: `cargo test --all-targets` passes with **982 passed, 0 failed, 0 ignored** across 23 test targets.
 
-### Test Count Breakdown by Target (954 Total Tests)
+### Test Count Breakdown by Target (982 Total Tests)
 
 | Test Target Binary | Scope / Feature Area | Verified Test Count | Status |
 |:---|:---|:---:|:---:|
@@ -29,6 +29,7 @@ Every count in this document has been directly audited and verified against the 
 | `tests/impact_physics_integration_tests.rs` | ImpactBridge, Multi-Aggregate Atomicity, Phase A Rollback, Phase B Impulse Response, Reintegration Guardrails, Infallible Physics Deregistration, Zero-Motion Roundtrip, Negative Coordinates, Cross-Chunk Boundaries, Unloaded Chunk Safety (Phase 10.3) | **34** | PASS |
 | `tests/integration_8c_tests.rs` | Player ↔ World ↔ DynamicBody Integration, Reintegration Lifecycle (Phase 8C) | **32** | PASS |
 | `tests/player_tests.rs` | Kinematic Capsule Controller, Clearance Guard, Jump Edge-Trigger, Swept Collision (Phase 8B) | **30** | PASS |
+| `tests/interactable_tests.rs` | Generic Interactable World Objects & Feedback, InteractableId Isolation, Stale-State MaterialId Non-Sufficiency, Read-Only Query Purity, Unambiguous Cooldown Ownership, Pure Data Semantic Feedback, Mandatory 3-Part TOCTOU Revalidation (Phase 11.6) | **28** | PASS |
 | `tests/csg_tests.rs` | VoxelEdit, VoxelEditTransaction, Infallible Commit & Rollback, Duplicate Rejection, CraterGenerator, MaterialDestructionPolicy, Invalidation (Phase 10.2) | **27** | PASS |
 | `tests/gathering_tests.rs` | Resource Gathering Primitives, Data-Driven Harvestable Components, Material & ResourceId Mapping, Yield Determinism, Atomic Commit, Structural Detachment Integration, Mesh Invalidation, Cooldown Rate-Limiting, Architectural Firewalls (Phase 11.3) | **27** | PASS |
 | `tests/worldgen_tests.rs` | Deterministic Seed, Climate, Hydrology, Caves, Strata, Ores, Biomes (Phase 4–5) | **26** | PASS |
@@ -44,7 +45,7 @@ Every count in this document has been directly audited and verified against the 
 | `tests/streaming_tests.rs` | ChunkStore Residency, Job Scheduler, Memory Budget, Eviction Lifecycle (Phase 3) | **11** | PASS |
 | `tests/structure_tests.rs` | 6-Connected Adjacency, Structural Anchors, Aggregate Extraction (Phase 7) | **11** | PASS |
 | `tests/scale_tests.rs` | Metric Coordinate Invariants (1 vx = 0.5m), Scale Ruler, Traversal Residency (Phase 7) | **7** | PASS |
-| **Workspace Total** | **All Subsystems** | **954** | **PASS** |
+| **Workspace Total** | **All Subsystems** | **982** | **PASS** |
 
 ### Verified Validation Binaries (8 Binaries)
 
@@ -172,6 +173,7 @@ These 25 invariants are binding on all current and future phases. Any pull reque
 27. **Developer Camera Decoupling & Read-Only Player Reference (Amendments 2 & 3)**: Developer free camera is an observational tool whose transform and velocity are decoupled from the kinematic player controller. Console commands cannot mutate player physics, ChunkStore, or persistence.
 28. **Developer Console Zero Overhead When Closed (Amendment 12)**: When the console overlay is closed, the frame pipeline performs 0 vertex allocations, 0 GPU buffer writes, and 0 overlay draw calls.
 29. **Tool Identity, Ownership & Durability Invariants (Phase 11.5)**: Tool identity (`ToolId`) is semantically and structurally distinct from resource identity (`ResourceId`) with zero implicit conversions. Content-authoritative tool requirements reside strictly in `HarvestableComponent.required_tool`. Tool definitions (`ToolDefinition.max_durability`) are authoritative; invalid state (`current > max`) is rejected without silent repair. Durability is decremented exactly once and only after world transaction commit succeeds. Effectiveness is pure semantic metadata and does not modify yield quantity.
+30. **Interactable Identity, Read-Only Query & TOCTOU Revalidation Invariants (Phase 11.6)**: Interactable identity (`InteractableId`) is distinct from `ResourceId` and `ToolId`. `MaterialId` is a consistency sanity check, not sufficient object identity. Query paths taking `&World` are strictly read-only and never mutate the instance cache when encountering stale state. Cooldown ownership resides exclusively in `handle_player_generic_interaction` and is consumed only after successful atomic commit. `execute_interaction` enforces mandatory 3-part revalidation (`current_interactable_id == proposal.interactable_id`, `current_material == proposal.expected_material`, `current_state == proposal.previous_state`) before mutating instance state. Feedback is purely semantic data with zero lore copy, UI text, audio devices, or VFX spawners.
 
 ---
 

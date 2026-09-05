@@ -65,6 +65,87 @@ impl std::str::FromStr for ToolId {
     }
 }
 
+/// Identitas semantik unik untuk objek interaktif dunia (Phase 11.6).
+/// Format string standar: `namespace:path` (misal: "core:ancient_switch", "core:vault_door").
+/// INVARIANT: Berbeda secara semantik dan struktural dari ResourceId dan ToolId (tanpa konversi implisit).
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct InteractableId {
+    pub namespace: ModId,
+    pub path: String,
+}
+
+impl InteractableId {
+    pub fn new<N: Into<String>, P: Into<String>>(
+        namespace: N,
+        path: P,
+    ) -> Result<Self, ResourceIdError> {
+        let ns = ModId::new(namespace)?;
+        let p = path.into();
+        if p.is_empty() {
+            return Err(ResourceIdError::EmptyString);
+        }
+        if !p
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '/')
+        {
+            return Err(ResourceIdError::InvalidPath(p));
+        }
+        Ok(Self {
+            namespace: ns,
+            path: p,
+        })
+    }
+
+    pub fn core<P: Into<String>>(path: P) -> Result<Self, ResourceIdError> {
+        Self::new(ModId::CORE, path)
+    }
+
+    pub fn as_str(&self) -> String {
+        format!("{}:{}", self.namespace, self.path)
+    }
+}
+
+impl fmt::Display for InteractableId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}:{}", self.namespace, self.path)
+    }
+}
+
+impl std::str::FromStr for InteractableId {
+    type Err = ResourceIdError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let parts: Vec<&str> = s.split(':').collect();
+        if parts.len() < 2 {
+            return Err(ResourceIdError::MissingDelimiter);
+        }
+        if parts.len() > 2 {
+            return Err(ResourceIdError::TooManyDelimiters);
+        }
+        Self::new(parts[0], parts[1])
+    }
+}
+
+/// Komponen deklarasi bahwa suatu blok adalah objek yang dapat berinteraksi secara generik (Phase 11.6).
+/// INVARIANT: Menjadi SATU-SATUNYA otoritas konten untuk objek interaktif.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InteractableComponent {
+    /// Identitas semantik unik untuk objek interaktif ini
+    pub id: InteractableId,
+    /// Daftar aksi yang diizinkan sesuai urutan preferensi konten
+    #[serde(default)]
+    pub allowed_actions: Vec<crate::interaction::types::InteractableAction>,
+    /// Status runtime awal saat pertama kali dimuat atau di-reset
+    #[serde(default)]
+    pub initial_state: crate::interaction::types::InteractableState,
+    /// Isyarat audio opsional untuk feedback semantik
+    #[serde(default)]
+    pub audio_cue: Option<crate::interaction::types::AudioCue>,
+    /// Isyarat visual opsional untuk feedback semantik
+    #[serde(default)]
+    pub visual_cue: Option<crate::interaction::types::VisualCue>,
+}
+
 /// Kategori semantik alat (Phase 11.5).
 /// Digunakan untuk mengekspresikan kompatibilitas luas antara alat dan resource.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -325,6 +406,8 @@ pub struct BlockComponents {
     pub harvestable: Option<HarvestableComponent>,
     #[serde(default)]
     pub build: Option<BuildComponent>,
+    #[serde(default)]
+    pub interactable: Option<InteractableComponent>,
     /// Properti kustom dinamis tambahan untuk ekstensi masa depan
     #[serde(flatten)]
     pub extra: HashMap<String, serde_json::Value>,
