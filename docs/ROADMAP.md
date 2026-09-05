@@ -3,8 +3,8 @@
 > **Vision Statement**: *"Revive Chimeraland with a voxel soul."*  
 > **Core Substrate**: Procedural, structural, and rigid-body voxel world.  
 > **Core Gameplay Identity**: Creature ecosystem, taming, acquisition, pet companions, and modular devour/evolution.  
-> **Current Completed Phase**: **Phase 10.5.x — Developer Debug Console & Camera Tooling**  
-> **Next Active Phase**: **Phase 10.6 — Procedural Aurora** (`PLANNED / NEXT`)
+> **Current Completed Phase**: **Phase 10.7 — Stress Integration & Visual Hardening**  
+> **Next Active Phase**: **Phase 11 — Player ↔ World Interaction** (`PLANNED / NEXT`)
 
 ---
 
@@ -127,29 +127,31 @@ Omnisia is an ambitious, high-performance voxel sandbox game built from scratch 
 
 ---
 
-## 3. Active Milestone: Phase 10 — World Impact & Atmosphere
+## 3. Completed Milestone: Phase 10 — World Impact & Atmosphere
 
-> **Status**: `IN PROGRESS` (Track A: Phase 10.1 `VALIDATED`, Phase 10.2 `VALIDATED`, Phase 10.3 `VALIDATED`, Phase 10.4 `VALIDATED`; Track B: Phase 10.5 `VALIDATED`, Phase 10.5.x `VALIDATED`, Phase 10.6 `NEXT`)  
+> **Status**: `COMPLETED / VALIDATED` (Track A: Phase 10.1 `VALIDATED`, Phase 10.2 `VALIDATED`, Phase 10.3 `VALIDATED`, Phase 10.4 `VALIDATED`; Track B: Phase 10.5 `VALIDATED`, Phase 10.5.x `VALIDATED`, Phase 10.6 `VALIDATED`, Phase 10.6.1 `VALIDATED`, Phase 10.6.1R `VALIDATED`, Phase 10.7 `VALIDATED`)  
 > **Objective**: Connect the physical simulation substrate to destruction events (Track A) and atmospheric visuals (Track B).  
-> **Scope Firewall**: Phase 10 must **NOT** implement creature AI, taming, devour, inventory, or full weather simulation.
+> **Scope Firewall**: Phase 10 strictly maintained isolation from creature AI, taming, devour, inventory, and full weather simulation.
 
 ```
                                   PHASE 10
-                        WORLD IMPACT & ATMOSPHERE
-                                      │
-          ┌───────────────────────────┴───────────────────────────┐
-          ▼                                                       ▼
-       TRACK A:                                                TRACK B:
-WORLD IMPACT & CSG DESTRUCTION                          SKY & ATMOSPHERE
-          │                                                       │
-   10.1 Impact Foundation (VALIDATED)                      10.5 Sky Foundation (VALIDATED)
-   10.2 Terrain Mutation / CSG (VALIDATED)                 10.5.x Debug Console & Camera (VALIDATED)
-   10.3 Impact -> Structure -> Physics (VALIDATED)         10.6 Procedural Aurora (NEXT)
-   10.4 CSG Hardening & Revert (VALIDATED)                 10.7 Integration & Visual Stress
-          │                                                       │
-          └───────────────────────────┬───────────────────────────┘
-                                      ▼
-                       10.7 Final Phase 10 Validation
+                         WORLD IMPACT & ATMOSPHERE
+                                       │
+           ┌───────────────────────────┴───────────────────────────┐
+           ▼                                                       ▼
+        TRACK A:                                                TRACK B:
+ WORLD IMPACT & CSG DESTRUCTION                          SKY & ATMOSPHERE
+           │                                                       │
+    10.1 Impact Foundation (VALIDATED)                      10.5 Sky Foundation (VALIDATED)
+    10.2 Terrain Mutation / CSG (VALIDATED)                 10.5.x Debug Console & Camera (VALIDATED)
+    10.3 Impact -> Structure -> Physics (VALIDATED)         10.6 Procedural Aurora V1 (VALIDATED)
+    10.4 CSG Hardening & Revert (VALIDATED)                 10.6.1 Procedural Aurora V2 (VALIDATED)
+           │                                                10.6.1R Sky Shader Opt (VALIDATED)
+           │                                                10.7 Integration Stress (VALIDATED)
+           │                                                       │
+           └───────────────────────────┬───────────────────────────┘
+                                       ▼
+                        10.7 Final Phase 10 Validation (PASS)
 ```
 
 ### Track A: World Impact & Destruction
@@ -202,14 +204,21 @@ WORLD IMPACT & CSG DESTRUCTION                          SKY & ATMOSPHERE
   - Command Registry with self-documenting metadata (`help`, `help <command>`), decoupled output (`CommandResult::Clear`), read-only player telemetry snapshot.
   - Zero-overhead when closed: exactly 0 vertices, 0 GPU buffer writes, and 0 draw calls when closed.
   - Embedded ASCII font ($128 \times 48$ atlas, 760-byte bitmasks) with deterministic fallback to `?` for non-ASCII/unsupported characters.
-  - Verified with 17 focused integration tests (`tests/console_tooling_tests.rs`) bringing total test suite to 823 tests across 17 targets (100% green).
-- **Phase 10.6 — Procedural Aurora (`PLANNED / NEXT`)**:
-  - Animated multi-band procedural aurora borealis across night skies.
-  - Altitude and parallax illusion using layered noise functions.
-  - Visually stunning yet computationally lightweight.
-- **Phase 10.7 — Integration & Visual Stress**:
+  - Verified with 19 focused integration tests (`tests/console_tooling_tests.rs`).
+- **Phase 10.6 — Procedural Aurora V1 (`COMPLETED / VALIDATED`)**:
+  - Animated multi-band procedural aurora borealis across night skies with latitude modulation.
+  - Layered noise evaluation with temporal phase animation.
+  - Verified with focused regression tests in `tests/sky_environment_tests.rs`.
+- **Phase 10.6.1 — Procedural Aurora V2 (`COMPLETED / VALIDATED`)**:
+  - Closed-form trigonometric curtain folds replacing brute-force iteration.
+  - Dual-layer altitude modeling and emission color gradients.
+  - Verified with 18 regression tests in `tests/sky_environment_tests.rs`.
+- **Phase 10.6.1R — Sky Shader Optimization (`COMPLETED / VALIDATED`)**:
+  - Loop unrolling, transcendental function factoring, and branching reduction in `src/sky.wgsl`.
+  - Achieved a measured 2.08x GPU fragment throughput gain.
+- **Phase 10.7 — Integration & Visual Stress (`COMPLETED / VALIDATED`)**:
   - Concurrent verification: heavy terrain impact destruction occurring simultaneously with real-time sky rendering and streaming traversal.
-  - Frame-rate stability audit ($\ge 60\text{ FPS}$).
+  - Verified via standalone binary `src/bin/stress_10_7.rs` maintaining $\ge 60\text{ FPS}$ under active destruction and dynamic sky.
 
 ---
 

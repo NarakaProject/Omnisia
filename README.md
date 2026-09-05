@@ -3,8 +3,8 @@
 [![Rust](https://img.shields.io/badge/Rust-2021_Edition-orange.svg)](https://www.rust-lang.org/)
 [![wgpu](https://img.shields.io/badge/wgpu-v24_(Metal%20%2F%20Vulkan%20%2F%20DX12)-blue.svg)](https://wgpu.rs/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Phase](https://img.shields.io/badge/Phase-10.5.x_Validated-brightgreen.svg)](#completed-phases)
-[![Tests](https://img.shields.io/badge/Tests-823_Passing-brightgreen.svg)](#test-suite--validation-evidence)
+[![Phase](https://img.shields.io/badge/Phase-10.7_Validated-brightgreen.svg)](#completed-phases)
+[![Tests](https://img.shields.io/badge/Tests-859_Passing-brightgreen.svg)](#test-suite--validation-evidence)
 
 > **Vision**: *"Revive Chimeraland with a voxel soul."*  
 > Omnisia is a high-performance voxel sandbox engine and game built from scratch in pure Rust and `wgpu`. It merges continuous procedural world generation, structural connectivity, and rigid-body physical simulation with a deep creature ecosystem, taming, pet raising, and modular chimera devour/evolution.
@@ -20,8 +20,8 @@ For any developer or AI coding agent entering this repository for the first time
 | **What is Omnisia?** | A voxel sandbox game engine combining a procedural voxel substrate with modular creature and evolution gameplay. |
 | **What is the long-term vision?** | Revive the modular creature capture, chimera evolution, and open living world of *Chimeraland* on an authoritative, physically reactive voxel substrate. |
 | **What is the current gameplay reality?** | **Early physics & locomotion substrate with developer tooling.** The player can walk, sprint, crouch, jump, auto-step, glide, push dynamic rigid bodies, and use the Developer Debug Console (`` ` ``) / Free Camera (`camera free`). There are **no creatures, combat, taming, inventory, crafting, or devour systems yet**. |
-| **What Phase is complete?** | **Phase 10.5.x — Developer Debug Console & Camera Tooling** (Validated on top of Phase 10.5 with 17 console tests, 23 sky environment tests, 823 total passing workspace tests). |
-| **What is the next Phase?** | **Phase 10.6 — Procedural Aurora** (Multi-band animated procedural aurora borealis across night skies). |
+| **What Phase is complete?** | **Phase 10.7 — Stress Integration & Visual Hardening** (Validated with 859 total passing workspace tests across 17 test targets, 8 validation binaries, 54 benchmarks). |
+| **What is the next Phase?** | **Phase 11 — Player ↔ World Interaction** (Voxel crosshair targeting, raycasting, block harvesting, placing, tools). |
 | **What systems are authoritative?** | `ChunkStore` (static terrain), `DynamicBody` (detached voxels), `PhysicsWorld` (rigid bodies), `PlayerController` (kinematic locomotion), `EnvironmentClock` (environment time), Data Registry (modding definitions). |
 | **What systems are derived / cache state?** | `EnvironmentState` (derived visual environment model), `DeveloperCameraContext` (observational free camera mode), `SkyUniform` & `LightUniform` (GPU uniform buffers), `MeshCache` (GPU mesh buffers), spatial broadphase grid, collision contact manifolds, transient structural BFS results. |
 | **What are the top architectural invariants?** | (1) Player is Kinematic, NEVER a `RigidBody`, NEVER in islands. (2) 1 structural aggregate = 1 `RigidBody` owning $M$ colliders (never 1 voxel = 1 body). (3) Zero double-ownership of voxels. (4) Single authority for environment time in `EnvironmentClock`. (5) Developer camera does NOT mutate player position or physics. |
@@ -43,7 +43,7 @@ Every subsystem in Omnisia is classified into one of four explicit states:
 
 ---
 
-## 🏗️ Completed Phases (Phases 1 — 9.12)
+## 🏗️ Completed Phases (Phases 1 — 10.7)
 
 All phases below are **`VALIDATED`** and locked against regression:
 
@@ -68,6 +68,10 @@ PHASE 10.3 IMPACT -> STRUCTURE -> PHYSICS ImpactBridge + Phase A atomicity + Pha
 PHASE 10.4 CSG / DESTRUCTION HARDENING  Pre-state snapshotting + revert() + negative coords + 6-face invalidation + 45 tests
 PHASE 10.5 SKY & ATMOSPHERE FOUNDATION  Procedural GPU sky + continuous day/night + celestial anchors + 3D stars + 23 tests
 PHASE 10.5.x DEVELOPER CONSOLE & CAMERA Developer debug console + free camera + single clock authority + 17 tests
+PHASE 10.6 PROCEDURAL AURORA V1         Multi-band animated procedural aurora borealis + 18 tests
+PHASE 10.6.1 PROCEDURAL AURORA V2       Mathematical curtain folds + dual-layer altitude + 18 tests
+PHASE 10.6.1R SKY SHADER OPTIMIZATION   Loop unrolling + transcendental factoring + 2.08x GPU speedup
+PHASE 10.7 STRESS INTEGRATION           Concurrent terrain destruction + real-time sky at 60+ FPS + stress binary
 ```
 
 ### Authoritative Player Locomotion Semantics (Phase 8D / 9.10)
@@ -82,10 +86,10 @@ PHASE 10.5.x DEVELOPER CONSOLE & CAMERA Developer debug console + free camera + 
 
 ---
 
-## 🎯 Current Phase & Next Milestone: Phase 10
+## 🎯 Completed Milestone: Phase 10 & Next Milestone: Phase 11
 
-### Phase 10 — World Impact & Atmosphere (`IN PROGRESS`)
-Phase 10 connects the completed physical simulation substrate to destruction events and atmospheric aesthetics:
+### Phase 10 — World Impact & Atmosphere (`COMPLETED / VALIDATED`)
+Phase 10 successfully connected the completed physical simulation substrate to destruction events and atmospheric aesthetics:
 - **Track A: World Impact & CSG Destruction**
   - **10.1 Impact Foundation (`VALIDATED`)**: Generic `ImpactEvent` representation, `ImpactSource`, `ImpactMagnitude`, bounded `AffectedVolume` queries, and `DeterministicImpactPipeline`.
   - **10.2 Terrain Mutation / CSG Foundation (`VALIDATED`)**: Transactional spherical and directional crater carving in `ChunkStore`.
@@ -94,8 +98,13 @@ Phase 10 connects the completed physical simulation substrate to destruction eve
 - **Track B: Sky & Atmosphere**
   - **10.5 Sky & Atmosphere Foundation (`VALIDATED`)**: Lightweight procedural GPU sky shader, continuous day/night cycle, celestial anchors (sun, moon with $5^\circ$ declination and continuous phase), twilight cosine bell curve, temporally stable 3D stars, unified `SkyUniform` and `LightUniform` harmonization. (*No HDRIs, no giant skyboxes, no expensive volumetric raymarching*).
   - **10.5.x Developer Debug Console & Camera Tooling (`VALIDATED`)**: Production-grade keyboard developer debug console (`` ` `` / `F1`), decoupled 6-DOF developer free camera (`camera free` / `camera player`), single environment clock mutable authority, bounded UTF-8 parser, dynamic self-documenting command registry, zero-overhead closed rendering overlay, 17 tests.
-  - **10.6 Procedural Aurora (`PLANNED / NEXT`)**: Multi-band animated procedural aurora borealis across night skies.
-  - **10.7 Integration & Visual Stress**: Concurrent terrain destruction during real-time sky rendering at $\ge 60\text{ FPS}$.
+  - **10.6 Procedural Aurora V1 (`VALIDATED`)**: Multi-band animated procedural aurora borealis across night skies with latitude modulation.
+  - **10.6.1 Procedural Aurora V2 (`VALIDATED`)**: Closed-form trigonometric curtain folds, dual-layer altitude, and 18 regression tests.
+  - **10.6.1R Sky Shader Optimization (`VALIDATED`)**: Loop unrolling, transcendental function factoring, 2.08x GPU fragment throughput gain.
+  - **10.7 Integration & Visual Stress (`VALIDATED`)**: Concurrent terrain destruction during real-time sky rendering at $\ge 60\text{ FPS}$ verified via `stress_10_7.rs`.
+
+### Next Active Phase: Phase 11 — Player ↔ World Interaction (`PLANNED / NEXT`)
+The physical and visual substrate is locked and regression-free. Phase 11 initiates core gameplay interactions: voxel targeting raycasts, block harvesting, placing, and tools.
 
 ---
 
@@ -152,23 +161,34 @@ Any modification violating these core rules will be rejected:
 ## 🧪 Test Suite & Validation Evidence
 
 Verified across all subsystems:
-- **Workspace Test Suite**: **783 / 783 tests passing** (`cargo test --all-targets`).
-  - `tests/csg_hardening_tests.rs`: **45 tests** (Arbitrary Add/Remove/Replace, cross-chunk boundaries, negative coordinates, structural consistency, persistence/revision contracts, deterministic replay, 6-face invalidation, transactional revert).
-  - `tests/impact_physics_integration_tests.rs`: **34 tests** (Whole-impact Phase A atomicity, Phase B impulse response, single dynamic ownership, 2-phase reintegration).
-  - `tests/csg_tests.rs`: **27 tests** (Add/Remove/Replace, atomic commit & failure rollback, duplicate rejection, cross-chunk atomicity, negative coords, crater generator, material-aware policy, invalidation).
-  - `tests/impact_tests.rs`: **17 tests** (ImpactEvent construction, sources, Euclidean volume queries, deterministic pipeline, replay).
+- **Workspace Test Suite**: **859 / 859 tests passing** (`cargo test --all-targets`).
   - `tests/physics_9_tests.rs`: **415 tests** (RigidBody, contacts, islands, sleeping, dynamic-dynamic, stress).
   - `tests/movement_8d_tests.rs`: **81 tests** (Auto-step, slope sliding, bounded glide).
+  - `tests/sky_environment_tests.rs`: **57 tests** (Phase 10.5 celestial anchors, twilight curve, 3D stars; Phase 10.6 & 10.6.1 procedural aurora curtains & altitude).
+  - `tests/csg_hardening_tests.rs`: **45 tests** (Arbitrary Add/Remove/Replace, cross-chunk boundaries, negative coordinates, structural consistency, persistence/revision contracts, deterministic replay, 6-face invalidation, transactional revert).
+  - `tests/impact_physics_integration_tests.rs`: **34 tests** (Whole-impact Phase A atomicity, Phase B impulse response, single dynamic ownership, 2-phase reintegration).
   - `tests/integration_8c_tests.rs`: **32 tests** (Player-world integration, structural breaks).
   - `tests/player_tests.rs`: **30 tests** (Kinematic capsule, clearance guard, swept anti-tunneling).
-  - Other subsystem test suites: **102 tests** (Worldgen, Modding, Streaming, Structure, Scale, Engine).
-- **Validation Binaries**:
+  - `tests/csg_tests.rs`: **27 tests** (Add/Remove/Replace, atomic commit & failure rollback, duplicate rejection, cross-chunk atomicity, negative coords, crater generator, material-aware policy, invalidation).
+  - `tests/worldgen_tests.rs`: **26 tests** (Deterministic seed, climate, hydrology, caves, strata, ores, biomes).
+  - `tests/physics_tests.rs`: **23 tests** (Dynamic aggregate baseline, gravity/antigravity, swept snapping).
+  - `tests/console_tooling_tests.rs`: **19 tests** (Command registration, parsing, execution, clock mutation, free camera, history buffer).
+  - `tests/impact_tests.rs`: **17 tests** (ImpactEvent construction, sources, Euclidean volume queries, deterministic pipeline, replay).
+  - `tests/engine_tests.rs`: **13 tests** (Canonical indexing, ambient occlusion, culled & greedy meshing, frustum).
+  - `tests/modding_tests.rs`: **11 tests** (Mod discovery, manifest parsing, SemVer, safe overrides, ResourceId).
+  - `tests/streaming_tests.rs`: **11 tests** (ChunkStore residency, job scheduler, memory budget, eviction lifecycle).
+  - `tests/structure_tests.rs`: **11 tests** (6-connected adjacency, structural anchors, aggregate extraction).
+  - `tests/scale_tests.rs`: **7 tests** (Metric coordinate invariants, scale ruler, traversal residency).
+- **Validation Binaries (8 Binaries)**:
+  - `cargo run --release --bin sky_validation` $\to$ **PASS** (7-stage deterministic celestial validation in $0.06\text{ ms}$).
+  - `cargo run --release --bin stress_10_7` $\to$ **PASS** (Concurrent terrain destruction + real-time sky at $60+\text{ FPS}$).
   - `cargo run --release --bin stress_validation` $\to$ **PASS** (11 workloads + 10k steps + determinism in $1.30\text{ s}$).
   - `cargo run --release --bin physics_validation` $\to$ **PASS** (5/5 stages).
   - `cargo run --release --bin integration_validation` $\to$ **PASS** (6/6 stages).
   - `cargo run --release --bin player_validation` $\to$ **PASS** (8/8 stages).
   - `cargo run --release --bin traversal_validation` $\to$ **PASS** (10/10 stages, 1km traversal, memory $\le 85\text{ MB}$).
-- **Benchmark Suite**: **53 benchmarks** in `src/bin/benchmarks.rs` (including Benchmark 53 for CSG Hardening & Arbitrary Cross-Chunk Transactions).
+  - `cargo run --release --bin benchmarks` $\to$ **PASS** (54 benchmarks including BM 54 for Celestial & Sky Rendering CPU Prep).
+- **Benchmark Suite**: **54 benchmarks** in `src/bin/benchmarks.rs` (including Benchmark 54 for Celestial & Sky Rendering CPU Prep).
 
 ---
 
@@ -196,6 +216,9 @@ cargo run --release
 ```bash
 # Phase 10.5 Sky & Celestial Environment Validation
 cargo run --release --bin sky_validation
+
+# Phase 10.7 Integration & Visual Stress Validation
+cargo run --release --bin stress_10_7
 
 # Phase 9.12 RigidBody Stress & Performance Validation
 cargo run --release --bin stress_validation
@@ -231,13 +254,14 @@ cargo test --all-targets
 Omnisia/
 ├── content/core/        # Data-driven JSON block and material schemas
 ├── docs/                # Authoritative engineering documentation
-│   ├── PROJECT_STATE.md # Verified metrics, subsystem status matrix, 25 invariants
+│   ├── PROJECT_STATE.md # Verified metrics, subsystem status matrix, 28 invariants
 │   ├── ROADMAP.md       # Full roadmap (Phases 1-25+), devour mechanics, Phase 10 spec
 │   ├── ARCHITECTURE.md  # Simulation substrates, authority boundaries, bridges
-│   └── reports/         # Historical phase completion reports (Phases 4-8B)
+│   ├── PROJECT_GOVERNANCE.md # Source-of-truth hierarchy, phase workflow, audit rules
+│   └── reports/         # Historical phase completion reports (Phases 4-10.7)
 ├── mods/                # External modding test suites and asset overrides
 ├── src/                 # Authoritative engine source code
-│   ├── bin/             # 7 standalone validation and benchmark binaries
+│   ├── bin/             # 8 standalone validation and benchmark binaries
 │   ├── environment/     # Celestial clock, sun/moon orbits, SkyUniform, Light harmonization
 │   ├── mesh/            # Culled and Greedy 32³ mesh generation
 │   ├── modding/         # ResourceIdentifier, manifest loader, registry
@@ -246,10 +270,11 @@ Omnisia/
 │   ├── streaming/       # ChunkStore, scheduler, eviction, memory budget
 │   ├── structure/       # 6-connected localized BFS, anchor components
 │   └── worldgen/        # Deterministic 3D volumetric noise, biomes, vegetation
-└── tests/               # 16 regression test targets (806 automated tests)
+└── tests/               # 17 regression test targets (859 automated tests)
 ```
 
 ---
 
 ## 📜 License
 Omnisia is licensed under the [MIT License](LICENSE).
+

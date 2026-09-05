@@ -1,8 +1,8 @@
 # Omnisia — Authoritative Project State
 
-> **Current Milestone**: Phase 10.5.x — Developer Debug Console & Camera Tooling (**COMPLETED / VALIDATED**)  
-> **Next Milestone**: Phase 10.6 — Procedural Aurora (**PLANNED / NEXT**)  
-> **Verified HEAD Commit**: Current Phase 10.5.x Working State  
+> **Current Milestone**: Phase 10.7 — Stress Integration & Visual Hardening (**COMPLETED / VALIDATED**)  
+> **Next Milestone**: Phase 11 — Player ↔ World Interaction (**PLANNED / NEXT**)  
+> **Verified HEAD Commit**: `a6d13bfce56af63a9b31aa537eda5dd851c07771` (main)  
 > **Branch**: `main`  
 > **Source-of-Truth Policy**: Source code and passing automated tests are the absolute source of truth.
 
@@ -16,36 +16,37 @@ Every count in this document has been directly audited and verified against the 
 - **Compiler**: Rust 2021 edition, `cargo build --release` compiles cleanly with zero errors.
 - **Formatting**: `cargo fmt --all -- --check` passes cleanly with zero diffs.
 - **Linter**: `cargo clippy --all-targets --all-features -- -D warnings` passes cleanly with zero warnings or errors.
-- **Test Suite**: `cargo test --all-targets` passes with **823 passed, 0 failed, 0 ignored** across 17 test targets.
+- **Test Suite**: `cargo test --all-targets` passes with **859 passed, 0 failed, 0 ignored** across 17 test targets.
 
-### Test Count Breakdown by Target (823 Total Tests)
+### Test Count Breakdown by Target (859 Total Tests)
 
 | Test Target Binary | Scope / Feature Area | Verified Test Count | Status |
 |:---|:---|:---:|:---:|
-| `tests/console_tooling_tests.rs` | Single EnvironmentClock Authority, Pause/Resume Isolation, Time Scale Bounds (0, 1000], Decoupled Developer Camera, Read-Only Player Snapshot, Command Parser Quoting & Collapse, 4096-Byte Limit, UTF-8/Unicode Safety, ASCII Fallback to `?`, Help Auto-Generation, Clear Decoupling (Phase 10.5.x) | **17** | PASS |
-| `tests/sky_environment_tests.rs` | Deterministic Clock, Sun Anchors (Midnight/Sunrise/Noon/Sunset), Moon Opposition & $5^\circ$ Declination, Continuous Moon Phase, Twilight Cosine Bell Curve, Temporally Stable 3D Stars, LightUniform Harmonization, Camera Translation Invariance, Offscreen Headless Depth Rejection (Phase 10.5) | **23** | PASS |
-| `tests/csg_hardening_tests.rs` | Arbitrary Add/Remove/Replace, Cross-Chunk Boundaries, Negative Euclidean Coordinates, Structural Consistency, Persistence/Revision Invariants, Deterministic Replay, Symmetric 6-Face Invalidation, Transactional Revert & Preflight Safety (Phase 10.4) | **45** | PASS |
-| `tests/impact_physics_integration_tests.rs` | ImpactBridge, Multi-Aggregate Atomicity, Phase A Rollback, Phase B Impulse Response, Reintegration Guardrails, Infallible Physics Deregistration, Zero-Motion Roundtrip, Negative Coordinates, Cross-Chunk Boundaries, Unloaded Chunk Safety (Phase 10.3) | **34** | PASS |
-| `tests/csg_tests.rs` | VoxelEdit, VoxelEditTransaction, Infallible Commit & Rollback, Duplicate Rejection, CraterGenerator, MaterialDestructionPolicy, Invalidation (Phase 10.2) | **27** | PASS |
-| `tests/impact_tests.rs` | ImpactEvent, ImpactSource, Magnitude, AffectedVolume, Euclidean Boundaries, Determinism (Phase 10.1) | **17** | PASS |
 | `tests/physics_9_tests.rs` | RigidBody Physics, Broadphase, Contacts, Solver, Sleeping, Islands, Dynamic-Dynamic, Bridges, Stress (Phase 9.1–9.12) | **415** | PASS |
 | `tests/movement_8d_tests.rs` | Kinematic Movement, Bounded Glide, Auto-Step Traversal, Slope Resolution (Phase 8D) | **81** | PASS |
+| `tests/sky_environment_tests.rs` | Deterministic Clock, Sun Anchors, Moon Opposition & $5^\circ$ Declination, Continuous Moon Phase, Twilight Cosine Bell Curve, 3D Stars, Light Harmonization, Offscreen Depth Rejection (Phase 10.5); Procedural Aurora V1, Closed-Form Curtain Folds V2, Dual-Layer Altitude (Phase 10.6 & 10.6.1) | **57** | PASS |
+| `tests/csg_hardening_tests.rs` | Arbitrary Add/Remove/Replace, Cross-Chunk Boundaries, Negative Euclidean Coordinates, Structural Consistency, Persistence/Revision Invariants, Deterministic Replay, Symmetric 6-Face Invalidation, Transactional Revert & Preflight Safety (Phase 10.4) | **45** | PASS |
+| `tests/impact_physics_integration_tests.rs` | ImpactBridge, Multi-Aggregate Atomicity, Phase A Rollback, Phase B Impulse Response, Reintegration Guardrails, Infallible Physics Deregistration, Zero-Motion Roundtrip, Negative Coordinates, Cross-Chunk Boundaries, Unloaded Chunk Safety (Phase 10.3) | **34** | PASS |
 | `tests/integration_8c_tests.rs` | Player ↔ World ↔ DynamicBody Integration, Reintegration Lifecycle (Phase 8C) | **32** | PASS |
 | `tests/player_tests.rs` | Kinematic Capsule Controller, Clearance Guard, Jump Edge-Trigger, Swept Collision (Phase 8B) | **30** | PASS |
+| `tests/csg_tests.rs` | VoxelEdit, VoxelEditTransaction, Infallible Commit & Rollback, Duplicate Rejection, CraterGenerator, MaterialDestructionPolicy, Invalidation (Phase 10.2) | **27** | PASS |
 | `tests/worldgen_tests.rs` | Deterministic Seed, Climate, Hydrology, Caves, Strata, Ores, Biomes (Phase 4–5) | **26** | PASS |
 | `tests/physics_tests.rs` | Dynamic Aggregate Baseline, Gravity/AntiGravity, Swept Snapping (Phase 8A) | **23** | PASS |
+| `tests/console_tooling_tests.rs` | Single EnvironmentClock Authority, Pause/Resume Isolation, Time Scale Bounds (0, 1000], Decoupled Developer Camera, Read-Only Player Snapshot, Command Parser Quoting & Collapse, 4096-Byte Limit, UTF-8/Unicode Safety, ASCII Fallback to `?`, Help Auto-Generation, Clear Decoupling (Phase 10.5.x) | **19** | PASS |
+| `tests/impact_tests.rs` | ImpactEvent, ImpactSource, Magnitude, AffectedVolume, Euclidean Boundaries, Determinism (Phase 10.1) | **17** | PASS |
 | `tests/engine_tests.rs` | Canonical Indexing, Ambient Occlusion, Culled & Greedy Meshing, Frustum (Phase 1–3) | **13** | PASS |
 | `tests/modding_tests.rs` | Mod Discovery, Manifest Parsing, SemVer, Safe Overrides, ResourceId (Phase 2–2.5) | **11** | PASS |
 | `tests/streaming_tests.rs` | ChunkStore Residency, Job Scheduler, Memory Budget, Eviction Lifecycle (Phase 3) | **11** | PASS |
 | `tests/structure_tests.rs` | 6-Connected Adjacency, Structural Anchors, Aggregate Extraction (Phase 7) | **11** | PASS |
 | `tests/scale_tests.rs` | Metric Coordinate Invariants (1 vx = 0.5m), Scale Ruler, Traversal Residency (Phase 7) | **7** | PASS |
-| **Workspace Total** | **All Subsystems** | **823** | **PASS** |
+| **Workspace Total** | **All Subsystems** | **859** | **PASS** |
 
-### Verified Validation Binaries (7 Binaries)
+### Verified Validation Binaries (8 Binaries)
 
 | Binary Path | Executable Target | Verification Summary | Status |
 |:---|:---|:---|:---:|
 | `src/bin/sky_validation.rs` | `cargo run --release --bin sky_validation` | 7-stage deterministic sky validation: clock progression, sun anchors, moon declination, continuous phase, twilight continuity, star stability, offscreen depth rejection | **PASS (0.06 ms release / 0.13 ms debug)** |
+| `src/bin/stress_10_7.rs` | `cargo run --release --bin stress_10_7` | Phase 10.7 concurrent visual & physics stress: real-time terrain blast destruction during dynamic sky rendering at $\ge 60\text{ FPS}$ | **PASS (60+ FPS)** |
 | `src/bin/stress_validation.rs` | `cargo run --release --bin stress_validation` | Workloads A–K: Sparse/Dense Scaling, Sleeping, Islands, Stacks, Bridges, 10k Steps, Determinism | **PASS (1.30 s)** |
 | `src/bin/physics_validation.rs` | `cargo run --release --bin physics_validation` | Dynamic aggregate lifecycle, AntiGravity floating, unloaded boundary protection | **PASS (5/5 stages)** |
 | `src/bin/integration_validation.rs` | `cargo run --release --bin integration_validation` | Structural detachment, DynamicBody interaction, two-phase atomic reintegration | **PASS (6/6 stages)** |
@@ -84,8 +85,9 @@ Under Omnisia's engineering standard, every subsystem must be explicitly classif
 | **Impact → Structure → Physics (10.3)** | `VALIDATED` | `src/impact/bridge.rs`, `src/structure/manager.rs` | Whole-impact Phase A atomicity, exact rollback, Phase B impulse response (\|\|J\|\| = J), dynamic aggregate single ownership, 34 tests, Benchmark 52. |
 | **Destruction Hardening (10.4)** | `VALIDATED` | `src/csg/` (`transaction.rs`, `edit.rs`), `tests/csg_hardening_tests.rs` | Pre-state snapshotting, explicit `revert()` with preflight safety, arbitrary boundary stress, negative Euclidean coordinates, symmetric 6-face invalidation, 45 tests, Benchmark 53. |
 | **Procedural Sky & Atmosphere (10.5)** | `VALIDATED` | `src/environment/` (`time.rs`, `celestial.rs`, `sky.rs`), `src/sky.wgsl` | Continuous day/night clock, celestial anchors, $5^\circ$ moon declination, continuous phase, twilight bell curve, 3D stars, `SkyUniform`/`LightUniform` harmonization, early-Z depth rejection, 23 tests, Benchmark 54. |
-| **Procedural Aurora (10.6)** | `PLANNED` | — (Phase 10.6) | Multi-band animated procedural aurora borealis across night skies. |
-| **Integration & Visual Stress (10.7)** | `PLANNED` | — (Phase 10.7) | Concurrent terrain destruction during real-time sky rendering at $\ge 60\text{ FPS}$. |
+| **Developer Console & Tooling (10.5.x)** | `VALIDATED` | `src/console/`, `tests/console_tooling_tests.rs` | Production keyboard console, decoupled free camera, single clock authority, bounded UTF-8 parser, 19 tests. |
+| **Procedural Aurora (10.6 / 10.6.1 / 10.6.1R)** | `VALIDATED` | `src/environment/aurora.rs`, `src/sky.wgsl` | Multi-band animated aurora, closed-form curtain folds, dual altitude, loop unrolling (2.08x GPU fragment speedup), 57 sky tests. |
+| **Integration & Visual Stress (10.7)** | `VALIDATED` | `src/bin/stress_10_7.rs` | Concurrent terrain destruction during real-time sky rendering at $\ge 60\text{ FPS}$. |
 | **Player World Interaction (Tools/Harvest)**| `PLANNED` | — (Phase 11) | Voxel targeting, block placing/breaking, harvesting tools, interaction raycast. |
 | **Entity & Creature Foundation** | `PLANNED` | — (Phase 12) | `CreatureDefinition`, stats, health, AI states, animal & beast hierarchy. |
 | **Combat & Action System** | `PLANNED` | — (Phase 13) | Attack actions, hitboxes, damage, knockback, dodge, action architecture. |
