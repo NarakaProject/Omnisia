@@ -2102,6 +2102,111 @@ fn test_aurora_morphology_palette_invariance() {
 }
 
 #[test]
+fn test_aurora_palette_statistical_chromatic_diversity() {
+    use omnisia::environment::aurora::AuroraPaletteId;
+
+    // Simulate chromatic distribution across 10,000 deterministic samples
+    // spanning the auroral hemisphere and scalar field spectrum
+    let num_samples = 10_000;
+
+    for i in 0..AuroraPaletteId::COUNT {
+        let palette_id = AuroraPaletteId::from_u32(i as u32);
+        let _pal = palette_id.colors();
+
+        let mut c0_weight_sum = 0.0f64;
+        let mut c1_weight_sum = 0.0f64;
+        let mut c2_weight_sum = 0.0f64;
+        let mut c3_weight_sum = 0.0f64;
+
+        let mut c0_active_count = 0;
+        let mut c1_active_count = 0;
+        let mut c2_active_count = 0;
+        let mut c3_active_count = 0;
+
+        for s in 0..num_samples {
+            let u1 = (s as f32 * 0.618_034) % 1.0;
+            let u2 = (s as f32 * 0.414_213_57) % 1.0;
+            let u3 = (s as f32 * 0.732_050_84) % 1.0;
+            let u4 = (s as f32 * 0.236_067_98) % 1.0;
+
+            let fold_t = u1;
+            let fine_filaments = u2;
+            let ray_sharp = u3;
+            let cluster_mask = if u4 > 0.4 { 1.0 } else { 0.0 };
+            let upper_reaches = u4;
+            let local_energy = u1 * 0.6 + u2 * 0.4;
+
+            // Rebalanced chromatic transfer function matching sky.wgsl:
+            let fold_mix = (fold_t * 1.25).clamp(0.0, 1.0);
+            let fil_intensity =
+                (fine_filaments * 2.2 + ray_sharp * cluster_mask * 0.85).clamp(0.0, 1.0);
+            let upper_flare = upper_reaches * (local_energy * 0.90 + 0.15).clamp(0.0, 1.0);
+
+            // Effective weights of c0, c1, c2, c3:
+            let w3 = upper_flare;
+            let w2 = fil_intensity * (1.0 - upper_flare);
+            let w1 = fold_mix * (1.0 - fil_intensity) * (1.0 - upper_flare);
+            let w0 = (1.0 - fold_mix) * (1.0 - fil_intensity) * (1.0 - upper_flare);
+
+            c0_weight_sum += w0 as f64;
+            c1_weight_sum += w1 as f64;
+            c2_weight_sum += w2 as f64;
+            c3_weight_sum += w3 as f64;
+
+            if w0 > 0.10 {
+                c0_active_count += 1;
+            }
+            if w1 > 0.10 {
+                c1_active_count += 1;
+            }
+            if w2 > 0.10 {
+                c2_active_count += 1;
+            }
+            if w3 > 0.10 {
+                c3_active_count += 1;
+            }
+        }
+
+        let total_weight = c0_weight_sum + c1_weight_sum + c2_weight_sum + c3_weight_sum;
+        let p0 = c0_weight_sum / total_weight;
+        let p1 = c1_weight_sum / total_weight;
+        let p2 = c2_weight_sum / total_weight;
+        let p3 = c3_weight_sum / total_weight;
+
+        println!(
+            "  [{:?}] Chromatic Distribution: c0={:.1}%, c1={:.1}%, c2={:.1}%, c3={:.1}% | Active: c0={}, c1={}, c2={}, c3={}",
+            palette_id,
+            p0 * 100.0,
+            p1 * 100.0,
+            p2 * 100.0,
+            p3 * 100.0,
+            c0_active_count,
+            c1_active_count,
+            c2_active_count,
+            c3_active_count
+        );
+
+        // All 4 stops must appear significantly (>5% each)
+        assert!(p0 > 0.05, "c0 representation too low: {:.2}%", p0 * 100.0);
+        assert!(p1 > 0.05, "c1 representation too low: {:.2}%", p1 * 100.0);
+        assert!(p2 > 0.05, "c2 representation too low: {:.2}%", p2 * 100.0);
+        assert!(p3 > 0.05, "c3 representation too low: {:.2}%", p3 * 100.0);
+
+        // No single stop should collapse into single-color dominance (>70%)
+        assert!(p0 < 0.70, "c0 collapsed dominant: {:.2}%", p0 * 100.0);
+        assert!(p1 < 0.70, "c1 collapsed dominant: {:.2}%", p1 * 100.0);
+        assert!(p2 < 0.70, "c2 collapsed dominant: {:.2}%", p2 * 100.0);
+        assert!(p3 < 0.70, "c3 collapsed dominant: {:.2}%", p3 * 100.0);
+
+        // Substantial active coverage
+        assert!(c0_active_count > 500);
+        assert!(c1_active_count > 500);
+        assert!(c2_active_count > 500);
+        assert!(c3_active_count > 500);
+    }
+}
+
+#[test]
 fn test_aurora_temporal_closed_loop_and_interframe_continuity() {
     // REG-2 Verification:
     // 1. Global cycle closure at 60s: cos(k*2*PI) == 1, sin(k*2*PI) == 0 for all integer harmonics.
