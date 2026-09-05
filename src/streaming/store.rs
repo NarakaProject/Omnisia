@@ -14,6 +14,7 @@ pub struct ChunkStore {
     pub in_flight_generating: HashSet<IVec3>,
     pub in_flight_saving: HashMap<IVec3, (u64, u64)>, // (lifecycle_generation, revision)
     pub in_flight_meshing: HashMap<IVec3, (u64, u64)>, // (lifecycle_generation, revision)
+    pub dirty_mesh_chunks: HashSet<IVec3>,
 }
 
 impl Default for ChunkStore {
@@ -31,6 +32,7 @@ impl ChunkStore {
             in_flight_generating: HashSet::new(),
             in_flight_saving: HashMap::new(),
             in_flight_meshing: HashMap::new(),
+            dirty_mesh_chunks: HashSet::new(),
         }
     }
 
@@ -56,6 +58,11 @@ impl ChunkStore {
             || self.in_flight_saving.contains_key(coord)
     }
 
+    #[inline(always)]
+    pub fn is_in_flight_meshing(&self, coord: &IVec3) -> bool {
+        self.in_flight_meshing.contains_key(coord)
+    }
+
     /// Mengambil lifecycle generation saat ini untuk sebuah koordinat chunk (default 1)
     #[inline(always)]
     pub fn current_lifecycle(&self, coord: &IVec3) -> u64 {
@@ -74,6 +81,7 @@ impl ChunkStore {
         self.in_flight_generating.remove(coord);
         self.in_flight_saving.remove(coord);
         self.in_flight_meshing.remove(coord);
+        self.dirty_mesh_chunks.remove(coord);
 
         // Bump lifecycle generation saat dievict sehingga job asinkron lama otomatis terinvalida
         self.lifecycle_generations
@@ -100,6 +108,9 @@ impl ChunkStore {
     pub fn mark_dirty(&mut self, coord: &IVec3, flags: u16) {
         if let Some(chunk) = self.resident.get_mut(coord) {
             chunk.mark_dirty(flags);
+            if flags & crate::chunk::dirty_flags::MESH_DIRTY != 0 {
+                self.dirty_mesh_chunks.insert(*coord);
+            }
         }
     }
 
@@ -113,6 +124,7 @@ impl ChunkStore {
                 local_coord.z as usize,
                 block,
             );
+            self.dirty_mesh_chunks.insert(chunk_coord);
         }
     }
 

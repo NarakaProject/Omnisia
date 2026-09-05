@@ -61,6 +61,10 @@ pub struct World {
     pub upload_queue: VecDeque<(IVec3, MeshData)>,
     pub max_uploads_per_frame: usize,
     pub last_uploads_count: usize,
+
+    // Streaming Discovery Cache
+    pub last_center_chunk: Option<IVec3>,
+    pub streaming_radius_satisfied: bool,
 }
 
 impl Default for World {
@@ -120,8 +124,10 @@ impl World {
             render_radius: 5,
             retain_radius: 7,
             upload_queue: VecDeque::new(),
-            max_uploads_per_frame: 32,
+            max_uploads_per_frame: 4,
             last_uploads_count: 0,
+            last_center_chunk: None,
+            streaming_radius_satisfied: false,
         }
     }
 
@@ -264,36 +270,65 @@ impl World {
         // 4. Reintegrasi dua fase untuk badan dinamis yang telah Settled (Amendment 7 & 8)
         let _ = self.physics.process_settled_reintegration(&mut self.store);
 
-        // 5. Masukkan mesh baru yang siap dari scheduler ke upload_queue
+        // 5. Drain dirty mesh chunks dan jadwalkan remesh (High Priority)
+        for dirty_coord in std::mem::take(&mut self.store.dirty_mesh_chunks) {
+            if self.store.contains(&dirty_coord) && !self.store.is_in_flight_meshing(&dirty_coord) {
+                let chunk_center = Vec3::new(
+                    (dirty_coord.x as f32 + 0.5) * CHUNK_WORLD_SIZE,
+                    (dirty_coord.y as f32 + 0.5) * CHUNK_WORLD_SIZE,
+                    (dirty_coord.z as f32 + 0.5) * CHUNK_WORLD_SIZE,
+                );
+                let dist_sq = camera_world_pos.distance_squared(chunk_center);
+                let lifecycle = self.store.current_lifecycle(&dirty_coord);
+                let revision = self
+                    .store
+                    .get(&dirty_coord)
+                    .map(|c| c.revision)
+                    .unwrap_or(0);
+                self.scheduler.request_job(
+                    dirty_coord,
+                    JobType::MeshChunk,
+                    JobPriority::High,
+                    lifecycle,
+                    revision,
+                    dist_sq,
+                );
+            }
+        }
+
+        // 6. Masukkan mesh baru yang siap dari scheduler ke upload_queue
+        let mut has_new_ready = false;
         for (coord, mesh) in self.scheduler.ready_meshes.drain(..) {
             // Hindari duplikasi jika koordinat sama sudah ada di antrean
             self.upload_queue.retain(|(c, _)| *c != coord);
             self.upload_queue.push_back((coord, mesh));
+            has_new_ready = true;
         }
 
-        // 4. Prioritaskan upload berdasarkan jarak terdekat ke kamera
-        if self.upload_queue.len() > 1 {
+        // 7. Prioritaskan upload berdasarkan jarak terdekat ke kamera tanpa alokasi heap baru,
+        // hanya diurutkan ulang saat mesh baru tiba
+        if has_new_ready && self.upload_queue.len() > 1 {
             let cam_pos = camera_world_pos;
-            let mut items: Vec<(IVec3, MeshData)> = self.upload_queue.drain(..).collect();
-            items.sort_unstable_by(|(c1, _), (c2, _)| {
-                let p1 = Vec3::new(
-                    (c1.x as f32 + 0.5) * CHUNK_WORLD_SIZE,
-                    (c1.y as f32 + 0.5) * CHUNK_WORLD_SIZE,
-                    (c1.z as f32 + 0.5) * CHUNK_WORLD_SIZE,
-                );
-                let p2 = Vec3::new(
-                    (c2.x as f32 + 0.5) * CHUNK_WORLD_SIZE,
-                    (c2.y as f32 + 0.5) * CHUNK_WORLD_SIZE,
-                    (c2.z as f32 + 0.5) * CHUNK_WORLD_SIZE,
-                );
-                let d1 = cam_pos.distance_squared(p1);
-                let d2 = cam_pos.distance_squared(p2);
-                d1.partial_cmp(&d2).unwrap_or(std::cmp::Ordering::Equal)
-            });
-            self.upload_queue = items.into();
+            self.upload_queue
+                .make_contiguous()
+                .sort_unstable_by(|(c1, _), (c2, _)| {
+                    let p1 = Vec3::new(
+                        (c1.x as f32 + 0.5) * CHUNK_WORLD_SIZE,
+                        (c1.y as f32 + 0.5) * CHUNK_WORLD_SIZE,
+                        (c1.z as f32 + 0.5) * CHUNK_WORLD_SIZE,
+                    );
+                    let p2 = Vec3::new(
+                        (c2.x as f32 + 0.5) * CHUNK_WORLD_SIZE,
+                        (c2.y as f32 + 0.5) * CHUNK_WORLD_SIZE,
+                        (c2.z as f32 + 0.5) * CHUNK_WORLD_SIZE,
+                    );
+                    let d1 = cam_pos.distance_squared(p1);
+                    let d2 = cam_pos.distance_squared(p2);
+                    d1.partial_cmp(&d2).unwrap_or(std::cmp::Ordering::Equal)
+                });
         }
 
-        // 5. Upload dengan batas kuota per frame (GPU Upload Budget)
+        // 8. Upload dengan batas kuota per frame (GPU Upload Budget: 4 uploads/frame)
         let mut uploaded_count = 0;
         if let Some(ref mut rend) = renderer {
             while uploaded_count < self.max_uploads_per_frame {
@@ -313,7 +348,7 @@ impl World {
         }
         self.last_uploads_count = uploaded_count;
 
-        // 6. Streaming Radius: Permintaan chunk di sekitar posisi kamera
+        // 9. Streaming Radius: Permintaan chunk di sekitar posisi kamera
         let camera_voxel = world_pos_to_world_voxel(camera_world_pos);
         let center_chunk = IVec3::new(
             camera_voxel.x.div_euclid(CHUNK_SIZE),
@@ -321,47 +356,61 @@ impl World {
             camera_voxel.z.div_euclid(CHUNK_SIZE),
         );
 
-        let r = self.render_radius;
-        for dy in -2..=2 {
-            for dz in -r..=r {
-                for dx in -r..=r {
-                    let chunk_coord = center_chunk + IVec3::new(dx, dy, dz);
-                    if !self.store.contains(&chunk_coord) && !self.store.is_in_flight(&chunk_coord)
-                    {
-                        let chunk_center = Vec3::new(
-                            (chunk_coord.x as f32 + 0.5) * CHUNK_WORLD_SIZE,
-                            (chunk_coord.y as f32 + 0.5) * CHUNK_WORLD_SIZE,
-                            (chunk_coord.z as f32 + 0.5) * CHUNK_WORLD_SIZE,
-                        );
-                        let dist_sq = camera_world_pos.distance_squared(chunk_center);
+        if self.last_center_chunk != Some(center_chunk) {
+            self.last_center_chunk = Some(center_chunk);
+            self.streaming_radius_satisfied = false;
+        }
 
-                        let priority = if dx.abs() <= self.simulation_radius
-                            && dz.abs() <= self.simulation_radius
+        if !self.streaming_radius_satisfied {
+            let mut missing_count = 0;
+            let r = self.render_radius;
+            for dy in -2..=2 {
+                for dz in -r..=r {
+                    for dx in -r..=r {
+                        let chunk_coord = center_chunk + IVec3::new(dx, dy, dz);
+                        if !self.store.contains(&chunk_coord)
+                            && !self.store.is_in_flight(&chunk_coord)
+                            && !self.scheduler.is_queued(&chunk_coord, JobType::LoadChunk)
                         {
-                            JobPriority::High
-                        } else {
-                            JobPriority::Normal
-                        };
+                            missing_count += 1;
+                            let chunk_center = Vec3::new(
+                                (chunk_coord.x as f32 + 0.5) * CHUNK_WORLD_SIZE,
+                                (chunk_coord.y as f32 + 0.5) * CHUNK_WORLD_SIZE,
+                                (chunk_coord.z as f32 + 0.5) * CHUNK_WORLD_SIZE,
+                            );
+                            let dist_sq = camera_world_pos.distance_squared(chunk_center);
 
-                        let lifecycle = self.store.current_lifecycle(&chunk_coord);
-                        self.scheduler.request_job(
-                            chunk_coord,
-                            JobType::LoadChunk,
-                            priority,
-                            lifecycle,
-                            0,
-                            dist_sq,
-                        );
+                            let priority = if dx.abs() <= self.simulation_radius
+                                && dz.abs() <= self.simulation_radius
+                            {
+                                JobPriority::High
+                            } else {
+                                JobPriority::Normal
+                            };
+
+                            let lifecycle = self.store.current_lifecycle(&chunk_coord);
+                            self.scheduler.request_job(
+                                chunk_coord,
+                                JobType::LoadChunk,
+                                priority,
+                                lifecycle,
+                                0,
+                                dist_sq,
+                            );
+                        }
                     }
                 }
             }
+            if missing_count == 0 {
+                self.streaming_radius_satisfied = true;
+            }
         }
 
-        // 7. Pembatalan kooperatif untuk request yang berada jauh di luar retain radius
+        // 10. Pembatalan kooperatif untuk request yang berada jauh di luar retain radius
         self.scheduler
             .cancel_outside_radius(camera_world_pos, self.retain_radius);
 
-        // 8. Evaluasi Eviksi jika melebihi batas retain radius atau memory budget
+        // 11. Evaluasi Eviksi jika melebihi batas retain radius atau memory budget
         let retain_radius_sq = (self.retain_radius as f32 * CHUNK_WORLD_SIZE).powi(2);
         let mut to_evict_clean = Vec::new();
 
@@ -393,6 +442,10 @@ impl World {
             }
         }
 
+        if !to_evict_clean.is_empty() {
+            self.streaming_radius_satisfied = false;
+        }
+
         for coord in to_evict_clean {
             self.store.remove(&coord);
             self.upload_queue.retain(|(c, _)| *c != coord);
@@ -401,13 +454,7 @@ impl World {
             }
         }
 
-        // Sinkronisasi pembersihan GPU mesh agar tidak ada monotonic leak
-        if let Some(ref mut rend) = renderer {
-            let active_set = self.store.resident.keys().cloned().collect();
-            rend.retain_only(&active_set);
-        }
-
-        // 9. Dispatch pending jobs ke Worker Pool
+        // 12. Dispatch pending jobs ke Worker Pool
         self.scheduler.dispatch_pending_jobs(
             &mut self.store,
             &self.materials,
@@ -415,5 +462,27 @@ impl World {
             &self.generator,
             32,
         );
+    }
+
+    /// Menghasilkan kawah bola terikat (CSG Crater) pada koordinat dunia,
+    /// menerapkan transaksi secara atomik, dan menandai chunk yang terdampak untuk remesh & save.
+    pub fn apply_crater(&mut self, center: Vec3, radius: f32) -> Result<Vec<IVec3>, String> {
+        let policy = crate::csg::DefaultDestructionPolicy;
+        let tx = crate::csg::CraterGenerator::generate(
+            center,
+            radius,
+            &policy,
+            &self.materials,
+            &self.store,
+        )
+        .map_err(|e| format!("Gagal menghasilkan kawah: {:?}", e))?;
+        let commit_result = tx
+            .commit(&mut self.store)
+            .map_err(|e| format!("Gagal menerapkan transaksi kawah: {:?}", e))?;
+        for coord in &commit_result.affected_chunks {
+            self.store
+                .mark_dirty(coord, crate::chunk::dirty_flags::SAVE_DIRTY);
+        }
+        Ok(commit_result.affected_chunks)
     }
 }

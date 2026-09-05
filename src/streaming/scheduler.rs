@@ -89,6 +89,12 @@ impl ChunkScheduler {
         self.queue.len()
     }
 
+    /// Memeriksa apakah job dengan tipe tertentu untuk koordinat chunk sedang berada dalam antrean scheduler
+    #[inline(always)]
+    pub fn is_queued(&self, coord: &IVec3, job_type: JobType) -> bool {
+        self.queued_jobs.contains_key(&(*coord, job_type))
+    }
+
     /// Meminta penjadwalan job untuk chunk tertentu dengan koalesi request duplikat dan Priority Escalation
     pub fn request_job(
         &mut self,
