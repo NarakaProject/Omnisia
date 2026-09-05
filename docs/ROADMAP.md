@@ -3,8 +3,8 @@
 > **Vision Statement**: *"Revive Chimeraland with a voxel soul."*  
 > **Core Substrate**: Procedural, structural, and rigid-body voxel world.  
 > **Core Gameplay Identity**: Creature ecosystem, taming, acquisition, pet companions, and modular devour/evolution.  
-> **Current Completed Phase**: **Phase 11.3 — Resource Gathering Primitives**  
-> **Next Active Phase**: **Phase 11.4 — Block Placement & Build Rules** (`PLANNED / NEXT`)
+> **Current Completed Phase**: **Phase 11.4 — Block Placement & Build Rules**  
+> **Next Active Phase**: **Phase 11.5 — Tools & Tool Actions** (`PLANNED / NEXT`)
 
 ---
 
@@ -253,9 +253,17 @@ Omnisia is an ambitious, high-performance voxel sandbox game built from scratch 
   - Player debounce cooldown rate-limiting (`InteractionCooldown`).
   - Strict architectural firewalls: zero inventory mutation, zero tool dependencies, zero dropped physical items, zero GPU/renderer dependencies.
   - Verified with 27 unit and integration tests (`tests/gathering_tests.rs`).
-- **Phase 11.4 — Block Placement & Build Rules (`PLANNED / NEXT`)**:
-  - Build orientation, support requirements, player clearance rules, ghost previews.
-- **Phase 11.5 — Tools & Tool Actions (`PLANNED`)**:
+- **Phase 11.4 — Block Placement & Build Rules (`COMPLETED / VALIDATED`)**:
+  - Deterministic 6-face placement proposal generation (`PlacementProposal`) with strict semantic preview firewall (zero visual ghost renderer, zero GPU allocations).
+  - Discrete block orientation (`BlockOrientation::Default`, `BlockOrientation::Facing(FaceDirection)`), decoupled from target face.
+  - Data-driven build rule definition (`BuildComponent`, `SupportRule`), authoritative in `BlockDefinition` and indexed by `ResourceId` in runtime `BuildRuleRegistry`.
+  - Semantic support rules (`AnyAdjacent`, `FloorOnly`, `AttachmentFace`, `None`), distinguishing `SupportNotResident` from `AIR`.
+  - Reused player capsule clearance (`player.current_capsule().intersects_aabb(...)`) for standing and crouching postures.
+  - Authoritative final commit re-validation (`validate_placement_proposal`) ensuring stale proposals cannot bypass live world changes.
+  - Atomic mutation via existing `VoxelEditTransaction` and `World::commit_voxel_transaction()`, preserving structural connectivity, dynamic aggregate extraction, and asynchronous mesh invalidation.
+  - Rate-limiting debounce cooldown reuse (`InteractionCooldown`).
+  - Verified with 15 focused unit and integration tests (`tests/placement_rules_tests.rs`).
+- **Phase 11.5 — Tools & Tool Actions (`PLANNED / NEXT`)**:
   - Tool categories, effectiveness multipliers, tool durability mechanics.
 - **Phase 11.6 — Generic Interactable World Objects & Feedback (`PLANNED`)**:
   - Generic interaction abstraction, audio/visual cues.

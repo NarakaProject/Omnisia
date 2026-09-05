@@ -3,8 +3,8 @@
 [![Rust](https://img.shields.io/badge/Rust-2021_Edition-orange.svg)](https://www.rust-lang.org/)
 [![wgpu](https://img.shields.io/badge/wgpu-v24_(Metal%20%2F%20Vulkan%20%2F%20DX12)-blue.svg)](https://wgpu.rs/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Phase](https://img.shields.io/badge/Phase-11.3_Validated-brightgreen.svg)](#completed-phases)
-[![Tests](https://img.shields.io/badge/Tests-918_Passing-brightgreen.svg)](#test-suite--validation-evidence)
+[![Phase](https://img.shields.io/badge/Phase-11.4_Validated-brightgreen.svg)](#completed-phases)
+[![Tests](https://img.shields.io/badge/Tests-933_Passing-brightgreen.svg)](#test-suite--validation-evidence)
 
 > **Vision**: *"Revive Chimeraland with a voxel soul."*  
 > Omnisia is a high-performance voxel sandbox engine and game built from scratch in pure Rust and `wgpu`. It merges continuous procedural world generation, structural connectivity, and rigid-body physical simulation with a deep creature ecosystem, taming, pet raising, and modular chimera devour/evolution.
@@ -20,8 +20,8 @@ For any developer or AI coding agent entering this repository for the first time
 | **What is Omnisia?** | A voxel sandbox game engine combining a procedural voxel substrate with modular creature and evolution gameplay. |
 | **What is the long-term vision?** | Revive the modular creature capture, chimera evolution, and open living world of *Chimeraland* on an authoritative, physically reactive voxel substrate. |
 | **What is the current gameplay reality?** | **Early physics & locomotion substrate with developer tooling & interaction mutation.** The player can walk, sprint, crouch, jump, auto-step, glide, push dynamic rigid bodies, query targeted voxels via deterministic 3D DDA raycasting, destroy and place voxels with player capsule overlap protection, and use the Developer Debug Console (`` ` ``) / Free Camera (`camera free`). There are **no creatures, combat, taming, inventory, crafting, or devour systems yet**. |
-| **What Phase is complete?** | **Phase 11.3 — Resource Gathering Primitives** (Validated with 918 total passing workspace tests across 20 test targets, 8 validation binaries, 54 benchmarks). |
-| **What is the next Phase?** | **Phase 11.4 — Block Placement & Build Rules** (Build orientation, support requirements, player clearance rules, ghost previews). |
+| **What Phase is complete?** | **Phase 11.4 — Block Placement & Build Rules** (Validated with 933 total passing workspace tests across 21 test targets, 8 validation binaries, 54 benchmarks). |
+| **What is the next Phase?** | **Phase 11.5 — Tools & Tool Actions** (Tool categories, effectiveness multipliers, tool durability mechanics). |
 | **What systems are authoritative?** | `ChunkStore` (static terrain), `DynamicBody` (detached voxels), `PhysicsWorld` (rigid bodies), `PlayerController` (kinematic locomotion), `EnvironmentClock` (environment time), Data Registry (modding definitions). |
 | **What systems are derived / cache state?** | `EnvironmentState` (derived visual environment model), `DeveloperCameraContext` (observational free camera mode), `SkyUniform` & `LightUniform` (GPU uniform buffers), `MeshCache` (GPU mesh buffers), spatial broadphase grid, collision contact manifolds, transient structural BFS results. |
 | **What are the top architectural invariants?** | (1) Player is Kinematic, NEVER a `RigidBody`, NEVER in islands. (2) 1 structural aggregate = 1 `RigidBody` owning $M$ colliders (never 1 voxel = 1 body). (3) Zero double-ownership of voxels. (4) Single authority for environment time in `EnvironmentClock`. (5) Developer camera does NOT mutate player position or physics. |
@@ -75,6 +75,7 @@ PHASE 10.7 STRESS INTEGRATION           Concurrent terrain destruction + real-ti
 PHASE 11.1 INTERACTION FOUNDATION       Deterministic 3D DDA voxel raycast + eye origin + 14 tests
 PHASE 11.2 VOXEL INTERACTION            Voxel removal + placement + capsule overlap guard + CSG + 18 tests
 PHASE 11.3 RESOURCE GATHERING           Data-driven harvestable component + yield determinism + CSG + 27 tests
+PHASE 11.4 BLOCK PLACEMENT & RULES     Placement proposal + discrete orientation + support rules + 15 tests
 ```
 
 ### Authoritative Player Locomotion Semantics (Phase 8D / 9.10)
@@ -109,7 +110,9 @@ Phase 10 successfully connected the completed physical simulation substrate to d
 ### Phase 11 — Player ↔ World Interaction (`IN PROGRESS`)
 - **Phase 11.1 — Interaction Foundation (`VALIDATED`)**: Deterministic 3D DDA voxel raycast query (`raycast_voxels`) against authoritative `ChunkStore`, player eye origin integration (`player.eye_position()`), configurable interaction reach (`PlayerConfig.interaction_reach`, default 5.0m), 6 canonical face normals (+X, -X, +Y, -Y, +Z, -Z), Euclidean negative coordinate support, strict residency awareness (zero silent chunk loading/generation), 14 tests.
 - **Phase 11.2 — Voxel Interaction (`VALIDATED`)**: Validated voxel removal (`can_remove`), adjacent placement (`can_place`), player capsule overlap guard (`PlayerCapsuleOverlap`), atomic multi-chunk CSG transaction, structural detachment handoff into `DynamicBody` in `PhysicsWorld`, remesh invalidation, rate-limiting debounce cooldown, 18 tests.
-- **Phase 11.3 — Resource & Gathering Primitives (`PLANNED / NEXT`)**: Resource identity, gathering, harvesting yields, collection events.
+- **Phase 11.3 — Resource & Gathering Primitives (`VALIDATED`)**: Data-driven harvestable component (`HarvestableComponent`), runtime `ResourceGatheringRegistry`, deterministic yield calculation, reach & residency validation, CSG integration, structural integration, 27 tests.
+- **Phase 11.4 — Block Placement & Build Rules (`VALIDATED`)**: Semantic placement proposal (`PlacementProposal`), discrete orientation (`BlockOrientation`), data-driven build rules (`BuildComponent`, `SupportRule`), authoritative live re-validation, player capsule clearance, CSG integration, 15 tests.
+- **Phase 11.5 — Tools & Tool Actions (`PLANNED / NEXT`)**: Tool categories, effectiveness multipliers, tool durability mechanics.
 
 ---
 
@@ -276,7 +279,7 @@ Omnisia/
 │   ├── streaming/       # ChunkStore, scheduler, eviction, memory budget
 │   ├── structure/       # 6-connected localized BFS, anchor components
 │   └── worldgen/        # Deterministic 3D volumetric noise, biomes, vegetation
-└── tests/               # 20 regression test targets (918 automated tests)
+└── tests/               # 21 regression test targets (933 automated tests)
 ```
 
 ---

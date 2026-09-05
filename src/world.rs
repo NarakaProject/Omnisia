@@ -6,6 +6,7 @@ use crate::chunk::Chunk;
 use crate::coord::{world_pos_to_world_voxel, CHUNK_SIZE, CHUNK_WORLD_SIZE};
 use crate::csg::{VoxelEditCommitResult, VoxelEditError, VoxelEditTransaction};
 use crate::interaction::gathering::ResourceGatheringRegistry;
+use crate::interaction::placement::BuildRuleRegistry;
 use crate::material::MaterialRegistry;
 use crate::mesh::types::MeshData;
 use crate::modding::registry::BlockRegistry;
@@ -49,6 +50,7 @@ pub struct World {
     pub materials: MaterialRegistry,
     pub blocks: BlockRegistry,
     pub resources: ResourceGatheringRegistry,
+    pub build_rules: BuildRuleRegistry,
     pub storage: Arc<dyn RegionStore>,
     pub generator: Arc<dyn ChunkGenerator>,
     pub scheduler: ChunkScheduler,
@@ -113,12 +115,14 @@ impl World {
         let anchor_policy = AnchorPolicy::from_registries(&materials, &blocks);
         let structure = StructuralSystem::new(anchor_policy);
         let resources = ResourceGatheringRegistry::from_registries(&materials, &blocks);
+        let build_rules = BuildRuleRegistry::from_registries(&materials, &blocks);
 
         Self {
             store: ChunkStore::new(),
             materials,
             blocks,
             resources,
+            build_rules,
             storage: Arc::new(MemoryCompressedRegionStore::new()),
             generator: Arc::new(ProceduralWorldGenerator::new(config)),
             scheduler: ChunkScheduler::new(num_cpus),

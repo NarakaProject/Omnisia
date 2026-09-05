@@ -55,6 +55,46 @@ fn default_yield_quantity() -> u32 {
     1
 }
 
+/// Aturan penopang fisik yang disyaratkan saat blok ditempatkan di dunia (Phase 11.4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SupportRule {
+    /// Blok membutuhkan setidaknya satu tetangga solid yang resident di salah satu dari 6 sisi (+X, -X, +Y, -Y, +Z, -Z)
+    #[default]
+    AnyAdjacent,
+    /// Blok membutuhkan tetangga solid yang resident tepat di bawahnya (candidate + (0, -1, 0))
+    FloorOnly,
+    /// Blok membutuhkan tetangga solid yang resident pada sisi tempat ia ditempelkan (target_voxel)
+    AttachmentFace,
+    /// Blok dapat melayang bebas tanpa membutuhkan penopang fisik apa pun
+    None,
+}
+
+/// Komponen penempatan dan aturan pembangunan untuk balok voxel (Phase 11.4).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BuildComponent {
+    /// Apakah blok ini membutuhkan penopang fisik saat ditempatkan (default: true).
+    /// INVARIANT: Jika `requires_support == false`, maka `support_rule` diabaikan secara semantik.
+    #[serde(default = "default_true")]
+    pub requires_support: bool,
+    /// Aturan penopang yang harus dipenuhi jika `requires_support == true` (default: AnyAdjacent)
+    #[serde(default)]
+    pub support_rule: SupportRule,
+    /// Batasan orientasi penempatan opsional (misal: hanya sisi tertentu)
+    #[serde(default)]
+    pub allowed_orientations: Option<Vec<crate::interaction::types::BlockOrientation>>,
+}
+
+impl Default for BuildComponent {
+    fn default() -> Self {
+        Self {
+            requires_support: true,
+            support_rule: SupportRule::AnyAdjacent,
+            allowed_orientations: None,
+        }
+    }
+}
+
 /// Kumpulan komponen kapabilitas generik yang dapat ditempelkan pada blok
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct BlockComponents {
@@ -64,6 +104,8 @@ pub struct BlockComponents {
     pub lift_capacity: Option<LiftCapacityComponent>,
     #[serde(default)]
     pub harvestable: Option<HarvestableComponent>,
+    #[serde(default)]
+    pub build: Option<BuildComponent>,
     /// Properti kustom dinamis tambahan untuk ekstensi masa depan
     #[serde(flatten)]
     pub extra: HashMap<String, serde_json::Value>,

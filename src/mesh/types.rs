@@ -1,5 +1,6 @@
 use bytemuck::{Pod, Zeroable};
 use glam::{IVec3, Vec3};
+use serde::{Deserialize, Serialize};
 
 /// Format vertex GPU untuk rendering micro-voxel
 #[repr(C)]
@@ -82,7 +83,8 @@ impl MeshData {
 }
 
 /// 6 Arah sisi kubus voxel
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum FaceDirection {
     PosX, // Right  (+X)
     NegX, // Left   (-X)

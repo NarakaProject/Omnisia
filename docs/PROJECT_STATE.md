@@ -1,8 +1,8 @@
 # Omnisia — Authoritative Project State
 
-> **Current Milestone**: Phase 11.3 — Resource Gathering Primitives (**COMPLETED / VALIDATED**)  
-> **Next Milestone**: Phase 11.4 — Block Placement & Build Rules (**PLANNED / NEXT**)  
-> **Verified HEAD Commit**: Current Phase 11.3 Working State  
+> **Current Milestone**: Phase 11.4 — Block Placement & Build Rules (**COMPLETED / VALIDATED**)  
+> **Next Milestone**: Phase 11.5 — Tools & Tool Actions (**PLANNED / NEXT**)  
+> **Verified HEAD Commit**: Current Phase 11.4 Working State  
 > **Branch**: `main`  
 > **Source-of-Truth Policy**: Source code and passing automated tests are the absolute source of truth.
 
@@ -16,9 +16,9 @@ Every count in this document has been directly audited and verified against the 
 - **Compiler**: Rust 2021 edition, `cargo build --release` compiles cleanly with zero errors.
 - **Formatting**: `cargo fmt --all -- --check` passes cleanly with zero diffs.
 - **Linter**: `cargo clippy --all-targets --all-features -- -D warnings` passes cleanly with zero warnings or errors.
-- **Test Suite**: `cargo test --all-targets` passes with **918 passed, 0 failed, 0 ignored** across 20 test targets.
+- **Test Suite**: `cargo test --all-targets` passes with **933 passed, 0 failed, 0 ignored** across 21 test targets.
 
-### Test Count Breakdown by Target (918 Total Tests)
+### Test Count Breakdown by Target (933 Total Tests)
 
 | Test Target Binary | Scope / Feature Area | Verified Test Count | Status |
 |:---|:---|:---:|:---:|
@@ -36,13 +36,14 @@ Every count in this document has been directly audited and verified against the 
 | `tests/console_tooling_tests.rs` | Single EnvironmentClock Authority, Pause/Resume Isolation, Time Scale Bounds (0, 1000], Decoupled Developer Camera, Read-Only Player Snapshot, Command Parser Quoting & Collapse, 4096-Byte Limit, UTF-8/Unicode Safety, ASCII Fallback to `?`, Help Auto-Generation, Clear Decoupling (Phase 10.5.x) | **19** | PASS |
 | `tests/voxel_interaction_tests.rs` | Voxel Removal, Adjacent Face Placement, Reach Validation, Player Capsule Overlap Guard, Multi-Chunk Atomicity, Structural Detachment into DynamicBody, Remesh Invalidation, Rate-Limiting Debounce Cooldown (Phase 11.2) | **18** | PASS |
 | `tests/impact_tests.rs` | ImpactEvent, ImpactSource, Magnitude, AffectedVolume, Euclidean Boundaries, Determinism (Phase 10.1) | **17** | PASS |
+| `tests/placement_rules_tests.rs` | Block Placement & Build Rules, 6-Face Targeting, Candidate Calculation, Discrete Orientation, Data-Driven Support Rules, Capsule Clearance, Stale Proposal Invariant, Remesh & Structural Integration, Cooldown Rate-Limiting, Zero Visual Ghost Rendering (Phase 11.4) | **15** | PASS |
 | `tests/interaction_tests.rs` | Deterministic 3D DDA Voxel Raycast, Player Eye Origin Integration, Max Reach Invariants, 6 Canonical Face Normals (+X, -X, +Y, -Y, +Z, -Z), Euclidean Negative Coordinates, Chunk Boundary Crossing, Residency Awareness, Zero-Allocation Iteration (Phase 11.1) | **14** | PASS |
 | `tests/engine_tests.rs` | Canonical Indexing, Ambient Occlusion, Culled & Greedy Meshing, Frustum (Phase 1–3) | **13** | PASS |
 | `tests/modding_tests.rs` | Mod Discovery, Manifest Parsing, SemVer, Safe Overrides, ResourceId (Phase 2–2.5) | **11** | PASS |
 | `tests/streaming_tests.rs` | ChunkStore Residency, Job Scheduler, Memory Budget, Eviction Lifecycle (Phase 3) | **11** | PASS |
 | `tests/structure_tests.rs` | 6-Connected Adjacency, Structural Anchors, Aggregate Extraction (Phase 7) | **11** | PASS |
 | `tests/scale_tests.rs` | Metric Coordinate Invariants (1 vx = 0.5m), Scale Ruler, Traversal Residency (Phase 7) | **7** | PASS |
-| **Workspace Total** | **All Subsystems** | **918** | **PASS** |
+| **Workspace Total** | **All Subsystems** | **933** | **PASS** |
 
 ### Verified Validation Binaries (8 Binaries)
 

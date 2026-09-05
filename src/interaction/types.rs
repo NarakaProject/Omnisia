@@ -6,6 +6,7 @@ use crate::csg::edit::VoxelEditError;
 use crate::csg::transaction::VoxelEditCommitResult;
 use crate::material::MaterialId;
 use crate::mesh::types::FaceDirection;
+use crate::modding::definitions::SupportRule;
 use crate::modding::resource_id::ResourceId;
 use crate::structure::aggregate::DetachedAggregate;
 use crate::voxel::VoxelBlock;
@@ -443,4 +444,459 @@ impl From<InteractionMutationError> for GatheringError {
             other => Self::MutationError(other),
         }
     }
+}
+
+/// Orientasi spasial diskret balok voxel dalam grid 3D kubik (Phase 11.4).
+///
+/// Menjamin determinisme dan kekebalan terhadap akumulasi drifting floating-point.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum BlockOrientation {
+    /// Orientasi default standar (isotropik / tanpa orientasi khusus)
+    #[default]
+    Default,
+    /// Menghadap ke salah satu dari 6 sisi kubus kanonikal
+    Facing(FaceDirection),
+}
+
+impl BlockOrientation {
+    /// Mengonstruksi orientasi diskret dari arah pandang kontinu pemain
+    /// secara deterministik menggunakan sumbu dominan 3D.
+    pub fn from_look_direction(look: Vec3) -> Self {
+        let abs_x = look.x.abs();
+        let abs_y = look.y.abs();
+        let abs_z = look.z.abs();
+
+        if abs_x >= abs_y && abs_x >= abs_z {
+            if look.x >= 0.0 {
+                Self::Facing(FaceDirection::PosX)
+            } else {
+                Self::Facing(FaceDirection::NegX)
+            }
+        } else if abs_y >= abs_x && abs_y >= abs_z {
+            if look.y >= 0.0 {
+                Self::Facing(FaceDirection::PosY)
+            } else {
+                Self::Facing(FaceDirection::NegY)
+            }
+        } else if look.z >= 0.0 {
+            Self::Facing(FaceDirection::PosZ)
+        } else {
+            Self::Facing(FaceDirection::NegZ)
+        }
+    }
+
+    /// Mengonstruksi orientasi horizontal 4-arah (abaikan sumbu Y)
+    pub fn from_horizontal_look(look: Vec3) -> Self {
+        let abs_x = look.x.abs();
+        let abs_z = look.z.abs();
+
+        if abs_x >= abs_z {
+            if look.x >= 0.0 {
+                Self::Facing(FaceDirection::PosX)
+            } else {
+                Self::Facing(FaceDirection::NegX)
+            }
+        } else if look.z >= 0.0 {
+            Self::Facing(FaceDirection::PosZ)
+        } else {
+            Self::Facing(FaceDirection::NegZ)
+        }
+    }
+
+    /// Mengonstruksi orientasi eksplisit dari FaceDirection
+    #[inline(always)]
+    pub const fn from_facing(face: FaceDirection) -> Self {
+        Self::Facing(face)
+    }
+
+    /// Mengambil sisi hadap jika orientasi bertipe Facing
+    #[inline(always)]
+    pub fn facing(&self) -> Option<FaceDirection> {
+        match self {
+            Self::Facing(f) => Some(*f),
+            Self::Default => None,
+        }
+    }
+
+    /// Apakah orientasi merupakan default
+    #[inline(always)]
+    pub fn is_default(&self) -> bool {
+        matches!(self, Self::Default)
+    }
+}
+
+/// Alasan penolakan proposal atau validasi penempatan balok (Phase 11.4)
+#[derive(Debug, Clone, PartialEq)]
+pub enum PlacementRejectionReason {
+    /// Raycast tidak menabrak voxel solid mana pun
+    NoTargetHit,
+    /// Chunk koordinat target voxel tidak termuat di memori
+    TargetNotResident { coord: IVec3 },
+    /// Chunk koordinat tujuan penempatan kandidat tidak termuat di memori
+    CandidateNotResident { coord: IVec3 },
+    /// Jarak kontak melebihi batas jangkauan interaksi (reach)
+    ExceedsReach { distance: f32, max_reach: f32 },
+    /// Sisi voxel yang ditarget sudah berupa udara (bukan solid)
+    TargetIsAir { coord: IVec3 },
+    /// Koordinat kandidat penempatan sudah ditempati oleh voxel solid
+    CandidateOccupied {
+        coord: IVec3,
+        current_material: MaterialId,
+    },
+    /// Penempatan ditolak karena beririsan dengan kapsul tabrakan pemain
+    PlayerCapsuleOverlap { coord: IVec3 },
+    /// Material yang dicoba untuk ditempatkan tidak valid (misal AIR)
+    InvalidMaterial(String),
+    /// Blok membutuhkan penopang fisik namun tidak ada penopang yang memenuhi syarat
+    SupportMissing { coord: IVec3, rule: SupportRule },
+    /// Koordinat penopang yang disyaratkan berada di chunk yang belum termuat (non-resident)
+    SupportNotResident { coord: IVec3 },
+    /// Orientasi penempatan tidak valid untuk blok ini
+    InvalidOrientation(String),
+    /// Cooldown aksi interaksi masih aktif
+    CooldownActive { remaining: f32 },
+    /// Kesalahan pada lapisan transaksi CSG
+    TransactionError(String),
+    /// Proposal telah usang dan gagal pada validasi final otoritatif
+    StaleProposal { reason: String },
+}
+
+impl fmt::Display for PlacementRejectionReason {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NoTargetHit => write!(f, "No target hit by placement raycast"),
+            Self::TargetNotResident { coord } => {
+                write!(f, "Target voxel at {:?} is in a non-resident chunk", coord)
+            }
+            Self::CandidateNotResident { coord } => {
+                write!(
+                    f,
+                    "Candidate voxel at {:?} is in a non-resident chunk",
+                    coord
+                )
+            }
+            Self::ExceedsReach {
+                distance,
+                max_reach,
+            } => {
+                write!(
+                    f,
+                    "Placement distance ({:.2}m) exceeds max reach ({:.2}m)",
+                    distance, max_reach
+                )
+            }
+            Self::TargetIsAir { coord } => write!(f, "Placement target at {:?} is air", coord),
+            Self::CandidateOccupied {
+                coord,
+                current_material,
+            } => {
+                write!(
+                    f,
+                    "Candidate location at {:?} is already occupied (material={:?})",
+                    coord, current_material
+                )
+            }
+            Self::PlayerCapsuleOverlap { coord } => {
+                write!(
+                    f,
+                    "Candidate voxel at {:?} overlaps player collision capsule",
+                    coord
+                )
+            }
+            Self::InvalidMaterial(msg) => write!(f, "Invalid placement material: {}", msg),
+            Self::SupportMissing { coord, rule } => {
+                write!(
+                    f,
+                    "Support required by rule {:?} is missing for placement at {:?}",
+                    rule, coord
+                )
+            }
+            Self::SupportNotResident { coord } => {
+                write!(
+                    f,
+                    "Required support location at {:?} is in a non-resident chunk",
+                    coord
+                )
+            }
+            Self::InvalidOrientation(msg) => write!(f, "Invalid placement orientation: {}", msg),
+            Self::CooldownActive { remaining } => {
+                write!(f, "Placement cooldown active ({:.3}s remaining)", remaining)
+            }
+            Self::TransactionError(msg) => write!(f, "Placement transaction error: {}", msg),
+            Self::StaleProposal { reason } => {
+                write!(f, "Placement proposal is stale: {}", reason)
+            }
+        }
+    }
+}
+
+/// Status validitas dari proposal penempatan balok (Phase 11.4)
+#[derive(Debug, Clone, PartialEq)]
+pub enum PlacementValidity {
+    /// Proposal valid dan siap diajukan ke validasi transaksi final
+    Valid,
+    /// Proposal tidak valid beserta alasan penolakannya
+    Invalid(PlacementRejectionReason),
+}
+
+impl PlacementValidity {
+    #[inline(always)]
+    pub fn is_valid(&self) -> bool {
+        matches!(self, Self::Valid)
+    }
+
+    #[inline(always)]
+    pub fn rejection_reason(&self) -> Option<&PlacementRejectionReason> {
+        match self {
+            Self::Invalid(reason) => Some(reason),
+            Self::Valid => None,
+        }
+    }
+}
+
+/// Proposal semantik penempatan balok (Phase 11.4).
+///
+/// INVARIANT:
+/// 1. Berstatus DERIVED state (bukan otoritas dunia).
+/// 2. Murni in-memory / backend state tanpa ketergantungan renderer GPU atau ghost mesh.
+/// 3. Tidak memutasi ChunkStore atau World saat dibuat.
+/// 4. Harus divalidasi ulang terhadap state otoritatif sebelum dikomit.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PlacementProposal {
+    /// Koordinat voxel solid yang menjadi target klik
+    pub target_voxel: IVec3,
+    /// Koordinat kandidat penempatan (target_voxel + normal sisi)
+    pub candidate_voxel: IVec3,
+    /// Sisi kubus target yang terkena raycast
+    pub target_face: FaceDirection,
+    /// Orientasi diskret balok yang diajukan
+    pub orientation: BlockOrientation,
+    /// Material ID dari voxel yang diajukan
+    pub material: MaterialId,
+    /// ResourceId blok opsional jika berasal dari BlockDefinition
+    pub block_id: Option<ResourceId>,
+    /// Status validitas semantik proposal saat dievaluasi
+    pub validity: PlacementValidity,
+}
+
+impl PlacementProposal {
+    #[inline(always)]
+    pub fn is_valid(&self) -> bool {
+        self.validity.is_valid()
+    }
+
+    #[inline(always)]
+    pub fn rejection_reason(&self) -> Option<&PlacementRejectionReason> {
+        self.validity.rejection_reason()
+    }
+}
+
+/// Kesalahan yang dapat terjadi saat validasi atau eksekusi penempatan balok (Phase 11.4)
+#[derive(Debug, Clone, PartialEq)]
+pub enum PlacementError {
+    NoTargetHit,
+    TargetNotResident {
+        coord: IVec3,
+    },
+    CandidateNotResident {
+        coord: IVec3,
+    },
+    ExceedsReach {
+        distance: f32,
+        max_reach: f32,
+    },
+    TargetIsAir {
+        coord: IVec3,
+    },
+    CandidateOccupied {
+        coord: IVec3,
+        current_material: MaterialId,
+    },
+    PlayerCapsuleOverlap {
+        coord: IVec3,
+    },
+    InvalidMaterial(String),
+    SupportMissing {
+        coord: IVec3,
+        rule: SupportRule,
+    },
+    SupportNotResident {
+        coord: IVec3,
+    },
+    InvalidOrientation(String),
+    CooldownActive {
+        remaining: f32,
+    },
+    TransactionError(VoxelEditError),
+    MutationError(InteractionMutationError),
+    StaleProposal(String),
+}
+
+impl fmt::Display for PlacementError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NoTargetHit => write!(f, "No target hit by placement raycast"),
+            Self::TargetNotResident { coord } => {
+                write!(f, "Target voxel at {:?} is in a non-resident chunk", coord)
+            }
+            Self::CandidateNotResident { coord } => {
+                write!(
+                    f,
+                    "Candidate voxel at {:?} is in a non-resident chunk",
+                    coord
+                )
+            }
+            Self::ExceedsReach {
+                distance,
+                max_reach,
+            } => {
+                write!(
+                    f,
+                    "Placement distance ({:.2}m) exceeds max reach ({:.2}m)",
+                    distance, max_reach
+                )
+            }
+            Self::TargetIsAir { coord } => write!(f, "Placement target at {:?} is air", coord),
+            Self::CandidateOccupied {
+                coord,
+                current_material,
+            } => {
+                write!(
+                    f,
+                    "Candidate location at {:?} is already occupied (material={:?})",
+                    coord, current_material
+                )
+            }
+            Self::PlayerCapsuleOverlap { coord } => {
+                write!(
+                    f,
+                    "Placement at {:?} overlaps player collision capsule",
+                    coord
+                )
+            }
+            Self::InvalidMaterial(msg) => write!(f, "Invalid placement material: {}", msg),
+            Self::SupportMissing { coord, rule } => {
+                write!(
+                    f,
+                    "Support required by rule {:?} is missing for placement at {:?}",
+                    rule, coord
+                )
+            }
+            Self::SupportNotResident { coord } => {
+                write!(
+                    f,
+                    "Required support location at {:?} is in a non-resident chunk",
+                    coord
+                )
+            }
+            Self::InvalidOrientation(msg) => write!(f, "Invalid placement orientation: {}", msg),
+            Self::CooldownActive { remaining } => {
+                write!(f, "Placement cooldown active ({:.3}s remaining)", remaining)
+            }
+            Self::TransactionError(err) => write!(f, "Placement transaction error: {}", err),
+            Self::MutationError(err) => write!(f, "Placement mutation error: {}", err),
+            Self::StaleProposal(msg) => write!(f, "Placement proposal is stale: {}", msg),
+        }
+    }
+}
+
+impl std::error::Error for PlacementError {}
+
+impl From<VoxelEditError> for PlacementError {
+    fn from(err: VoxelEditError) -> Self {
+        Self::TransactionError(err)
+    }
+}
+
+impl From<InteractionMutationError> for PlacementError {
+    fn from(err: InteractionMutationError) -> Self {
+        match err {
+            InteractionMutationError::NoTargetHit => Self::NoTargetHit,
+            InteractionMutationError::TargetNotResident { coord } => {
+                Self::TargetNotResident { coord }
+            }
+            InteractionMutationError::DestinationNotResident { coord } => {
+                Self::CandidateNotResident { coord }
+            }
+            InteractionMutationError::ExceedsReach {
+                distance,
+                max_reach,
+            } => Self::ExceedsReach {
+                distance,
+                max_reach,
+            },
+            InteractionMutationError::PlacementOccupied { coord, current } => {
+                Self::CandidateOccupied {
+                    coord,
+                    current_material: current.material(),
+                }
+            }
+            InteractionMutationError::PlayerCapsuleOverlap { coord } => {
+                Self::PlayerCapsuleOverlap { coord }
+            }
+            InteractionMutationError::RemovalTargetIsAir { coord } => Self::TargetIsAir { coord },
+            InteractionMutationError::InvalidMaterial(msg) => Self::InvalidMaterial(msg),
+            InteractionMutationError::CooldownActive { remaining } => {
+                Self::CooldownActive { remaining }
+            }
+            InteractionMutationError::TransactionError(e) => Self::TransactionError(e),
+        }
+    }
+}
+
+impl From<PlacementRejectionReason> for PlacementError {
+    fn from(reason: PlacementRejectionReason) -> Self {
+        match reason {
+            PlacementRejectionReason::NoTargetHit => Self::NoTargetHit,
+            PlacementRejectionReason::TargetNotResident { coord } => {
+                Self::TargetNotResident { coord }
+            }
+            PlacementRejectionReason::CandidateNotResident { coord } => {
+                Self::CandidateNotResident { coord }
+            }
+            PlacementRejectionReason::ExceedsReach {
+                distance,
+                max_reach,
+            } => Self::ExceedsReach {
+                distance,
+                max_reach,
+            },
+            PlacementRejectionReason::TargetIsAir { coord } => Self::TargetIsAir { coord },
+            PlacementRejectionReason::CandidateOccupied {
+                coord,
+                current_material,
+            } => Self::CandidateOccupied {
+                coord,
+                current_material,
+            },
+            PlacementRejectionReason::PlayerCapsuleOverlap { coord } => {
+                Self::PlayerCapsuleOverlap { coord }
+            }
+            PlacementRejectionReason::InvalidMaterial(msg) => Self::InvalidMaterial(msg),
+            PlacementRejectionReason::SupportMissing { coord, rule } => {
+                Self::SupportMissing { coord, rule }
+            }
+            PlacementRejectionReason::SupportNotResident { coord } => {
+                Self::SupportNotResident { coord }
+            }
+            PlacementRejectionReason::InvalidOrientation(msg) => Self::InvalidOrientation(msg),
+            PlacementRejectionReason::CooldownActive { remaining } => {
+                Self::CooldownActive { remaining }
+            }
+            PlacementRejectionReason::TransactionError(msg) => {
+                Self::StaleProposal(format!("Transaction error: {}", msg))
+            }
+            PlacementRejectionReason::StaleProposal { reason } => Self::StaleProposal(reason),
+        }
+    }
+}
+
+/// Hasil agregat dari aksi penempatan balok yang berhasil dieksekusi ke dunia (Phase 11.4)
+#[derive(Debug, Clone, PartialEq)]
+pub struct PlacementResult {
+    /// Proposal semantik yang berhasil dieksekusi
+    pub proposal: PlacementProposal,
+    /// Hasil komit mutasi fisik dan struktural di dunia
+    pub mutation: VoxelMutationResult,
 }
