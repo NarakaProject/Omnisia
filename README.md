@@ -2,9 +2,17 @@
 
 [![Rust](https://img.shields.io/badge/Rust-2021_Edition-orange.svg)](https://www.rust-lang.org/)
 [![wgpu](https://img.shields.io/badge/wgpu-v24_(Metal%20%2F%20Vulkan%20%2F%20DX12)-blue.svg)](https://wgpu.rs/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![License: Proprietary](https://img.shields.io/badge/License-Proprietary-red.svg)](LICENSE)
 [![Phase](https://img.shields.io/badge/Phase-11.4_Validated-brightgreen.svg)](#completed-phases)
 [![Tests](https://img.shields.io/badge/Tests-933_Passing-brightgreen.svg)](#test-suite--validation-evidence)
+
+## License & Proprietary Notice
+
+This repository is strictly proprietary and licensed under **All Rights Reserved**.
+
+The code is made publicly visible for technical evaluation purposes only.
+
+No commercial or non-commercial reuse, redistribution, or modification is permitted.
 
 > **Vision**: *"Revive Chimeraland with a voxel soul."*  
 > Omnisia is a high-performance voxel sandbox engine and game built from scratch in pure Rust and `wgpu`. It merges continuous procedural world generation, structural connectivity, and rigid-body physical simulation with a deep creature ecosystem, taming, pet raising, and modular chimera devour/evolution.
@@ -285,5 +293,5 @@ Omnisia/
 ---
 
 ## 📜 License
-Omnisia is licensed under the [MIT License](LICENSE).
+Omnisia is strictly proprietary and licensed under **All Rights Reserved**. See [LICENSE](LICENSE) for details.
 
