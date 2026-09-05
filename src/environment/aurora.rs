@@ -69,19 +69,26 @@ impl AuroraParameters {
 
 /// Deterministic CPU reference evaluation of the procedural aurora curtain coordinate model.
 ///
-/// MANDATORY AMENDMENTS B & C COMPLIANCE:
+/// PHASE 10.6.1 COMPLIANCE:
 /// The primary aurora curtain arc is anchored along the `-Z` world axis.
 /// Given a camera position `camera_pos` and celestial view direction `dir`:
-/// 1. Computes the geometric intersection with the distant atmospheric layer shell.
-/// 2. Returns the spatial layer coordinates `(P_x, P_z)`.
+/// 1. Computes geometric intersections with three atmospheric layer shells (Far, Main, Fine).
+/// 2. Returns the spatial main layer coordinates `(P_x, P_z)` and layer ray distances `(t_far, t_main, t_fine)`.
 /// 3. Returns the directional envelope factor ensuring the curtain fades smoothly near the horizon
 ///    and upper dome.
+/// 4. Evaluates world anchor alignment with strictly ordered smoothstep edges (`1.0 - smoothstep(-0.55, 0.25, dir.z)`).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct AuroraReferenceResult {
-    /// Spatial layer X coordinate on the distant atmospheric layer.
+    /// Spatial layer X coordinate on the main atmospheric layer.
     pub layer_x: f32,
-    /// Spatial layer Z coordinate on the distant atmospheric layer.
+    /// Spatial layer Z coordinate on the main atmospheric layer.
     pub layer_z: f32,
+    /// Ray intersection distance to the Far atmospheric layer (2400m base).
+    pub t_far: f32,
+    /// Ray intersection distance to the Main atmospheric layer (1500m base).
+    pub t_main: f32,
+    /// Ray intersection distance to the Fine atmospheric layer (1050m base).
+    pub t_fine: f32,
     /// Vertical atmospheric envelope in `[0.0, 1.0]`.
     pub vertical_envelope: f32,
     /// World anchor directional alignment towards `-Z` in `[0.0, 1.0]`.
@@ -99,30 +106,40 @@ pub fn evaluate_aurora_reference(
 ) -> AuroraReferenceResult {
     let effective_emission = AuroraParameters { intensity }.effective_emission(sun_elevation);
 
-    // Distant atmospheric layer height with bounded altitude influence
+    // Altitude stability guard: clamps camera Y to [-100.0, 4000.0] to prevent layer collapse,
+    // coordinate singularities, and negative effective heights at extreme altitudes (e.g. Y=5000m).
     let clamped_cam_y = camera_pos.y.clamp(-100.0, 4000.0);
-    let effective_layer_height = (1500.0 - clamped_cam_y * 0.2).max(500.0);
 
-    // Distance to atmospheric layer plane
+    // Effective layer heights for the three apparent spatial depths:
+    let h_far = (2400.0 - clamped_cam_y * 0.15).max(400.0);
+    let h_main = (1500.0 - clamped_cam_y * 0.20).max(400.0);
+    let h_fine = (1050.0 - clamped_cam_y * 0.25).max(400.0);
+
+    // Distance to atmospheric layer planes along view direction:
     let safe_dy = dir.y.max(0.04);
-    let t = effective_layer_height / safe_dy;
+    let t_far = h_far / safe_dy;
+    let t_main = h_main / safe_dy;
+    let t_fine = h_fine / safe_dy;
 
-    // Spatial layer position in world space
-    let layer_x = camera_pos.x + t * dir.x;
-    let layer_z = camera_pos.z + t * dir.z;
+    // Spatial main layer position in world space:
+    let layer_x = camera_pos.x + t_main * dir.x;
+    let layer_z = camera_pos.z + t_main * dir.z;
 
-    // Vertical envelope: fades near horizon (dir.y < 0.05) and towards zenith (dir.y > 0.70)
-    let horizon_fade = smoothstep(0.04, 0.15, dir.y);
-    let zenith_fade = 1.0 - smoothstep(0.55, 0.85, dir.y);
+    // Vertical envelope: fades near horizon (dir.y < 0.04) and towards zenith (dir.y > 0.60):
+    let horizon_fade = smoothstep(0.04, 0.16, dir.y);
+    let zenith_fade = 1.0 - smoothstep(0.60, 0.88, dir.y);
     let vertical_envelope = horizon_fade * zenith_fade;
 
-    // World anchor alignment: centered along the -Z world axis (Amendment C)
-    // dir.z < 0 is towards -Z; smooth transition so curtains span predominantly across -Z
-    let anchor_alignment = smoothstep(0.2, -0.6, dir.z);
+    // World anchor alignment: centered along the -Z world axis (Amendment C & Section 16).
+    // Uses strictly ordered edges: -0.55 <= 0.25. Full alignment for dir.z <= -0.55; zero for dir.z >= 0.25.
+    let anchor_alignment = 1.0 - smoothstep(-0.55, 0.25, dir.z);
 
     AuroraReferenceResult {
         layer_x,
         layer_z,
+        t_far,
+        t_main,
+        t_fine,
         vertical_envelope,
         anchor_alignment,
         effective_emission,

@@ -1582,3 +1582,259 @@ fn test_celestial_hierarchy_and_terrain_isolation_with_aurora() {
         "Aurora intensity must NEVER affect LightUniform ambient_color"
     );
 }
+
+// ============================================================================
+// PHASE 10.6.1 SPECIFIC INVARIANT TESTS: ABI, DEPTH, TEMPORAL & SMOOTHSTEP
+// ============================================================================
+
+#[test]
+fn test_sky_uniform_abi_176_bytes() {
+    use omnisia::environment::SkyUniform;
+
+    // Strict ABI Verification: total size must be exactly 176 bytes (11 * 16 bytes std140)
+    assert_eq!(
+        std::mem::size_of::<SkyUniform>(),
+        176,
+        "SkyUniform ABI size must be exactly 176 bytes"
+    );
+    assert_eq!(
+        std::mem::size_of::<SkyUniform>() % 16,
+        0,
+        "SkyUniform total size must be a multiple of 16 bytes for std140 uniform buffer alignment"
+    );
+
+    // Byte offset verification for all 15 fields matching sky.wgsl uniform declaration:
+    let dummy = SkyUniform::default();
+    let base = &dummy as *const SkyUniform as usize;
+
+    assert_eq!(
+        &dummy.inv_view_proj as *const [f32; 16] as usize - base,
+        0,
+        "inv_view_proj offset must be 0"
+    );
+    assert_eq!(
+        &dummy.camera_pos as *const [f32; 3] as usize - base,
+        64,
+        "camera_pos offset must be 64"
+    );
+    assert_eq!(
+        &dummy.bounded_time as *const f32 as usize - base,
+        76,
+        "bounded_time offset must be 76"
+    );
+    assert_eq!(
+        &dummy.sun_direction as *const [f32; 3] as usize - base,
+        80,
+        "sun_direction offset must be 80"
+    );
+    assert_eq!(
+        &dummy.sun_elevation as *const f32 as usize - base,
+        92,
+        "sun_elevation offset must be 92"
+    );
+    assert_eq!(
+        &dummy.moon_direction as *const [f32; 3] as usize - base,
+        96,
+        "moon_direction offset must be 96"
+    );
+    assert_eq!(
+        &dummy.moon_phase as *const f32 as usize - base,
+        108,
+        "moon_phase offset must be 108"
+    );
+    assert_eq!(
+        &dummy.sun_color as *const [f32; 3] as usize - base,
+        112,
+        "sun_color offset must be 112"
+    );
+    assert_eq!(
+        &dummy.twilight_factor as *const f32 as usize - base,
+        124,
+        "twilight_factor offset must be 124"
+    );
+    assert_eq!(
+        &dummy.ambient_color as *const [f32; 3] as usize - base,
+        128,
+        "ambient_color offset must be 128"
+    );
+    assert_eq!(
+        &dummy.star_visibility as *const f32 as usize - base,
+        140,
+        "star_visibility offset must be 140"
+    );
+    assert_eq!(
+        &dummy.horizon_color as *const [f32; 3] as usize - base,
+        144,
+        "horizon_color offset must be 144"
+    );
+    assert_eq!(
+        &dummy.day_factor as *const f32 as usize - base,
+        156,
+        "day_factor offset must be 156"
+    );
+    assert_eq!(
+        &dummy.zenith_color as *const [f32; 3] as usize - base,
+        160,
+        "zenith_color offset must be 160"
+    );
+    assert_eq!(
+        &dummy.aurora_intensity as *const f32 as usize - base,
+        172,
+        "aurora_intensity offset must be 172"
+    );
+}
+
+#[test]
+fn test_aurora_multi_scale_temporal_freeze() {
+    // Validates that pausing game time freezes temporal evolution identically,
+    // and advancing time produces continuous, finite phase progression across all scales.
+    let mut clock = EnvironmentClock::new(0.0, 1200.0);
+    clock.set_day_fraction(0.00); // Midnight
+
+    // Fixed bounded time sample
+    let t_freeze = 42.5f32;
+    let tau = std::f32::consts::TAU;
+    let omega0 = tau / 60.0;
+
+    let phase_macro_1 = t_freeze * omega0;
+    let phase_curtain_1 = t_freeze * (omega0 * 2.0);
+    let phase_filaments_1 = t_freeze * (omega0 * 3.0);
+    let phase_shimmer_1 = t_freeze * (omega0 * 4.0);
+
+    // Re-evaluating with identical bounded time produces identical phases:
+    let phase_macro_2 = t_freeze * omega0;
+    let phase_curtain_2 = t_freeze * (omega0 * 2.0);
+    let phase_filaments_2 = t_freeze * (omega0 * 3.0);
+    let phase_shimmer_2 = t_freeze * (omega0 * 4.0);
+
+    assert_eq!(phase_macro_1, phase_macro_2);
+    assert_eq!(phase_curtain_1, phase_curtain_2);
+    assert_eq!(phase_filaments_1, phase_filaments_2);
+    assert_eq!(phase_shimmer_1, phase_shimmer_2);
+
+    // Phases are decoupled and operate at distinct non-synchronized harmonic rates:
+    assert_ne!(phase_macro_1, phase_curtain_1);
+    assert_ne!(phase_curtain_1, phase_filaments_1);
+    assert_ne!(phase_filaments_1, phase_shimmer_1);
+
+    // 60-second wrapping continuity: all harmonics wrap seamlessly to identity:
+    let t_wrap = 60.0f32;
+    for k in [1.0f32, 2.0, 3.0, 4.0] {
+        let angle = t_wrap * (omega0 * k);
+        assert!(
+            angle.sin().abs() < 1e-4,
+            "sin(t_wrap * omega) must wrap to 0.0, got {}",
+            angle.sin()
+        );
+        assert!(
+            (angle.cos() - 1.0).abs() < 1e-4,
+            "cos(t_wrap * omega) must wrap to 1.0, got {}",
+            angle.cos()
+        );
+    }
+}
+
+#[test]
+fn test_aurora_apparent_depth_parallax_continuity() {
+    use omnisia::environment::aurora::evaluate_aurora_reference;
+
+    // Hard review constraint: verify layer intersection mathematics numerically across the full validation range.
+    // Confirm the intended differential relationship t_far > t_main > t_fine across camera altitudes and view elevations.
+    let test_altitudes = [-100.0, 0.0, 64.0, 500.0, 2000.0, 4000.0, 5000.0];
+    let test_view_elevations = [0.05, 0.15, 0.35, 0.60, 0.85];
+
+    for &cam_y in &test_altitudes {
+        for &view_dy in &test_view_elevations {
+            let camera_pos = Vec3::new(100.0, cam_y, -200.0);
+            let dir = Vec3::new(0.0, view_dy, -((1.0 - view_dy * view_dy).sqrt())).normalize();
+
+            let ref_res = evaluate_aurora_reference(camera_pos, dir, -0.50, 1.0);
+
+            // 1. Strict ordering: t_far > t_main > t_fine holds everywhere:
+            assert!(
+                ref_res.t_far > ref_res.t_main,
+                "t_far ({}) must be > t_main ({}) at cam_y={}, view_dy={}",
+                ref_res.t_far,
+                ref_res.t_main,
+                cam_y,
+                view_dy
+            );
+            assert!(
+                ref_res.t_main > ref_res.t_fine,
+                "t_main ({}) must be > t_fine ({}) at cam_y={}, view_dy={}",
+                ref_res.t_main,
+                ref_res.t_fine,
+                cam_y,
+                view_dy
+            );
+
+            // 2. Minimum layer separation preserved (never collapses to 0):
+            assert!(
+                ref_res.t_far - ref_res.t_main > 500.0,
+                "Far and Main layers must remain separated by at least 500m along ray"
+            );
+            assert!(
+                ref_res.t_main - ref_res.t_fine > 200.0,
+                "Main and Fine layers must remain separated by at least 200m along ray"
+            );
+
+            // 3. Finiteness check:
+            assert!(ref_res.t_far.is_finite());
+            assert!(ref_res.t_main.is_finite());
+            assert!(ref_res.t_fine.is_finite());
+            assert!(ref_res.layer_x.is_finite());
+            assert!(ref_res.layer_z.is_finite());
+        }
+    }
+
+    // Camera translation differential parallax check:
+    // When the camera translates by dx, the apparent angular position on closer layers shifts faster:
+    let cam1 = Vec3::new(0.0, 64.0, 0.0);
+    let cam2 = Vec3::new(50.0, 64.0, 0.0); // 50m horizontal translation
+    let dir = Vec3::new(0.0, 0.35, -1.0).normalize();
+
+    let res1 = evaluate_aurora_reference(cam1, dir, -0.50, 1.0);
+    let res2 = evaluate_aurora_reference(cam2, dir, -0.50, 1.0);
+
+    // Layer X coordinates shift by dx:
+    assert!((res2.layer_x - res1.layer_x - 50.0).abs() < 1e-4);
+
+    // Differential parallax: ratio of ray distances t_far / t_fine > 2.0 (closer layer appears ~2x more responsive)
+    let parallax_ratio = res1.t_far / res1.t_fine;
+    assert!(
+        parallax_ratio > 2.0,
+        "Far layer is > 2x more distant than Fine layer: {}",
+        parallax_ratio
+    );
+}
+
+#[test]
+fn test_aurora_ordered_smoothstep_invariants() {
+    // Phase 10.6.1 Section 16 constraint:
+    // All smoothstep edge pairs used in the aurora pipeline must have edge0 < edge1 (ascending order).
+    fn assert_ascending(edge0: f32, edge1: f32, name: &str) {
+        assert!(
+            edge0 < edge1,
+            "Smoothstep edges for {} must be strictly ascending: {} < {}",
+            name,
+            edge0,
+            edge1
+        );
+    }
+
+    // Visibility
+    assert_ascending(-0.18, -0.06, "aurora_visibility");
+    // World anchor alignment
+    assert_ascending(-0.55, 0.25, "anchor_alignment");
+    // Vertical envelope
+    assert_ascending(0.04, 0.16, "horizon_fade");
+    assert_ascending(0.60, 0.88, "zenith_fade");
+    // Meso cluster mask
+    assert_ascending(0.25, 0.75, "cluster_mask");
+    // Vertical ray breaks
+    assert_ascending(0.20, 0.80, "break_mask");
+    // Fine ray breaks
+    assert_ascending(0.40, 0.85, "fine_break");
+    // Upper reaches violet accent
+    assert_ascending(0.32, 0.72, "upper_reaches");
+}

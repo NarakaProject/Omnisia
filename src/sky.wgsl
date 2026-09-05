@@ -197,80 +197,166 @@ fn fs_sky(in: SkyVertexOutput) -> @location(0) vec4<f32> {
         }
     }
 
-    // 5. Procedural Aurora Curtains (Phase 10.6, Amendments A-E)
+    // 5. Procedural Aurora Curtains (Phase 10.6.1: Atmospheric Curtain Morphology & Depth)
     // Mandatory Amendment A: Ascending smoothstep edges (1.0 - smoothstep(-0.18, -0.06, sun_elevation))
     let aurora_visibility = 1.0 - smoothstep(-0.18, -0.06, sky.sun_elevation);
     let effective_aurora_strength = sky.aurora_intensity * aurora_visibility;
 
     if (effective_aurora_strength > 0.001 && dir.y > 0.03) {
-        // Mandatory Amendment B: Distant atmospheric layer intersection model P = C + t * d
-        // Layer altitude at 1500m with bounded camera height scaling (prevents inversion/clipping)
-        let clamped_cam_y = clamp(sky.camera_pos.y, -100.0, 4000.0);
-        let effective_layer_height = max(500.0, 1500.0 - clamped_cam_y * 0.2);
-        let safe_dy = max(dir.y, 0.04);
-        let t = effective_layer_height / safe_dy;
+        // Facing direction anchor along -Z world axis (Amendment C & Section 16).
+        // Uses strictly ordered smoothstep edges: 1.0 - smoothstep(-0.55, 0.25, dir.z).
+        let anchor_alignment = 1.0 - smoothstep(-0.55, 0.25, dir.z);
 
-        let layer_pos = vec2<f32>(
-            sky.camera_pos.x + t * dir.x,
-            sky.camera_pos.z + t * dir.z
-        );
+        if (anchor_alignment > 0.001) {
+            // Altitude stability guard: clamps camera Y to [-100.0, 4000.0] to prevent layer collapse,
+            // coordinate singularities, and negative effective heights at extreme altitudes (e.g. Y=5000m).
+            let clamped_cam_y = clamp(sky.camera_pos.y, -100.0, 4000.0);
+            let safe_dy = max(dir.y, 0.04);
 
-        // Mandatory Amendment C: World-space anchor along -Z world axis
-        // Primary curtain arc spans across the -Z hemisphere (perpendicular to XY solar orbital plane)
-        let anchor_alignment = smoothstep(0.25, -0.55, dir.z);
+            // Three distinct atmospheric layer heights:
+            // h_far > h_main > h_fine holds strictly across ALL altitudes in [-100, 5000]m
+            let h_far  = max(400.0, 2400.0 - clamped_cam_y * 0.15);
+            let h_main = max(400.0, 1500.0 - clamped_cam_y * 0.20);
+            let h_fine = max(400.0, 1050.0 - clamped_cam_y * 0.25);
 
-        // Vertical envelope: soft horizon fade (no bright strip) and thinning towards zenith
-        let horizon_fade = smoothstep(0.04, 0.16, dir.y);
-        let zenith_fade = 1.0 - smoothstep(0.55, 0.85, dir.y);
-        let vertical_envelope = horizon_fade * zenith_fade;
+            let t_far  = h_far / safe_dy;
+            let t_main = h_main / safe_dy;
+            let t_fine = h_fine / safe_dy;
 
-        // Bounded periodic animation phase (2*PI / 60.0 approx 0.10472 rad/s for 100% pop-free 60s wrap)
-        let tau = 6.2831853;
-        let drift_phase = sky.bounded_time * (tau / 60.0);
+            let pos_far  = vec2<f32>(sky.camera_pos.x + t_far * dir.x,  sky.camera_pos.z + t_far * dir.z);
+            let pos_main = vec2<f32>(sky.camera_pos.x + t_main * dir.x, sky.camera_pos.z + t_main * dir.z);
+            let pos_fine = vec2<f32>(sky.camera_pos.x + t_fine * dir.x, sky.camera_pos.z + t_fine * dir.z);
 
-        // Broad atmospheric curtain coordinate
-        let uv = layer_pos * 0.0006;
+            // Multi-Rate Bounded Temporal Frequencies (Sections 14 & 15):
+            // All phases derive deterministically from bounded_time (in [0, 60)) with integer harmonics
+            // of 2*PI/60 to guarantee 100% pop-free 60-second wrapping, while operating at different
+            // spatial scales and speeds to avoid synchronized carousel sliding:
+            let tau = 6.2831853;
+            let omega0 = tau / 60.0;
+            let time_macro     = sky.bounded_time * omega0;         // k=1 (60s fundamental: slow curtain drift)
+            let time_curtain   = sky.bounded_time * (omega0 * 2.0); // k=2 (30s: fold undulation)
+            let time_filaments = sky.bounded_time * (omega0 * 3.0); // k=3 (20s: filament brightening/fading)
+            let time_shimmer   = sky.bounded_time * (omega0 * 4.0); // k=4 (15s: fine streamer shimmer)
 
-        // Primary Curtain (lower/middle altitude): organic undulating ribbon
-        let wave1 = sin(uv.x * 1.8 + drift_phase) * 0.6
-            + smooth_noise2d(vec2<f32>(uv.x * 0.8, drift_phase * 0.5)) * 0.7;
-        let d1 = abs(uv.y + 1.2 - wave1);
-        let band1 = smoothstep(0.45, 0.02, d1);
+            // Vertical envelope: soft horizon fade and graceful zenith thinning
+            let horizon_fade = smoothstep(0.04, 0.16, dir.y);
+            let zenith_fade = 1.0 - smoothstep(0.60, 0.88, dir.y);
+            let vertical_envelope = horizon_fade * zenith_fade;
 
-        // Ray striations (vertical folds along geomagnetic field lines)
-        let fold_coord1 = uv.x * 12.0 + wave1 * 3.0 + drift_phase * 2.0;
-        let ray1 = pow(sin(fold_coord1) * 0.5 + 0.5, 3.0);
-        let detail1 = smooth_noise2d(vec2<f32>(uv.x * 5.0, uv.y * 3.0 - drift_phase));
-        let curtain1 = band1 * (0.35 + 0.65 * ray1) * (0.6 + 0.4 * detail1);
+            // ================================================================
+            // LAYER 1: FAR CURTAIN (Distant, soft, luminous background sheet)
+            // ================================================================
+            let uv_far = pos_far * 0.00030;
+            let far_noise = smooth_noise2d(uv_far + vec2<f32>(time_macro * 0.35, -time_macro * 0.25));
+            let far_spine = sin(uv_far.x * 1.2 + time_macro) * 0.85 + cos(uv_far.x * 0.55 - time_macro * 0.4) * 0.45;
+            let d_far = abs(uv_far.y + 1.8 - far_spine - far_noise * 0.5);
+            let far_sheet = smoothstep(0.60, 0.05, d_far);
+            let far_curtain = far_sheet * (0.50 + 0.50 * far_noise);
 
-        // Secondary Curtain (higher altitude / deeper distance): secondary offset ribbon
-        let wave2 = sin(uv.x * 2.5 - drift_phase * 0.75 + 1.5) * 0.5
-            + smooth_noise2d(vec2<f32>(uv.x * 1.2 + 5.0, drift_phase * 0.4)) * 0.5;
-        let d2 = abs(uv.y + 2.0 - wave2);
-        let band2 = smoothstep(0.50, 0.03, d2);
-        let fold_coord2 = uv.x * 15.0 - drift_phase * 1.5;
-        let ray2 = pow(sin(fold_coord2) * 0.5 + 0.5, 2.5);
-        let curtain2 = band2 * (0.40 + 0.60 * ray2);
+            // ================================================================
+            // LAYER 2: MAIN CURTAIN (Full Morphology Pipeline)
+            // ================================================================
+            let uv_main = pos_main * 0.00055;
 
-        // Subtle color variation: emerald green base, cyan-green middle, soft violet upper fringe
-        let color_blend = clamp((dir.y - 0.12) / 0.40, 0.0, 1.0);
-        let green_base = mix(
-            vec3<f32>(0.12, 0.85, 0.45),
-            vec3<f32>(0.10, 0.70, 0.65),
-            smooth_noise2d(uv * 2.0)
-        );
-        let violet_upper = vec3<f32>(0.45, 0.20, 0.65);
-        let aurora_color = mix(green_base, violet_upper, color_blend * color_blend);
+            // 1. Spatial Field & 2D Vector Domain Warping:
+            // Introduces large-scale bends, compression, and expansion in 2D space:
+            let warp_seed = uv_main + vec2<f32>(time_macro * 0.45, time_curtain * 0.25);
+            let macro_noise = smooth_noise2d(warp_seed);
+            let warp_vec = vec2<f32>(
+                sin(uv_main.y * 1.8 + time_curtain) * 0.45 + (macro_noise - 0.5) * 0.85,
+                cos(uv_main.x * 1.3 - time_macro) * 0.40 + (macro_noise - 0.5) * 0.65
+            );
+            let q_main = uv_main + warp_vec;
 
-        // Controlled radiance: subordinate to moon core (2.85), adds atmosphere without washing out night sky
-        let total_intensity = (curtain1 * 0.70 + curtain2 * 0.40)
-            * vertical_envelope
-            * anchor_alignment
-            * effective_aurora_strength;
-        let aurora_radiance = aurora_color * min(total_intensity, 0.70);
+            // 2. Curtain Sheet Envelope on Warped Manifold:
+            let fold_wave = sin(q_main.x * 1.6 + time_curtain) * 0.65
+                + cos(q_main.x * 0.78 - time_macro * 0.6) * 0.50;
+            let d_main = abs(q_main.y + 1.3 - fold_wave);
+            let main_sheet = smoothstep(0.40, 0.03, d_main);
 
-        // Translucent emissive composition: stars already in sky_color remain visible through curtains
-        sky_color += aurora_radiance;
+            // 3. Meso-scale Thickness & Organic Gap Modulation:
+            let meso_p = vec2<f32>(q_main.x * 2.1 + time_curtain * 0.5, q_main.y * 1.4 - time_macro * 0.8);
+            let meso_noise = smooth_noise2d(meso_p);
+            let thickness_mod = 0.55 + 0.45 * meso_noise;
+
+            // 4. Organically Ragged Lower Edge (Section 7):
+            let ragged_bottom = 0.07 + 0.05 * sin(q_main.x * 2.2 + time_macro) + 0.04 * meso_noise;
+            let ragged_lower_fade = smoothstep(ragged_bottom, ragged_bottom + 0.12, dir.y);
+
+            // 5. Clustered & Broken Vertical Filaments:
+            // The carrier uses incommensurate frequencies (phi ~ 1.618, e ~ 2.718, sqrt(2)+e ~ 4.132)
+            // evaluated on the warped manifold Q, filtered through a 2D cluster mask (gaps)
+            // and vertical break noise (streamers/nodes along dir.y):
+            let fil_coord = q_main.x * 5.8 + meso_noise * 2.5 + warp_vec.x * 1.6;
+            let ray_a = sin(fil_coord * 1.618 + time_filaments);
+            let ray_b = sin(fil_coord * 2.718 - time_filaments * 0.75 + 1.3);
+            let ray_c = cos(fil_coord * 4.132 + time_shimmer + meso_noise * 1.7);
+            let carrier = ray_a * 0.45 + ray_b * 0.35 + ray_c * 0.20;
+            let ray_sharp = pow(max(0.0, carrier * 0.5 + 0.5), 3.2);
+
+            // 2D Spatial cluster mask: creates dense ray clusters and sparse calm regions
+            let cluster_mask = smoothstep(0.25, 0.75, meso_noise);
+
+            // Vertical streamer breaks along dir.y: breaks rays vertically into discrete nodes
+            let break_noise = smooth_noise2d(vec2<f32>(fil_coord * 0.35, dir.y * 5.5 - time_filaments * 0.45));
+            let break_mask = smoothstep(0.20, 0.80, break_noise);
+
+            let main_filaments = (0.25 + 0.75 * ray_sharp * cluster_mask) * (0.40 + 0.60 * break_mask);
+            let main_curtain = main_sheet * thickness_mod * ragged_lower_fade * main_filaments;
+
+            // ================================================================
+            // LAYER 3: FINE FILAMENT LAYER (Sparse, high-energy foreground rays)
+            // ================================================================
+            let uv_fine = pos_fine * 0.00095;
+            let fine_warp = smooth_noise2d(uv_fine * 1.3 + vec2<f32>(-time_filaments * 0.35, time_shimmer * 0.25));
+            let fine_coord = uv_fine.x * 8.8 + fine_warp * 3.2 + time_filaments;
+            let fine_ray1 = sin(fine_coord * 1.732 - time_shimmer);
+            let fine_ray2 = cos(fine_coord * 3.141 + time_filaments * 1.1);
+            let fine_sharp = pow(max(0.0, fine_ray1 * 0.55 + fine_ray2 * 0.45), 4.0);
+
+            let fine_break = smooth_noise2d(vec2<f32>(fine_coord * 0.45, dir.y * 6.5 + time_shimmer * 0.5));
+            let fine_filaments = fine_sharp * smoothstep(0.40, 0.85, fine_break) * main_sheet;
+
+            // ================================================================
+            // ENERGY-DRIVEN COLOR MODEL (Sections 12 & 26)
+            // ================================================================
+            // Local energy derives from physical structure and filament convergence, not Y
+            let local_energy = clamp(main_curtain * 0.85 + fine_filaments * 1.10 + far_curtain * 0.25, 0.0, 1.5);
+
+            // Palette definitions:
+            let col_deep_emerald = vec3<f32>(0.08, 0.82, 0.42);  // Dominant curtain body
+            let col_turquoise    = vec3<f32>(0.06, 0.74, 0.62);  // Energized folds
+            let col_bright_cyan  = vec3<f32>(0.08, 0.68, 0.82);  // High-energy filament peaks
+            let col_soft_violet  = vec3<f32>(0.38, 0.18, 0.62);  // Restrained upper tip flare
+
+            // Base transition: emerald -> turquoise based on local energy
+            let energy_t = clamp(local_energy * 0.8, 0.0, 1.0);
+            let base_aurora = mix(col_deep_emerald, col_turquoise, energy_t);
+
+            // Bright cyan accents on sharp filament peaks
+            let cyan_t = clamp(fine_filaments * 1.6 + (ray_sharp - 0.5) * 0.6, 0.0, 1.0);
+            let with_cyan = mix(base_aurora, col_bright_cyan, cyan_t * 0.65);
+
+            // Restrained violet accent: strictly confined to high-energy upper filament tips
+            let upper_reaches = smoothstep(0.32, 0.72, dir.y);
+            let violet_energy = clamp((local_energy - 0.45) * 1.8, 0.0, 1.0);
+            let violet_t = violet_energy * upper_reaches * 0.32; // strictly restrained accent (max 32%)
+            let aurora_color = mix(with_cyan, col_soft_violet, violet_t);
+
+            // ================================================================
+            // COMPOSITION & RADIANCE HIERARCHY (Section 13)
+            // ================================================================
+            let total_intensity = (far_curtain * 0.28 + main_curtain * 0.72 + fine_filaments * 0.35)
+                * vertical_envelope
+                * anchor_alignment
+                * effective_aurora_strength;
+
+            // Bounded radiance: peak aurora radiance <= 0.70 (subordinate to Moon core 2.85)
+            let aurora_radiance = aurora_color * min(total_intensity, 0.70);
+
+            // Translucent emissive composition: stars already in sky_color remain visible through curtains
+            sky_color += aurora_radiance;
+        }
     }
 
     return vec4<f32>(sky_color, 1.0);
