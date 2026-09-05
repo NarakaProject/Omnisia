@@ -1,8 +1,8 @@
 # Omnisia — Authoritative Project State
 
-> **Current Milestone**: Phase 10.7 — Stress Integration & Visual Hardening (**COMPLETED / VALIDATED**)  
-> **Next Milestone**: Phase 11 — Player ↔ World Interaction (**PLANNED / NEXT**)  
-> **Verified HEAD Commit**: `a6d13bfce56af63a9b31aa537eda5dd851c07771` (main)  
+> **Current Milestone**: Phase 11.1 — Interaction Foundation (**COMPLETED / VALIDATED**)  
+> **Next Milestone**: Phase 11.2 — Voxel Interaction (**PLANNED / NEXT**)  
+> **Verified HEAD Commit**: Current Phase 11.1 Working State  
 > **Branch**: `main`  
 > **Source-of-Truth Policy**: Source code and passing automated tests are the absolute source of truth.
 
@@ -16,9 +16,9 @@ Every count in this document has been directly audited and verified against the 
 - **Compiler**: Rust 2021 edition, `cargo build --release` compiles cleanly with zero errors.
 - **Formatting**: `cargo fmt --all -- --check` passes cleanly with zero diffs.
 - **Linter**: `cargo clippy --all-targets --all-features -- -D warnings` passes cleanly with zero warnings or errors.
-- **Test Suite**: `cargo test --all-targets` passes with **859 passed, 0 failed, 0 ignored** across 17 test targets.
+- **Test Suite**: `cargo test --all-targets` passes with **873 passed, 0 failed, 0 ignored** across 18 test targets.
 
-### Test Count Breakdown by Target (859 Total Tests)
+### Test Count Breakdown by Target (873 Total Tests)
 
 | Test Target Binary | Scope / Feature Area | Verified Test Count | Status |
 |:---|:---|:---:|:---:|
@@ -34,12 +34,13 @@ Every count in this document has been directly audited and verified against the 
 | `tests/physics_tests.rs` | Dynamic Aggregate Baseline, Gravity/AntiGravity, Swept Snapping (Phase 8A) | **23** | PASS |
 | `tests/console_tooling_tests.rs` | Single EnvironmentClock Authority, Pause/Resume Isolation, Time Scale Bounds (0, 1000], Decoupled Developer Camera, Read-Only Player Snapshot, Command Parser Quoting & Collapse, 4096-Byte Limit, UTF-8/Unicode Safety, ASCII Fallback to `?`, Help Auto-Generation, Clear Decoupling (Phase 10.5.x) | **19** | PASS |
 | `tests/impact_tests.rs` | ImpactEvent, ImpactSource, Magnitude, AffectedVolume, Euclidean Boundaries, Determinism (Phase 10.1) | **17** | PASS |
+| `tests/interaction_tests.rs` | Deterministic 3D DDA Voxel Raycast, Player Eye Origin Integration, Max Reach Invariants, 6 Canonical Face Normals (+X, -X, +Y, -Y, +Z, -Z), Euclidean Negative Coordinates, Chunk Boundary Crossing, Residency Awareness, Zero-Allocation Iteration (Phase 11.1) | **14** | PASS |
 | `tests/engine_tests.rs` | Canonical Indexing, Ambient Occlusion, Culled & Greedy Meshing, Frustum (Phase 1–3) | **13** | PASS |
 | `tests/modding_tests.rs` | Mod Discovery, Manifest Parsing, SemVer, Safe Overrides, ResourceId (Phase 2–2.5) | **11** | PASS |
 | `tests/streaming_tests.rs` | ChunkStore Residency, Job Scheduler, Memory Budget, Eviction Lifecycle (Phase 3) | **11** | PASS |
 | `tests/structure_tests.rs` | 6-Connected Adjacency, Structural Anchors, Aggregate Extraction (Phase 7) | **11** | PASS |
 | `tests/scale_tests.rs` | Metric Coordinate Invariants (1 vx = 0.5m), Scale Ruler, Traversal Residency (Phase 7) | **7** | PASS |
-| **Workspace Total** | **All Subsystems** | **859** | **PASS** |
+| **Workspace Total** | **All Subsystems** | **873** | **PASS** |
 
 ### Verified Validation Binaries (8 Binaries)
 
@@ -88,8 +89,9 @@ Under Omnisia's engineering standard, every subsystem must be explicitly classif
 | **Developer Console & Tooling (10.5.x)** | `VALIDATED` | `src/console/`, `tests/console_tooling_tests.rs` | Production keyboard console, decoupled free camera, single clock authority, bounded UTF-8 parser, 19 tests. |
 | **Procedural Aurora (10.6 / 10.6.1 / 10.6.1R)** | `VALIDATED` | `src/environment/aurora.rs`, `src/sky.wgsl` | Multi-band animated aurora, closed-form curtain folds, dual altitude, loop unrolling (2.08x GPU fragment speedup), 57 sky tests. |
 | **Integration & Visual Stress (10.7)** | `VALIDATED` | `src/bin/stress_10_7.rs` | Concurrent terrain destruction during real-time sky rendering at $\ge 60\text{ FPS}$. |
-| **Player World Interaction (Tools/Harvest)**| `PLANNED` | — (Phase 11) | Voxel targeting, block placing/breaking, harvesting tools, interaction raycast. |
-| **Entity & Creature Foundation** | `PLANNED` | — (Phase 12) | `CreatureDefinition`, stats, health, AI states, animal & beast hierarchy. |
+| **Interaction Foundation (11.1)** | `VALIDATED` | `src/interaction/` (`raycast.rs`, `types.rs`) | Deterministic 3D DDA voxel raycast, player eye origin integration, max reach invariants, 6 canonical face normals, Euclidean negative coordinates, residency awareness, zero-allocation iteration, 14 unit tests. |
+| **Voxel Interaction (11.2)** | `PLANNED` | — (Phase 11.2) | Voxel breaking, removal, placement validation, player capsule collision guard, world mutation, neighbor invalidation. |
+| **Resource & Gathering Primitives (11.3)** | `PLANNED` | — (Phase 11.3) | Resource identity, gathering, harvesting yields, collection events. |
 | **Combat & Action System** | `PLANNED` | — (Phase 13) | Attack actions, hitboxes, damage, knockback, dodge, action architecture. |
 | **Creature Taming / Catcher** | `PLANNED` | — (Phase 14) | 20% health threshold, catcher durability, capture probability, beast tiers. |
 | **Pets, Eggs & Summons** | `PLANNED` | — (Phase 15) | Permanent pet slots, egg incubation, temporary battle summons. |

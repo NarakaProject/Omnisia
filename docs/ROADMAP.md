@@ -3,8 +3,8 @@
 > **Vision Statement**: *"Revive Chimeraland with a voxel soul."*  
 > **Core Substrate**: Procedural, structural, and rigid-body voxel world.  
 > **Core Gameplay Identity**: Creature ecosystem, taming, acquisition, pet companions, and modular devour/evolution.  
-> **Current Completed Phase**: **Phase 10.7 — Stress Integration & Visual Hardening**  
-> **Next Active Phase**: **Phase 11 — Player ↔ World Interaction** (`PLANNED / NEXT`)
+> **Current Completed Phase**: **Phase 11.1 — Interaction Foundation**  
+> **Next Active Phase**: **Phase 11.2 — Voxel Interaction** (`PLANNED / NEXT`)
 
 ---
 
@@ -222,15 +222,26 @@ Omnisia is an ambitious, high-performance voxel sandbox game built from scratch 
 
 ---
 
-## 4. Future Master Roadmap (Phases 11 — 25+)
+## 4. Master Roadmap (Phases 11 — 25+)
 
-The following phases outline the planned path toward full gameplay release. None of these systems are implemented currently.
-
-### PHASE 11 — PLAYER ↔ WORLD INTERACTION (`PLANNED`)
-- Voxel crosshair targeting and raycasting against static and dynamic voxels.
-- Block harvesting, breaking, and placement tools.
-- Resource gathering mechanics from natural voxels (wood, stone, crystals).
-- Interactable world objects and placement ghost previews.
+### PHASE 11 — PLAYER ↔ WORLD INTERACTION (`IN PROGRESS`)
+- **Phase 11.1 — Interaction Foundation (`COMPLETED / VALIDATED`)**:
+  - Deterministic 3D DDA voxel raycast query (`raycast_voxels`) against authoritative `ChunkStore`.
+  - Player eye origin integration from `PlayerController::eye_position()`.
+  - Configurable interaction reach (`PlayerConfig::interaction_reach`, default 5.0m = 10 voxels) with inclusive boundary condition ($t \le \text{max\_reach}$).
+  - Exact voxel hit representation (`VoxelHit`) with coordinate, material, hit point, distance, face, and canonical outward normal (+X, -X, +Y, -Y, +Z, -Z).
+  - Continuous Euclidean division for negative coordinate traversal and chunk boundary crossing.
+  - Strict residency awareness: non-resident space returns `NonResident` without triggering world generation or disk I/O.
+  - Zero heap allocations during raycast traversal ($O(\text{reach} / \text{voxel\_size})$ on stack).
+  - Verified with 14 unit tests (`tests/interaction_tests.rs`).
+- **Phase 11.2 — Voxel Interaction (`PLANNED / NEXT`)**:
+  - Voxel breaking, removal, placement validation, player capsule collision guard, world mutation, neighbor invalidation, remesh integration.
+- **Phase 11.3 — Resource & Gathering Primitives (`PLANNED`)**:
+  - Resource identity, gathering, harvesting yields, collection events.
+- **Phase 11.4 — Tools & Tool Actions (`PLANNED`)**:
+  - Tool categories, effectiveness multipliers, tool durability mechanics.
+- **Phase 11.5 — Generic Interactable World Objects & Feedback (`PLANNED`)**:
+  - Generic interaction abstraction, placement ghost previews, audio/visual cues.
 
 ### PHASE 12 — ENTITY & CREATURE FOUNDATION (`PLANNED`)
 - Entity identity architecture decoupled from voxel data.

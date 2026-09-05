@@ -5,6 +5,7 @@ pub mod coord;
 pub mod csg;
 pub mod environment;
 pub mod impact;
+pub mod interaction;
 pub mod lod;
 pub mod material;
 pub mod mesh;

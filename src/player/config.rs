@@ -50,6 +50,8 @@ pub struct PlayerConfig {
     pub eye_height_standing: f32,
     /// Tinggi mata kamera dari telapak kaki saat jongkok dalam meter (default: 1.08m)
     pub eye_height_crouching: f32,
+    /// Jarak jangkauan interaksi maksimum pemain terhadap voxel dalam meter (default: 5.0m = 10 voxel)
+    pub interaction_reach: f32,
 }
 
 impl Default for PlayerConfig {
@@ -81,6 +83,7 @@ impl Default for PlayerConfig {
 
             eye_height_standing: 1.62,
             eye_height_crouching: 1.08,
+            interaction_reach: 5.0,
         }
     }
 }

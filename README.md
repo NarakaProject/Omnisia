@@ -3,8 +3,8 @@
 [![Rust](https://img.shields.io/badge/Rust-2021_Edition-orange.svg)](https://www.rust-lang.org/)
 [![wgpu](https://img.shields.io/badge/wgpu-v24_(Metal%20%2F%20Vulkan%20%2F%20DX12)-blue.svg)](https://wgpu.rs/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Phase](https://img.shields.io/badge/Phase-10.7_Validated-brightgreen.svg)](#completed-phases)
-[![Tests](https://img.shields.io/badge/Tests-859_Passing-brightgreen.svg)](#test-suite--validation-evidence)
+[![Phase](https://img.shields.io/badge/Phase-11.1_Validated-brightgreen.svg)](#completed-phases)
+[![Tests](https://img.shields.io/badge/Tests-873_Passing-brightgreen.svg)](#test-suite--validation-evidence)
 
 > **Vision**: *"Revive Chimeraland with a voxel soul."*  
 > Omnisia is a high-performance voxel sandbox engine and game built from scratch in pure Rust and `wgpu`. It merges continuous procedural world generation, structural connectivity, and rigid-body physical simulation with a deep creature ecosystem, taming, pet raising, and modular chimera devour/evolution.
@@ -19,9 +19,9 @@ For any developer or AI coding agent entering this repository for the first time
 |:---|:---|
 | **What is Omnisia?** | A voxel sandbox game engine combining a procedural voxel substrate with modular creature and evolution gameplay. |
 | **What is the long-term vision?** | Revive the modular creature capture, chimera evolution, and open living world of *Chimeraland* on an authoritative, physically reactive voxel substrate. |
-| **What is the current gameplay reality?** | **Early physics & locomotion substrate with developer tooling.** The player can walk, sprint, crouch, jump, auto-step, glide, push dynamic rigid bodies, and use the Developer Debug Console (`` ` ``) / Free Camera (`camera free`). There are **no creatures, combat, taming, inventory, crafting, or devour systems yet**. |
-| **What Phase is complete?** | **Phase 10.7 — Stress Integration & Visual Hardening** (Validated with 859 total passing workspace tests across 17 test targets, 8 validation binaries, 54 benchmarks). |
-| **What is the next Phase?** | **Phase 11 — Player ↔ World Interaction** (Voxel crosshair targeting, raycasting, block harvesting, placing, tools). |
+| **What is the current gameplay reality?** | **Early physics & locomotion substrate with developer tooling & interaction foundation.** The player can walk, sprint, crouch, jump, auto-step, glide, push dynamic rigid bodies, query targeted voxels via deterministic 3D DDA raycasting, and use the Developer Debug Console (`` ` ``) / Free Camera (`camera free`). There are **no creatures, combat, taming, inventory, crafting, or devour systems yet**. |
+| **What Phase is complete?** | **Phase 11.1 — Interaction Foundation** (Validated with 873 total passing workspace tests across 18 test targets, 8 validation binaries, 54 benchmarks). |
+| **What is the next Phase?** | **Phase 11.2 — Voxel Interaction** (Voxel breaking, placement validation, player capsule collision guard, world mutation). |
 | **What systems are authoritative?** | `ChunkStore` (static terrain), `DynamicBody` (detached voxels), `PhysicsWorld` (rigid bodies), `PlayerController` (kinematic locomotion), `EnvironmentClock` (environment time), Data Registry (modding definitions). |
 | **What systems are derived / cache state?** | `EnvironmentState` (derived visual environment model), `DeveloperCameraContext` (observational free camera mode), `SkyUniform` & `LightUniform` (GPU uniform buffers), `MeshCache` (GPU mesh buffers), spatial broadphase grid, collision contact manifolds, transient structural BFS results. |
 | **What are the top architectural invariants?** | (1) Player is Kinematic, NEVER a `RigidBody`, NEVER in islands. (2) 1 structural aggregate = 1 `RigidBody` owning $M$ colliders (never 1 voxel = 1 body). (3) Zero double-ownership of voxels. (4) Single authority for environment time in `EnvironmentClock`. (5) Developer camera does NOT mutate player position or physics. |
@@ -103,8 +103,9 @@ Phase 10 successfully connected the completed physical simulation substrate to d
   - **10.6.1R Sky Shader Optimization (`VALIDATED`)**: Loop unrolling, transcendental function factoring, 2.08x GPU fragment throughput gain.
   - **10.7 Integration & Visual Stress (`VALIDATED`)**: Concurrent terrain destruction during real-time sky rendering at $\ge 60\text{ FPS}$ verified via `stress_10_7.rs`.
 
-### Next Active Phase: Phase 11 — Player ↔ World Interaction (`PLANNED / NEXT`)
-The physical and visual substrate is locked and regression-free. Phase 11 initiates core gameplay interactions: voxel targeting raycasts, block harvesting, placing, and tools.
+### Phase 11 — Player ↔ World Interaction (`IN PROGRESS`)
+- **Phase 11.1 — Interaction Foundation (`VALIDATED`)**: Deterministic 3D DDA voxel raycast query (`raycast_voxels`) against authoritative `ChunkStore`, player eye origin integration (`player.eye_position()`), configurable interaction reach (`PlayerConfig.interaction_reach`, default 5.0m), 6 canonical face normals (+X, -X, +Y, -Y, +Z, -Z), Euclidean negative coordinate support, strict residency awareness (zero silent chunk loading/generation), 14 tests.
+- **Phase 11.2 — Voxel Interaction (`PLANNED / NEXT`)**: Voxel breaking, removal, placement validation, player capsule collision guard, world mutation, neighbor invalidation.
 
 ---
 
@@ -174,6 +175,7 @@ Verified across all subsystems:
   - `tests/physics_tests.rs`: **23 tests** (Dynamic aggregate baseline, gravity/antigravity, swept snapping).
   - `tests/console_tooling_tests.rs`: **19 tests** (Command registration, parsing, execution, clock mutation, free camera, history buffer).
   - `tests/impact_tests.rs`: **17 tests** (ImpactEvent construction, sources, Euclidean volume queries, deterministic pipeline, replay).
+  - `tests/interaction_tests.rs`: **14 tests** (Deterministic 3D DDA raycast, player eye origin, reach boundary, 6 face normals, negative coordinates, chunk boundaries, residency awareness).
   - `tests/engine_tests.rs`: **13 tests** (Canonical indexing, ambient occlusion, culled & greedy meshing, frustum).
   - `tests/modding_tests.rs`: **11 tests** (Mod discovery, manifest parsing, SemVer, safe overrides, ResourceId).
   - `tests/streaming_tests.rs`: **11 tests** (ChunkStore residency, job scheduler, memory budget, eviction lifecycle).

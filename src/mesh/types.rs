@@ -1,4 +1,5 @@
 use bytemuck::{Pod, Zeroable};
+use glam::{IVec3, Vec3};
 
 /// Format vertex GPU untuk rendering micro-voxel
 #[repr(C)]
@@ -123,5 +124,16 @@ impl FaceDirection {
             FaceDirection::PosZ => (0, 0, 1),
             FaceDirection::NegZ => (0, 0, -1),
         }
+    }
+
+    #[inline(always)]
+    pub fn normal_vec3(&self) -> Vec3 {
+        Vec3::from_array(self.normal())
+    }
+
+    #[inline(always)]
+    pub fn normal_ivec3(&self) -> IVec3 {
+        let (x, y, z) = self.offset();
+        IVec3::new(x, y, z)
     }
 }
