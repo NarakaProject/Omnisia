@@ -68,30 +68,43 @@ fn fs_sky(in: SkyVertexOutput) -> @location(0) vec4<f32> {
         sky_color = mix(sky.horizon_color, ground_tint, nadir_h);
     }
 
-    // 2. Procedural Sun Disc & Corona Glow
+    // 2. Procedural Sun Disc, Corona Glow & Atmospheric Transition Extinction
     let sun_dir = normalize(sky.sun_direction);
     let cos_sun = dot(dir, sun_dir);
-    if (cos_sun > 0.0) {
+
+    // Solar Atmospheric Extinction Invariants (Additional Objective):
+    // - Direct sun disc fades smoothly as lower limb crosses horizon, strictly 0.0 when sun_elevation <= -0.02
+    // - Geometric horizon occlusion: direct sun disc is never visible below the horizon plane (dir.y > -0.01)
+    // - Solar halo / twilight corona lingers across civil twilight (-0.12 <= elevation <= 0.02) and fades to 0.0 before deep night
+    let sun_disc_extinction = smoothstep(-0.02, 0.05, sky.sun_elevation);
+    let sun_halo_extinction = smoothstep(-0.12, 0.02, sky.sun_elevation);
+
+    if (cos_sun > 0.0 && sun_halo_extinction > 0.0) {
         let sun_core = smoothstep(0.9985, 0.9998, cos_sun);
-        let sun_glow = pow(cos_sun, 32.0) * 0.45;
-        let sun_wide = pow(cos_sun, 4.0) * 0.15 * sky.twilight_factor;
-        let sun_contrib = sky.sun_color * (sun_core * 2.0 + sun_glow + sun_wide);
+        let horizon_clip = select(0.0, 1.0, dir.y > -0.01);
+        let direct_sun = sun_core * 2.0 * sun_disc_extinction * horizon_clip;
+
+        let sun_glow = pow(cos_sun, 32.0) * 0.45 * sun_halo_extinction;
+        let sun_wide = pow(cos_sun, 4.0) * 0.15 * sky.twilight_factor * sun_halo_extinction;
+        let sun_contrib = sky.sun_color * (direct_sun + sun_glow + sun_wide);
         sky_color += sun_contrib;
     }
 
-    // 3. Procedural Moon Disc, Phase Shading & Halo Glow
+    // 3. Procedural Moon Disc, Phase Shading & Refined Halo Glow (Section 14-19)
     let moon_dir = normalize(sky.moon_direction);
     let cos_moon = dot(dir, moon_dir);
 
-    // Atmospheric moon halo (Mandates 5 & 6: visual glow independent of terrain light)
-    if (cos_moon > 0.96 && sky.star_visibility > 0.05) {
-        let halo_dist = max(0.0, (cos_moon - 0.96) / 0.04);
-        let moon_halo = pow(halo_dist, 6.0) * 0.065 * (1.0 - sky.day_factor);
-        sky_color += vec3<f32>(0.35, 0.45, 0.65) * moon_halo;
+    // Restrained, soft atmospheric moon halo:
+    // Spread wide (cos > 0.95), soft falloff, dimmer than disc (Section 17)
+    // Visual hierarchy: MOON CORE (2.85) >> MOON HALO (0.035) > STARS (0.2-0.3) > NIGHT SKY (0.02)
+    if (cos_moon > 0.95 && sky.star_visibility > 0.05) {
+        let halo_dist = max(0.0, (cos_moon - 0.95) / 0.05);
+        let moon_halo = pow(halo_dist, 5.0) * 0.035 * (1.0 - sky.day_factor);
+        sky_color += vec3<f32>(0.25, 0.35, 0.55) * moon_halo;
     }
 
     if (cos_moon > 0.9980) {
-        let moon_core = smoothstep(0.9984, 0.9996, cos_moon);
+        let moon_core = smoothstep(0.9979, 0.9985, cos_moon);
 
         // Orthonormal tangent frame on moon disc
         var up_hint = vec3<f32>(0.0, 1.0, 0.0);
@@ -115,11 +128,14 @@ fn fs_sky(in: SkyVertexOutput) -> @location(0) vec4<f32> {
             let phase_angle = sky.moon_phase * 6.2831853;
             let light_dir_moon = sin(phase_angle) * moon_tangent + cos(phase_angle) * moon_dir;
 
-            let moon_diffuse = max(0.0, dot(normal_moon, light_dir_moon));
-            let earthshine = 0.04; // Faint visibility of unlit moon face
-            let moon_intensity = moon_core * (moon_diffuse * 1.45 + earthshine);
+            let n_dot_l_moon = dot(normal_moon, light_dir_moon);
+            let moon_diffuse = max(0.0, n_dot_l_moon);
+            let earthshine = 0.035; // Faint visibility of unlit moon face
+            // Luminous moon crescent (clearly brighter than halo, but << daytime sun)
+            let moon_crescent = pow(moon_diffuse, 0.85) * 2.85;
+            let moon_intensity = moon_core * (moon_crescent + earthshine);
 
-            let moon_color = vec3<f32>(0.88, 0.93, 1.0) * moon_intensity;
+            let moon_color = vec3<f32>(0.92, 0.95, 1.0) * moon_intensity;
             sky_color += moon_color;
         }
     }

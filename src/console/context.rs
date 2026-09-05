@@ -66,6 +66,15 @@ impl DeveloperCameraContext {
         self.mode = mode;
     }
 
+    /// Synchronizes developer camera orientation and position to match a source camera (e.g. player camera)
+    /// to ensure zero angular jump or discontinuity when switching modes.
+    #[inline]
+    pub fn sync_dev_camera_pose(&mut self, source: &Camera) {
+        self.dev_camera.position = source.position;
+        self.dev_camera.yaw_deg = source.yaw_deg;
+        self.dev_camera.pitch_deg = source.pitch_deg;
+    }
+
     #[inline]
     pub fn mode(&self) -> CameraMode {
         self.mode

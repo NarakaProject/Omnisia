@@ -700,27 +700,20 @@ impl Renderer {
     pub fn render(
         &mut self,
         frustum: &crate::camera::Frustum,
-        camera_chunk: IVec3,
+        center_chunk: IVec3,
         render_radius: i32,
         console: Option<&ConsoleState>,
+        show_crosshair: bool,
     ) -> Result<RenderMetrics, wgpu::SurfaceError> {
         let output = self.surface.get_current_texture()?;
         let view = output
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
 
-        // Tahap Awal: Persiapkan Developer Console Overlay (Phase 10.5.x, Amendment 12)
-        // Jika konsol tertutup (is_open == false atau None), return 0:
-        // ZERO alokasi vertex, ZERO transfer buffer GPU, ZERO overhead!
-        let console_vertex_count = if let Some(c) = console {
-            if c.is_open() {
-                self.prepare_console_overlay(c)
-            } else {
-                0
-            }
-        } else {
-            0
-        };
+        // Tahap Awal: Persiapkan 2D Overlay (Console dan/atau FPS Crosshair) (Phase 10.5.x+, Section 11 & 12)
+        // Jika konsol tertutup dan crosshair tidak aktif, return 0:
+        // ZERO alokasi vertex, ZERO transfer buffer GPU, ZERO draw call!
+        let overlay_vertex_count = self.prepare_overlay(console, show_crosshair);
 
         let mut encoder = self
             .device
@@ -771,9 +764,9 @@ impl Renderer {
                 }
 
                 // 1. Filter Tahap: Render-Distance Eligible (<= render_radius horizontal, <= 2 vertical)
-                let dx = (coord.x - camera_chunk.x).abs();
-                let dz = (coord.z - camera_chunk.z).abs();
-                let dy = (coord.y - camera_chunk.y).abs();
+                let dx = (coord.x - center_chunk.x).abs();
+                let dz = (coord.z - center_chunk.z).abs();
+                let dy = (coord.y - center_chunk.y).abs();
                 if dx > render_radius || dz > render_radius || dy > 2 {
                     continue;
                 }
@@ -803,14 +796,14 @@ impl Renderer {
             render_pass.set_bind_group(0, &self.sky_bind_group, &[]);
             render_pass.draw(0..3, 0..1);
 
-            // 5. Developer Console Overlay Pass (Phase 10.5.x, Amendments 11 & 12)
-            if console_vertex_count > 0 {
+            // 5. 2D Overlay Pass (Developer Console & FPS Crosshair) (Section 11 & 12)
+            if overlay_vertex_count > 0 {
                 render_pass.set_pipeline(&self.console_pipeline);
                 render_pass.set_bind_group(0, &self.console_bind_group, &[]);
                 let byte_size =
-                    (console_vertex_count * std::mem::size_of::<ConsoleVertex>()) as u64;
+                    (overlay_vertex_count * std::mem::size_of::<ConsoleVertex>()) as u64;
                 render_pass.set_vertex_buffer(0, self.console_vertex_buffer.slice(0..byte_size));
-                render_pass.draw(0..console_vertex_count as u32, 0..1);
+                render_pass.draw(0..overlay_vertex_count as u32, 0..1);
             }
         }
 
@@ -830,6 +823,131 @@ impl Renderer {
             frame_time_ms: 0.0,
             fps: 0.0,
         })
+    }
+
+    /// Menghasilkan quad 2D untextured/solid ke dalam cache vertex.
+    #[inline]
+    fn push_solid_quad(
+        cache: &mut Vec<ConsoleVertex>,
+        x0: f32,
+        y0: f32,
+        x1: f32,
+        y1: f32,
+        color: [f32; 4],
+    ) {
+        cache.push(ConsoleVertex {
+            pos: [x0, y0],
+            uv: [-1.0, -1.0],
+            color,
+        });
+        cache.push(ConsoleVertex {
+            pos: [x1, y0],
+            uv: [-1.0, -1.0],
+            color,
+        });
+        cache.push(ConsoleVertex {
+            pos: [x1, y1],
+            uv: [-1.0, -1.0],
+            color,
+        });
+        cache.push(ConsoleVertex {
+            pos: [x0, y0],
+            uv: [-1.0, -1.0],
+            color,
+        });
+        cache.push(ConsoleVertex {
+            pos: [x1, y1],
+            uv: [-1.0, -1.0],
+            color,
+        });
+        cache.push(ConsoleVertex {
+            pos: [x0, y1],
+            uv: [-1.0, -1.0],
+            color,
+        });
+    }
+
+    /// Menghasilkan mesh 2D overlay (Console dan/atau FPS Crosshair) dan mengunggah ke GPU buffer.
+    ///
+    /// Persyaratan Section 11 & 12:
+    /// - Jika crosshair dan konsol nonaktif: 0 vertex, 0 upload, 0 draw call!
+    /// - Jika crosshair aktif (dan konsol tertutup): tambahkan quad crosshair minimal.
+    /// - Jika konsol terbuka: crosshair disembunyikan, konsol dirender.
+    fn prepare_overlay(&mut self, console: Option<&ConsoleState>, show_crosshair: bool) -> usize {
+        // 1. Jika konsol sedang terbuka, render antarmuka konsol (crosshair otomatis disembunyikan)
+        if let Some(c) = console {
+            if c.is_open() {
+                return self.prepare_console_overlay(c);
+            }
+        }
+
+        // 2. Jika mode FPS gameplay aktif dan konsol tertutup, render crosshair
+        if show_crosshair {
+            return self.prepare_crosshair_overlay();
+        }
+
+        // 3. Jika tidak ada overlay yang aktif: ZERO vertex, ZERO upload, ZERO draw call!
+        0
+    }
+
+    /// Menghasilkan mesh crosshair reticle di tengah layar (Section 11, 12, 13).
+    /// Ukuran restrained (14px span), kontras tinggi terhadap langit dan voxel, zero-texture.
+    fn prepare_crosshair_overlay(&mut self) -> usize {
+        self.console_vertex_cache.clear();
+        let screen_w = self.config.width as f32;
+        let screen_h = self.config.height as f32;
+        let cx = (screen_w * 0.5).floor();
+        let cy = (screen_h * 0.5).floor();
+
+        // 1. Outline gelap (1px border tipis) untuk keterbacaan terhadap latar belakang terang (awan/salju)
+        let dark_border = [0.05, 0.05, 0.08, 0.85];
+        // Horizontal outline
+        Self::push_solid_quad(
+            &mut self.console_vertex_cache,
+            cx - 7.0,
+            cy - 2.0,
+            cx + 8.0,
+            cy + 3.0,
+            dark_border,
+        );
+        // Vertical outline
+        Self::push_solid_quad(
+            &mut self.console_vertex_cache,
+            cx - 2.0,
+            cy - 7.0,
+            cx + 3.0,
+            cy + 8.0,
+            dark_border,
+        );
+
+        // 2. Garis silang tengah berwarna putih/abu terang
+        let cross_color = [0.92, 0.94, 0.98, 0.95];
+        // Horizontal arm
+        Self::push_solid_quad(
+            &mut self.console_vertex_cache,
+            cx - 6.0,
+            cy - 1.0,
+            cx + 7.0,
+            cy + 2.0,
+            cross_color,
+        );
+        // Vertical arm
+        Self::push_solid_quad(
+            &mut self.console_vertex_cache,
+            cx - 1.0,
+            cy - 6.0,
+            cx + 2.0,
+            cy + 7.0,
+            cross_color,
+        );
+
+        let vertex_count = self.console_vertex_cache.len();
+        self.queue.write_buffer(
+            &self.console_vertex_buffer,
+            0,
+            bytemuck::cast_slice(&self.console_vertex_cache),
+        );
+        vertex_count
     }
 
     /// Menghasilkan mesh 2D konsol dan mengunggah ke GPU buffer (Phase 10.5.x, Amendment 11 & 12).

@@ -88,13 +88,14 @@ impl AppState {
         }
     }
 
-    /// Explicit cursor and mouse capture state management (Mandates 13, 14, 15, 16, 17).
-    /// - Developer Camera (console closed): locked/hidden cursor for true free-look.
-    /// - Player Camera or Console Open: released/visible cursor.
-    /// - Resets accumulated mouse delta to avoid sudden camera jumps on mode transitions.
+    /// Explicit cursor and mouse capture state management (Section 7, Mandates 13-17).
+    /// - FPS gameplay (both Player FPS and Developer Camera, console closed):
+    ///   locked/hidden cursor for relative mouse-look.
+    /// - Console Open: released/visible cursor for text input and navigation.
+    /// - Discards accumulated synthetic mouse deltas on transitions to prevent sudden camera jumps.
     fn update_cursor_grab(&mut self) {
         if let Some(window) = &self.window {
-            if self.camera_ctx.is_developer() && !self.console.is_open() {
+            if !self.console.is_open() {
                 let _ = window
                     .set_cursor_grab(winit::window::CursorGrabMode::Locked)
                     .or_else(|_| window.set_cursor_grab(winit::window::CursorGrabMode::Confined));
@@ -237,6 +238,7 @@ impl ApplicationHandler for AppState {
                                         log::info!(
                                             "Beralih ke Developer Camera Mode (Free Camera)"
                                         );
+                                        self.camera_ctx.sync_dev_camera_pose(&self.player_camera);
                                         self.camera_ctx.set_mode(CameraMode::Developer);
                                     }
                                     CameraMode::Developer => {
@@ -344,11 +346,13 @@ impl ApplicationHandler for AppState {
                         camera_voxel.z.div_euclid(CHUNK_SIZE),
                     );
 
+                    let show_crosshair = !self.console.is_open();
                     let render_result = renderer.render(
                         &frustum,
                         center_chunk,
                         self.world.render_radius,
                         Some(&self.console),
+                        show_crosshair,
                     );
 
                     match render_result {

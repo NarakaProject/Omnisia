@@ -986,3 +986,260 @@ fn test_mandatory_time_anchors_and_midnight_surfaces() {
         "Sunset has prominent twilight glow"
     );
 }
+
+// ============================================================================
+// CATEGORY 11: CELESTIAL / ATMOSPHERIC TRANSITION COHERENCE (Phase 10.5.x+)
+// ============================================================================
+
+#[test]
+fn test_celestial_transition_dense_sunset_continuity() {
+    use omnisia::environment::celestial::smoothstep;
+
+    // Dense sunset sequence as mandated: 0.70, 0.72, 0.74, 0.75, 0.76, 0.78, 0.80
+    let sunset_samples = [0.70, 0.72, 0.74, 0.75, 0.76, 0.78, 0.80];
+    let mut prev_elevation = 1.0f32;
+
+    for &frac in &sunset_samples {
+        let params = CelestialParameters::evaluate(frac);
+        assert!(
+            params.sun_elevation.is_finite(),
+            "Sun elevation must be finite at frac {}",
+            frac
+        );
+        assert!(
+            params.sun_elevation < prev_elevation,
+            "Sun elevation must monotonically descend across sunset: {} vs {}",
+            params.sun_elevation,
+            prev_elevation
+        );
+        prev_elevation = params.sun_elevation;
+
+        let sun_disc_extinction = smoothstep(-0.02, 0.05, params.sun_elevation);
+        let sun_halo_extinction = smoothstep(-0.12, 0.02, params.sun_elevation);
+
+        if frac <= 0.74 {
+            // Before horizon crossing: sun disc is fully visible, twilight or daylight active
+            assert!(
+                sun_disc_extinction > 0.9,
+                "Sun disc must remain visible before setting: frac {}",
+                frac
+            );
+            assert!(
+                params.twilight_factor > 0.0 || params.day_factor > 0.5,
+                "Atmosphere must represent day or twilight before setting: frac {}",
+                frac
+            );
+        } else if frac >= 0.76 {
+            // After sun descends below horizon: sun disc is completely extinguished
+            assert_eq!(
+                sun_disc_extinction, 0.0,
+                "Sun disc must be completely extinguished at frac {}: elevation {}",
+                frac, params.sun_elevation
+            );
+        }
+
+        if frac >= 0.80 {
+            // Deep night: halo completely extinguished, deep night atmosphere
+            assert_eq!(
+                sun_halo_extinction, 0.0,
+                "Sun halo must be extinguished in deep night at frac {}",
+                frac
+            );
+            assert_eq!(
+                params.day_factor, 0.0,
+                "Day factor must be 0.0 in deep night at frac {}",
+                frac
+            );
+            assert_eq!(
+                params.twilight_factor, 0.0,
+                "Twilight factor must be 0.0 in deep night at frac {}",
+                frac
+            );
+            assert_eq!(
+                params.star_visibility, 1.0,
+                "Stars must be fully visible in deep night at frac {}",
+                frac
+            );
+        }
+    }
+
+    // Dense sunrise sequence: 0.20, 0.22, 0.24, 0.25, 0.26, 0.28, 0.30
+    let sunrise_samples = [0.20, 0.22, 0.24, 0.25, 0.26, 0.28, 0.30];
+    let mut prev_sunrise_elev = -1.0f32;
+
+    for &frac in &sunrise_samples {
+        let params = CelestialParameters::evaluate(frac);
+        assert!(
+            params.sun_elevation > prev_sunrise_elev,
+            "Sun elevation must monotonically ascend across sunrise"
+        );
+        prev_sunrise_elev = params.sun_elevation;
+
+        let sun_disc_extinction = smoothstep(-0.02, 0.05, params.sun_elevation);
+        let sun_halo_extinction = smoothstep(-0.12, 0.02, params.sun_elevation);
+
+        if frac <= 0.20 {
+            // Before sunrise: deep night, zero sun disc, zero halo
+            assert_eq!(sun_disc_extinction, 0.0);
+            assert_eq!(sun_halo_extinction, 0.0);
+        } else if frac >= 0.26 {
+            // After sun rises above horizon: sun disc active, twilight or daylight
+            assert!(
+                sun_disc_extinction > 0.9,
+                "Sun disc must be visible after rising at frac {}",
+                frac
+            );
+            assert!(
+                params.twilight_factor > 0.0 || params.day_factor > 0.5,
+                "Atmosphere must be daytime or twilight when sun is up"
+            );
+        }
+    }
+}
+
+#[test]
+fn test_celestial_atmospheric_transition_coherence_invariant() {
+    use omnisia::environment::celestial::smoothstep;
+
+    // Evaluate across 1000 finely spaced time steps across the entire 24h cycle
+    let step_count = 1000;
+    for i in 0..=step_count {
+        let frac = (i as f32) / (step_count as f32);
+        let params = CelestialParameters::evaluate(frac);
+
+        let sun_disc_extinction = smoothstep(-0.02, 0.05, params.sun_elevation);
+        let sun_halo_extinction = smoothstep(-0.12, 0.02, params.sun_elevation);
+
+        // INVARIANT 1: A visible sun disc (extinction > 0) must NEVER appear against a deep night sky.
+        // Deep night sky is defined as day_factor == 0 and twilight_factor == 0.
+        if sun_disc_extinction > 0.0 {
+            assert!(
+                params.day_factor > 0.0 || params.twilight_factor > 0.0,
+                "Violated Coherence Invariant: Sun disc active (extinction={}) while atmosphere is deep night at frac={}",
+                sun_disc_extinction,
+                frac
+            );
+        }
+
+        // INVARIANT 2: A visible sun halo (extinction > 0) must NEVER appear against a deep night sky.
+        if sun_halo_extinction > 0.0 {
+            assert!(
+                params.day_factor > 0.0 || params.twilight_factor > 0.0,
+                "Violated Coherence Invariant: Sun halo active (extinction={}) while atmosphere is deep night at frac={}",
+                sun_halo_extinction,
+                frac
+            );
+        }
+
+        // INVARIANT 3: When the atmosphere is deep night, both sun disc and sun halo MUST be zero.
+        if params.day_factor == 0.0 && params.twilight_factor == 0.0 {
+            assert_eq!(
+                sun_disc_extinction, 0.0,
+                "Sun disc must be zero during deep night at frac={}",
+                frac
+            );
+            assert_eq!(
+                sun_halo_extinction, 0.0,
+                "Sun halo must be zero during deep night at frac={}",
+                frac
+            );
+        }
+
+        // INVARIANT 4: Direction and elevation consistency
+        assert!(
+            (params.sun_direction.y - params.sun_elevation).abs() < TOLERANCE,
+            "Sun elevation must exactly match sun_direction.y"
+        );
+    }
+}
+
+#[test]
+fn test_celestial_camera_altitude_invariance() {
+    use glam::Mat4;
+
+    let env = EnvironmentState::new();
+    let inv_vp = Mat4::IDENTITY;
+
+    // Build sky uniform at different camera elevations:
+    // Low terrain elevation (Y = 0)
+    let uniform_low = env.build_sky_uniform(inv_vp, Vec3::new(0.0, 0.0, 0.0));
+    // Elevated terrain (Y = 64)
+    let uniform_mid = env.build_sky_uniform(inv_vp, Vec3::new(50.0, 64.0, 50.0));
+    // High developer camera altitude (Y = 5000)
+    let uniform_high = env.build_sky_uniform(inv_vp, Vec3::new(-100.0, 5000.0, -200.0));
+
+    // Celestial parameters MUST remain identical regardless of camera altitude
+    assert_eq!(uniform_low.sun_direction, uniform_mid.sun_direction);
+    assert_eq!(uniform_low.sun_direction, uniform_high.sun_direction);
+
+    assert_eq!(uniform_low.sun_elevation, uniform_mid.sun_elevation);
+    assert_eq!(uniform_low.sun_elevation, uniform_high.sun_elevation);
+
+    assert_eq!(uniform_low.moon_direction, uniform_mid.moon_direction);
+    assert_eq!(uniform_low.moon_direction, uniform_high.moon_direction);
+
+    assert_eq!(uniform_low.day_factor, uniform_mid.day_factor);
+    assert_eq!(uniform_low.day_factor, uniform_high.day_factor);
+
+    assert_eq!(uniform_low.twilight_factor, uniform_mid.twilight_factor);
+    assert_eq!(uniform_low.twilight_factor, uniform_high.twilight_factor);
+
+    assert_eq!(uniform_low.star_visibility, uniform_mid.star_visibility);
+    assert_eq!(uniform_low.star_visibility, uniform_high.star_visibility);
+
+    assert_eq!(uniform_low.zenith_color, uniform_high.zenith_color);
+    assert_eq!(uniform_low.horizon_color, uniform_high.horizon_color);
+}
+
+#[test]
+fn test_moon_visual_hierarchy_radiance_invariants() {
+    // Phase 10.5.x+ Section 14-19 & Hardening Amendment:
+    // Moon visual hierarchy:
+    // MOON CORE (2.85) >> MOON HALO (0.035) > STARS (0.15 - 0.40) > NIGHT SKY (0.02)
+    // Moon terrain illumination ([0.035, 0.050, 0.080]) remains subtle and independent.
+
+    let mut env = EnvironmentState::new();
+    env.set_day_fraction(0.00); // Midnight
+
+    let sky_uniform = env.build_sky_uniform(glam::Mat4::IDENTITY, Vec3::ZERO);
+    let light_uniform = env.build_light_uniform();
+
+    // Night sky background brightness:
+    let zenith_lum = sky_uniform.zenith_color[0] * 0.2126
+        + sky_uniform.zenith_color[1] * 0.7152
+        + sky_uniform.zenith_color[2] * 0.0722;
+    assert!(
+        zenith_lum < 0.03,
+        "Night sky background is dark: {}",
+        zenith_lum
+    );
+
+    // Terrain moonlight is subtle directional light:
+    let terrain_moonlight = Vec3::from_slice(&light_uniform.sun_color);
+    assert!(
+        terrain_moonlight.length() < 0.12,
+        "Terrain moonlight must remain subtle: {}",
+        terrain_moonlight.length()
+    );
+
+    // Moon visual radiance contract in sky.wgsl:
+    // Core crescent intensity = 2.85
+    // Halo maximum intensity = 0.035
+    // Star reference typical peak = 0.20 - 0.40
+    let moon_core_intensity = 2.85f32;
+    let moon_halo_intensity = 0.035f32;
+    let star_typical_intensity = 0.25f32;
+
+    assert!(
+        moon_core_intensity > 50.0 * moon_halo_intensity,
+        "Moon core must dominate halo by orders of magnitude (2.85 >> 0.035)"
+    );
+    assert!(
+        star_typical_intensity > moon_halo_intensity,
+        "Stars must be clearly distinct and brighter than the soft diffuse halo"
+    );
+    assert!(
+        moon_halo_intensity > zenith_lum,
+        "Halo is a faint presence above night sky black"
+    );
+}

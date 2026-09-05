@@ -318,15 +318,18 @@ impl Camera {
         }
     }
 
-    /// Menangani perpindahan mouse
+    /// Menangani perpindahan mouse untuk orientasi kamera (relative FPS look input).
+    ///
+    /// Berlaku seragam untuk Player FPS maupun Developer Free Camera:
+    /// - Perpindahan horizontal (dx) memutar yaw
+    /// - Perpindahan vertikal (dy) memutar pitch
+    /// - Pitch dibatasi [-89.0, 89.0] derajat untuk mencegah pembalikan kamera / gimbal lock.
     pub fn handle_mouse_motion(&mut self, dx: f64, dy: f64) {
-        if self.free_look || self.is_mouse_dragging {
-            self.yaw_deg += (dx as f32) * self.sensitivity;
-            self.pitch_deg -= (dy as f32) * self.sensitivity;
+        self.yaw_deg += (dx as f32) * self.sensitivity;
+        self.pitch_deg -= (dy as f32) * self.sensitivity;
 
-            // Batasi pitch agar tidak gimbal-lock
-            self.pitch_deg = self.pitch_deg.clamp(-89.0, 89.0);
-        }
+        // Batasi pitch agar tidak gimbal-lock
+        self.pitch_deg = self.pitch_deg.clamp(-89.0, 89.0);
     }
 
     /// Update pergerakan kamera berdasarkan delta time (detik)
