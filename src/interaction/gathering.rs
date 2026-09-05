@@ -53,6 +53,7 @@ impl ResourceGatheringRegistry {
                             base_yield: harvest_comp.yield_quantity,
                             harvestable: true,
                             source_block: Some(block_def.id.clone()),
+                            required_tool: harvest_comp.required_tool.clone(),
                         };
                         registry.register(mat_id, def);
                         registry

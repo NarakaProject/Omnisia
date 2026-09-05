@@ -2,6 +2,7 @@ pub mod gathering;
 pub mod mutation;
 pub mod placement;
 pub mod raycast;
+pub mod tools;
 pub mod types;
 
 pub use gathering::{
@@ -20,10 +21,16 @@ pub use placement::{
 pub use raycast::{
     raycast_player_interaction, raycast_player_interaction_with_reach, raycast_voxels,
 };
+pub use tools::{
+    calculate_tool_effectiveness, can_gather_with_tool, execute_tool_gather_transaction,
+    handle_player_tool_gather, resolve_tool, validate_tool_gather_action,
+    validate_tool_gather_internal, validate_tool_requirement, ToolRegistry,
+};
 pub use types::{
     BlockOrientation, CollectionResult, GatheringError, GatheringResult, InteractionAction,
     InteractionCooldown, InteractionMutationError, PlacementError, PlacementProposal,
-    PlacementRejectionReason, PlacementResult, PlacementValidity, ResourceDefinition, VoxelHit,
-    VoxelMutationResult, VoxelRaycastResult, DEFAULT_INTERACTION_COOLDOWN,
-    DEFAULT_INTERACTION_REACH,
+    PlacementRejectionReason, PlacementResult, PlacementValidity, ResourceDefinition, ToolAction,
+    ToolCategory, ToolDefinition, ToolEffectiveness, ToolError, ToolGatheringResult, ToolId,
+    ToolRequirement, ToolState, VoxelHit, VoxelMutationResult, VoxelRaycastResult,
+    DEFAULT_INTERACTION_COOLDOWN, DEFAULT_INTERACTION_REACH,
 };

@@ -1,8 +1,8 @@
 # Omnisia — Authoritative Project State
 
-> **Current Milestone**: Phase 11.4 — Block Placement & Build Rules (**COMPLETED / VALIDATED**)  
-> **Next Milestone**: Phase 11.5 — Tools & Tool Actions (**PLANNED / NEXT**)  
-> **Verified HEAD Commit**: Current Phase 11.4 Working State  
+> **Current Milestone**: Phase 11.5 — Tools & Tool Actions (**COMPLETED / VALIDATED**)  
+> **Next Milestone**: Phase 11.6 — Generic Interactable World Objects & Feedback (**PLANNED / NEXT**)  
+> **Verified HEAD Commit**: Current Phase 11.5 Working State  
 > **Branch**: `main`  
 > **Source-of-Truth Policy**: Source code and passing automated tests are the absolute source of truth.
 
@@ -16,9 +16,9 @@ Every count in this document has been directly audited and verified against the 
 - **Compiler**: Rust 2021 edition, `cargo build --release` compiles cleanly with zero errors.
 - **Formatting**: `cargo fmt --all -- --check` passes cleanly with zero diffs.
 - **Linter**: `cargo clippy --all-targets --all-features -- -D warnings` passes cleanly with zero warnings or errors.
-- **Test Suite**: `cargo test --all-targets` passes with **933 passed, 0 failed, 0 ignored** across 21 test targets.
+- **Test Suite**: `cargo test --all-targets` passes with **954 passed, 0 failed, 0 ignored** across 22 test targets.
 
-### Test Count Breakdown by Target (933 Total Tests)
+### Test Count Breakdown by Target (954 Total Tests)
 
 | Test Target Binary | Scope / Feature Area | Verified Test Count | Status |
 |:---|:---|:---:|:---:|
@@ -33,6 +33,7 @@ Every count in this document has been directly audited and verified against the 
 | `tests/gathering_tests.rs` | Resource Gathering Primitives, Data-Driven Harvestable Components, Material & ResourceId Mapping, Yield Determinism, Atomic Commit, Structural Detachment Integration, Mesh Invalidation, Cooldown Rate-Limiting, Architectural Firewalls (Phase 11.3) | **27** | PASS |
 | `tests/worldgen_tests.rs` | Deterministic Seed, Climate, Hydrology, Caves, Strata, Ores, Biomes (Phase 4–5) | **26** | PASS |
 | `tests/physics_tests.rs` | Dynamic Aggregate Baseline, Gravity/AntiGravity, Swept Snapping (Phase 8A) | **23** | PASS |
+| `tests/tool_action_tests.rs` | Tools & Tool Actions, ToolId Distinct Identity, ToolCategory Discrimination, Durability Invariant Validation, Finite Float Validation, Infallible Post-Commit Durability Decrement, Deterministic Yield Firewall, Hand Gathering Compatibility (Phase 11.5) | **21** | PASS |
 | `tests/console_tooling_tests.rs` | Single EnvironmentClock Authority, Pause/Resume Isolation, Time Scale Bounds (0, 1000], Decoupled Developer Camera, Read-Only Player Snapshot, Command Parser Quoting & Collapse, 4096-Byte Limit, UTF-8/Unicode Safety, ASCII Fallback to `?`, Help Auto-Generation, Clear Decoupling (Phase 10.5.x) | **19** | PASS |
 | `tests/voxel_interaction_tests.rs` | Voxel Removal, Adjacent Face Placement, Reach Validation, Player Capsule Overlap Guard, Multi-Chunk Atomicity, Structural Detachment into DynamicBody, Remesh Invalidation, Rate-Limiting Debounce Cooldown (Phase 11.2) | **18** | PASS |
 | `tests/impact_tests.rs` | ImpactEvent, ImpactSource, Magnitude, AffectedVolume, Euclidean Boundaries, Determinism (Phase 10.1) | **17** | PASS |
@@ -43,7 +44,7 @@ Every count in this document has been directly audited and verified against the 
 | `tests/streaming_tests.rs` | ChunkStore Residency, Job Scheduler, Memory Budget, Eviction Lifecycle (Phase 3) | **11** | PASS |
 | `tests/structure_tests.rs` | 6-Connected Adjacency, Structural Anchors, Aggregate Extraction (Phase 7) | **11** | PASS |
 | `tests/scale_tests.rs` | Metric Coordinate Invariants (1 vx = 0.5m), Scale Ruler, Traversal Residency (Phase 7) | **7** | PASS |
-| **Workspace Total** | **All Subsystems** | **933** | **PASS** |
+| **Workspace Total** | **All Subsystems** | **954** | **PASS** |
 
 ### Verified Validation Binaries (8 Binaries)
 
@@ -170,6 +171,7 @@ These 25 invariants are binding on all current and future phases. Any pull reque
 26. **Single Authority for Environment Time (Amendment 1)**: `EnvironmentClock` is the single mutable authority for paused state, time scale, and day progression. `EnvironmentState` is a derived visual state layer; console commands mutate `EnvironmentClock` directly.
 27. **Developer Camera Decoupling & Read-Only Player Reference (Amendments 2 & 3)**: Developer free camera is an observational tool whose transform and velocity are decoupled from the kinematic player controller. Console commands cannot mutate player physics, ChunkStore, or persistence.
 28. **Developer Console Zero Overhead When Closed (Amendment 12)**: When the console overlay is closed, the frame pipeline performs 0 vertex allocations, 0 GPU buffer writes, and 0 overlay draw calls.
+29. **Tool Identity, Ownership & Durability Invariants (Phase 11.5)**: Tool identity (`ToolId`) is semantically and structurally distinct from resource identity (`ResourceId`) with zero implicit conversions. Content-authoritative tool requirements reside strictly in `HarvestableComponent.required_tool`. Tool definitions (`ToolDefinition.max_durability`) are authoritative; invalid state (`current > max`) is rejected without silent repair. Durability is decremented exactly once and only after world transaction commit succeeds. Effectiveness is pure semantic metadata and does not modify yield quantity.
 
 ---
 

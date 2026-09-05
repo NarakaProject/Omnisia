@@ -263,9 +263,18 @@ Omnisia is an ambitious, high-performance voxel sandbox game built from scratch 
   - Atomic mutation via existing `VoxelEditTransaction` and `World::commit_voxel_transaction()`, preserving structural connectivity, dynamic aggregate extraction, and asynchronous mesh invalidation.
   - Rate-limiting debounce cooldown reuse (`InteractionCooldown`).
   - Verified with 15 focused unit and integration tests (`tests/placement_rules_tests.rs`).
-- **Phase 11.5 — Tools & Tool Actions (`PLANNED / NEXT`)**:
-  - Tool categories, effectiveness multipliers, tool durability mechanics.
-- **Phase 11.6 — Generic Interactable World Objects & Feedback (`PLANNED`)**:
+- **Phase 11.5 — Tools & Tool Actions (`COMPLETED / VALIDATED`)**:
+  - Semantically distinct `ToolId` architecture (namespaced, zero implicit conversion to `ResourceId`).
+  - Content-authoritative tool requirement definition in `HarvestableComponent.required_tool` (`None`, `AnyTool`, `Category`, `Specific`).
+  - Runtime `ToolRegistry` with verified core tools (`stone_pickaxe`, `stone_axe`, `stone_shovel`, `generic_tool`).
+  - Invariant durability validation: `ToolDefinition.max_durability` is authoritative; invalid state (`current > max`) is rejected without silent repair.
+  - Infallible post-commit durability decrement (`saturating_sub(1)` executed only after world CSG transaction commit succeeds).
+  - Floating-point validation firewall: strictly finite, non-negative base efficiency and resource multipliers.
+  - Effectiveness firewall: `ToolEffectiveness` acts as semantic metadata only; base yield quantity remains strictly unmodified.
+  - Backward compatibility: hand gathering preserved for `ToolRequirement::None`.
+  - Rate-limiting debounce cooldown integration (`InteractionCooldown`).
+  - Verified with 21 focused unit and integration tests (`tests/tool_action_tests.rs`).
+- **Phase 11.6 — Generic Interactable World Objects & Feedback (`PLANNED / NEXT`)**:
   - Generic interaction abstraction, audio/visual cues.
 
 ### PHASE 12 — ENTITY & CREATURE FOUNDATION (`PLANNED`)

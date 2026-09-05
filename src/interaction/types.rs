@@ -6,8 +6,10 @@ use crate::csg::edit::VoxelEditError;
 use crate::csg::transaction::VoxelEditCommitResult;
 use crate::material::MaterialId;
 use crate::mesh::types::FaceDirection;
-use crate::modding::definitions::SupportRule;
-use crate::modding::resource_id::ResourceId;
+pub use crate::modding::definitions::{
+    SupportRule, ToolCategory, ToolDefinition, ToolEffectiveness, ToolId, ToolRequirement,
+};
+pub use crate::modding::resource_id::ResourceId;
 use crate::structure::aggregate::DetachedAggregate;
 use crate::voxel::VoxelBlock;
 
@@ -305,6 +307,9 @@ pub struct ResourceDefinition {
     pub harvestable: bool,
     /// ResourceId blok sumber jika dipetakan dari BlockDefinition
     pub source_block: Option<ResourceId>,
+    /// Nilai cache runtime turunan dari `HarvestableComponent.required_tool` (Phase 11.5).
+    /// INVARIANT GUARDRAIL 2: Derived / runtime cache only, BUKAN sumber kebenaran independen.
+    pub required_tool: ToolRequirement,
 }
 
 impl ResourceDefinition {
@@ -315,12 +320,19 @@ impl ResourceDefinition {
             base_yield,
             harvestable: true,
             source_block: None,
+            required_tool: ToolRequirement::None,
         }
     }
 
     /// Menandai blok sumber asal dari mana resource ini dipetakan
     pub fn with_source_block(mut self, block_id: ResourceId) -> Self {
         self.source_block = Some(block_id);
+        self
+    }
+
+    /// Menentukan kebutuhan alat turunan untuk resource ini (Phase 11.5)
+    pub fn with_required_tool(mut self, required_tool: ToolRequirement) -> Self {
+        self.required_tool = required_tool;
         self
     }
 }
@@ -899,4 +911,249 @@ pub struct PlacementResult {
     pub proposal: PlacementProposal,
     /// Hasil komit mutasi fisik dan struktural di dunia
     pub mutation: VoxelMutationResult,
+}
+
+/// State instans alat aktif yang dibawa oleh pemanggil aksi (Phase 11.5).
+/// Mewakili kapabilitas alat aktif yang digunakan dalam aksi interaksi saat ini.
+/// INVARIANT GUARDRAIL 3: Hanya menyimpan durabilitas saat ini; durabilitas maksimum
+/// bersumber otoritatif dari `ToolDefinition`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolState {
+    /// Identitas unik alat
+    pub tool_id: ToolId,
+    /// Durabilitas saat ini (0 <= current_durability <= tool_def.max_durability)
+    pub current_durability: u32,
+}
+
+impl ToolState {
+    /// Membuat ToolState baru dengan durabilitas saat ini
+    pub fn new(tool_id: ToolId, current_durability: u32) -> Self {
+        Self {
+            tool_id,
+            current_durability,
+        }
+    }
+
+    /// Apakah alat sudah rusak / habis durabilitasnya (durabilitas == 0)
+    #[inline(always)]
+    pub fn is_broken(&self) -> bool {
+        self.current_durability == 0
+    }
+
+    /// Apakah alat masih dapat digunakan (durabilitas > 0)
+    #[inline(always)]
+    pub fn is_usable(&self) -> bool {
+        self.current_durability > 0
+    }
+
+    /// Mengurangi 1 unit durabilitas secara aman (saturating_sub).
+    /// INVARIANT GUARDRAIL 3: Saturating sub digunakan HANYA untuk dekremen pasca-komit yang telah sukses.
+    pub fn consume_durability(&mut self) -> bool {
+        if self.current_durability > 0 {
+            self.current_durability = self.current_durability.saturating_sub(1);
+            true
+        } else {
+            false
+        }
+    }
+}
+
+/// Aksi semantik yang dilakukan menggunakan alat (Phase 11.5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolAction {
+    /// Aksi pemanenan resource voxel dunia
+    Gather,
+}
+
+/// Hasil agregat dari aksi pemanenan voxel yang menggunakan alat (Phase 11.5).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ToolGatheringResult {
+    /// Hasil koleksi semantik (source_coord, resource_id, quantity)
+    pub collection: CollectionResult,
+    /// Hasil mutasi fisik dan struktural di dunia
+    pub mutation: VoxelMutationResult,
+    /// Identitas alat yang digunakan (None jika tangan kosong / tanpa alat aktif)
+    pub tool_id: Option<ToolId>,
+    /// Efektivitas alat yang diterapkan pada aksi ini (metadata semantik)
+    pub effectiveness: f32,
+    /// Jumlah durabilitas yang dikonsumsi (0 jika tanpa alat, 1 jika menggunakan alat)
+    pub durability_consumed: u32,
+    /// Sisa durabilitas alat setelah aksi dieksekusi (None jika tanpa alat aktif)
+    pub remaining_durability: Option<u32>,
+}
+
+/// Kesalahan yang dapat terjadi selama validasi atau eksekusi aksi alat (Phase 11.5).
+#[derive(Debug, Clone, PartialEq)]
+pub enum ToolError {
+    /// Aksi membutuhkan alat, namun tidak ada alat aktif yang disediakan (tangan kosong)
+    NoTool { required: ToolRequirement },
+    /// Alat yang aktif memiliki kategori yang salah untuk resource ini
+    WrongToolCategory {
+        expected: ToolCategory,
+        actual: ToolCategory,
+    },
+    /// Alat yang aktif bukan alat spesifik yang disyaratkan
+    WrongTool { expected: ToolId, actual: ToolId },
+    /// Alat yang aktif telah rusak (durabilitas == 0)
+    ToolBroken { tool_id: ToolId },
+    /// Syarat alat tidak terpenuhi
+    ToolRequirementNotMet { reason: String },
+    /// Definisi alat tidak ditemukan dalam ToolRegistry
+    UnknownTool { tool_id: ToolId },
+    /// State alat tidak valid (misal: current_durability melebihi max_durability definisi)
+    InvalidToolState { reason: String },
+    /// Definisi alat tidak valid (misal: multiplier negatif atau NaN)
+    InvalidToolDefinition(String),
+    /// Raycast tidak mengenai target solid mana pun
+    NoTargetHit,
+    /// Chunk target voxel tidak resident di memori
+    TargetNotResident { coord: IVec3 },
+    /// Jarak interaksi melampaui batas jangkauan (reach)
+    ExceedsReach { distance: f32, max_reach: f32 },
+    /// Voxel target adalah udara (AIR)
+    TargetIsAir { coord: IVec3 },
+    /// Voxel target solid tetapi bukan resource yang dapat dipanen
+    NotHarvestable {
+        coord: IVec3,
+        material: MaterialId,
+        block_id: Option<ResourceId>,
+    },
+    /// Cooldown debounce interaksi masih aktif
+    CooldownActive { remaining: f32 },
+    /// Kesalahan pada lapisan transaksi CSG bawaan
+    TransactionError(VoxelEditError),
+    /// Kesalahan mutasi interaksi umum
+    MutationError(InteractionMutationError),
+}
+
+impl fmt::Display for ToolError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NoTool { required } => {
+                write!(f, "A tool is required for this resource ({:?})", required)
+            }
+            Self::WrongToolCategory { expected, actual } => {
+                write!(
+                    f,
+                    "Wrong tool category: expected {:?}, actual {:?}",
+                    expected, actual
+                )
+            }
+            Self::WrongTool { expected, actual } => {
+                write!(
+                    f,
+                    "Wrong specific tool: expected {}, actual {}",
+                    expected, actual
+                )
+            }
+            Self::ToolBroken { tool_id } => {
+                write!(f, "Tool '{}' is broken (durability is 0)", tool_id)
+            }
+            Self::ToolRequirementNotMet { reason } => {
+                write!(f, "Tool requirement not met: {}", reason)
+            }
+            Self::UnknownTool { tool_id } => {
+                write!(f, "Tool '{}' not found in tool registry", tool_id)
+            }
+            Self::InvalidToolState { reason } => write!(f, "Invalid tool state: {}", reason),
+            Self::InvalidToolDefinition(msg) => write!(f, "Invalid tool definition: {}", msg),
+            Self::NoTargetHit => write!(f, "No solid voxel target hit by ray"),
+            Self::TargetNotResident { coord } => {
+                write!(f, "Target chunk at {:?} is not resident", coord)
+            }
+            Self::ExceedsReach {
+                distance,
+                max_reach,
+            } => {
+                write!(
+                    f,
+                    "Interaction distance ({:.2}m) exceeds max reach ({:.2}m)",
+                    distance, max_reach
+                )
+            }
+            Self::TargetIsAir { coord } => write!(f, "Target at {:?} is air", coord),
+            Self::NotHarvestable {
+                coord,
+                material,
+                block_id,
+            } => {
+                write!(
+                    f,
+                    "Voxel at {:?} (material={:?}, block={:?}) is not harvestable",
+                    coord, material, block_id
+                )
+            }
+            Self::CooldownActive { remaining } => {
+                write!(
+                    f,
+                    "Interaction cooldown active ({:.3}s remaining)",
+                    remaining
+                )
+            }
+            Self::TransactionError(err) => write!(f, "Transaction error: {}", err),
+            Self::MutationError(err) => write!(f, "Mutation error: {}", err),
+        }
+    }
+}
+
+impl std::error::Error for ToolError {}
+
+impl From<VoxelEditError> for ToolError {
+    fn from(err: VoxelEditError) -> Self {
+        Self::TransactionError(err)
+    }
+}
+
+impl From<GatheringError> for ToolError {
+    fn from(err: GatheringError) -> Self {
+        match err {
+            GatheringError::NoTargetHit => Self::NoTargetHit,
+            GatheringError::TargetNotResident { coord } => Self::TargetNotResident { coord },
+            GatheringError::ExceedsReach {
+                distance,
+                max_reach,
+            } => Self::ExceedsReach {
+                distance,
+                max_reach,
+            },
+            GatheringError::TargetIsAir { coord } => Self::TargetIsAir { coord },
+            GatheringError::NotHarvestable {
+                coord,
+                material,
+                block_id,
+            } => Self::NotHarvestable {
+                coord,
+                material,
+                block_id,
+            },
+            GatheringError::CooldownActive { remaining } => Self::CooldownActive { remaining },
+            GatheringError::TransactionError(e) => Self::TransactionError(e),
+            GatheringError::MutationError(e) => Self::MutationError(e),
+        }
+    }
+}
+
+impl From<InteractionMutationError> for ToolError {
+    fn from(err: InteractionMutationError) -> Self {
+        match err {
+            InteractionMutationError::NoTargetHit => Self::NoTargetHit,
+            InteractionMutationError::TargetNotResident { coord } => {
+                Self::TargetNotResident { coord }
+            }
+            InteractionMutationError::ExceedsReach {
+                distance,
+                max_reach,
+            } => Self::ExceedsReach {
+                distance,
+                max_reach,
+            },
+            InteractionMutationError::RemovalTargetIsAir { coord } => Self::TargetIsAir { coord },
+            InteractionMutationError::CooldownActive { remaining } => {
+                Self::CooldownActive { remaining }
+            }
+            InteractionMutationError::TransactionError(e) => Self::TransactionError(e),
+            other => Self::MutationError(other),
+        }
+    }
 }
