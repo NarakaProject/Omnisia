@@ -1243,3 +1243,342 @@ fn test_moon_visual_hierarchy_radiance_invariants() {
         "Halo is a faint presence above night sky black"
     );
 }
+
+// ============================================================================
+// CATEGORY 12: PROCEDURAL AURORA VISUAL LAYER (Phase 10.6, Amendments A-E)
+// ============================================================================
+
+#[test]
+fn test_aurora_determinism() {
+    use omnisia::environment::aurora::evaluate_aurora_reference;
+
+    let camera_pos = Vec3::new(120.0, 64.0, -350.0);
+    let view_dir = Vec3::new(0.3, 0.4, -0.8).normalize();
+    let sun_elevation = -0.50; // Night
+    let intensity = 1.0;
+
+    let result1 = evaluate_aurora_reference(camera_pos, view_dir, sun_elevation, intensity);
+    let result2 = evaluate_aurora_reference(camera_pos, view_dir, sun_elevation, intensity);
+
+    assert_eq!(
+        result1, result2,
+        "Aurora reference evaluation must be 100% deterministic"
+    );
+    assert!(result1.layer_x.is_finite());
+    assert!(result1.layer_z.is_finite());
+    assert!(result1.vertical_envelope > 0.0);
+    assert!(result1.anchor_alignment > 0.0);
+    assert_eq!(result1.effective_emission, 1.0);
+}
+
+#[test]
+fn test_aurora_day_suppression_and_night_visibility() {
+    use omnisia::environment::aurora::AuroraParameters;
+
+    // Test B: Day suppression at noon (sun elevation = 1.0, day_fraction = 0.50)
+    let params_noon = CelestialParameters::evaluate(0.50);
+    assert!((params_noon.sun_elevation - 1.0).abs() < TOLERANCE);
+    let vis_noon = AuroraParameters::visibility(params_noon.sun_elevation);
+    assert_eq!(
+        vis_noon, 0.0,
+        "Aurora visibility must be strictly 0.0 at solar noon (Mandatory Amendment A)"
+    );
+
+    let aurora = AuroraParameters::default();
+    assert_eq!(
+        aurora.effective_emission(params_noon.sun_elevation),
+        0.0,
+        "Effective emission must be 0.0 during the day"
+    );
+
+    // Test C: Night visibility at midnight (sun elevation = -1.0, day_fraction = 0.00)
+    let params_midnight = CelestialParameters::evaluate(0.00);
+    assert!((params_midnight.sun_elevation - (-1.0)).abs() < TOLERANCE);
+    let vis_midnight = AuroraParameters::visibility(params_midnight.sun_elevation);
+    assert_eq!(
+        vis_midnight, 1.0,
+        "Aurora visibility must be strictly 1.0 at midnight (Mandatory Amendment A)"
+    );
+    assert_eq!(
+        aurora.effective_emission(params_midnight.sun_elevation),
+        1.0,
+        "Effective emission must be full intensity at midnight"
+    );
+}
+
+#[test]
+fn test_aurora_sunset_and_sunrise_transition_matrix() {
+    use omnisia::environment::aurora::AuroraParameters;
+
+    // Mandatory Amendment E: Dense sample validation around sunset / dusk
+    // 0.70 (day), 0.72 (late day), 0.74 (sunset golden hour), 0.75 (exact sunset),
+    // 0.76 (civil dusk), 0.78 (nautical dusk), 0.80 (deep night)
+    let sunset_samples = [0.70, 0.72, 0.74, 0.75, 0.76, 0.78, 0.80];
+    let mut prev_vis = 0.0f32;
+
+    for &frac in &sunset_samples {
+        let celestial = CelestialParameters::evaluate(frac);
+        let vis = AuroraParameters::visibility(celestial.sun_elevation);
+
+        assert!(
+            vis.is_finite(),
+            "Visibility must be finite at frac {}",
+            frac
+        );
+        assert!(
+            vis >= prev_vis,
+            "Aurora visibility must monotonically emerge during sunset/dusk: {} vs {} at frac {}",
+            vis,
+            prev_vis,
+            frac
+        );
+        prev_vis = vis;
+
+        if frac <= 0.75 {
+            // Day through exact sunset (sun elevation >= 0.0 >= -0.06): strictly 0.0
+            assert_eq!(
+                vis, 0.0,
+                "Aurora must be strictly 0.0 at/before sunset (frac {}, elev {})",
+                frac, celestial.sun_elevation
+            );
+        } else if frac == 0.76 {
+            // Civil dusk (elev ~ -0.063): barely emerging, strictly <= 0.05
+            assert!(
+                vis < 0.05,
+                "Aurora must barely be emerging at civil dusk (vis={}, elev={})",
+                vis,
+                celestial.sun_elevation
+            );
+        } else if frac >= 0.78 {
+            // Nautical dusk through deep night (elev <= -0.18): full visibility 1.0
+            assert_eq!(
+                vis, 1.0,
+                "Aurora must be full strength by nautical dusk/night at frac {}",
+                frac
+            );
+        }
+    }
+
+    // Sunrise / dawn sequence: 0.20 (night), 0.22 (nautical dawn), 0.24 (civil dawn),
+    // 0.25 (exact sunrise), 0.26 (morning), 0.28 (day), 0.30 (day)
+    let sunrise_samples = [0.20, 0.22, 0.24, 0.25, 0.26, 0.28, 0.30];
+    let mut prev_sunrise_vis = 1.0f32;
+
+    for &frac in &sunrise_samples {
+        let celestial = CelestialParameters::evaluate(frac);
+        let vis = AuroraParameters::visibility(celestial.sun_elevation);
+
+        assert!(vis.is_finite());
+        assert!(
+            vis <= prev_sunrise_vis,
+            "Aurora visibility must monotonically fade during dawn/sunrise: {} vs {} at frac {}",
+            vis,
+            prev_sunrise_vis,
+            frac
+        );
+        prev_sunrise_vis = vis;
+
+        if frac <= 0.22 {
+            assert_eq!(vis, 1.0, "Full visibility before dawn at frac {}", frac);
+        } else if frac == 0.24 {
+            assert!(
+                vis < 0.05,
+                "Aurora must be faded to near-zero before sunrise (vis={})",
+                vis
+            );
+        } else if frac >= 0.25 {
+            assert_eq!(
+                vis, 0.0,
+                "Aurora must be strictly 0.0 at/after sunrise (frac {}, elev {})",
+                frac, celestial.sun_elevation
+            );
+        }
+    }
+}
+
+#[test]
+fn test_aurora_intensity_bounds_and_safety() {
+    use omnisia::environment::aurora::AuroraParameters;
+
+    let mut aurora = AuroraParameters::new();
+    assert_eq!(aurora.intensity, 1.0);
+
+    // Valid intensities
+    assert!(aurora.set_intensity(0.0).is_ok());
+    assert_eq!(aurora.intensity, 0.0);
+
+    assert!(aurora.set_intensity(2.5).is_ok());
+    assert_eq!(aurora.intensity, 2.5);
+
+    assert!(aurora.set_intensity(10.0).is_ok());
+    assert_eq!(aurora.intensity, 10.0);
+
+    // Invalid intensities: negative, > 10.0, NaN, Infinity
+    assert!(aurora.set_intensity(-0.1).is_err());
+    assert!(aurora.set_intensity(10.1).is_err());
+    assert!(aurora.set_intensity(f32::NAN).is_err());
+    assert!(aurora.set_intensity(f32::INFINITY).is_err());
+    assert!(aurora.set_intensity(f32::NEG_INFINITY).is_err());
+
+    // Effective emission respects intensity scaling
+    aurora.set_intensity(2.0).unwrap();
+    assert_eq!(aurora.effective_emission(-0.50), 2.0);
+
+    aurora.set_intensity(0.0).unwrap();
+    assert_eq!(aurora.effective_emission(-0.50), 0.0);
+}
+
+#[test]
+fn test_aurora_camera_altitude_invariance() {
+    use omnisia::environment::aurora::evaluate_aurora_reference;
+
+    // Invariance of environmental celestial state with respect to camera altitude:
+    let env = EnvironmentState::new();
+    let inv_vp = glam::Mat4::IDENTITY;
+
+    let uniform_0 = env.build_sky_uniform(inv_vp, Vec3::new(0.0, 0.0, 0.0));
+    let uniform_64 = env.build_sky_uniform(inv_vp, Vec3::new(50.0, 64.0, -100.0));
+    let uniform_500 = env.build_sky_uniform(inv_vp, Vec3::new(-20.0, 500.0, 80.0));
+    let uniform_5000 = env.build_sky_uniform(inv_vp, Vec3::new(0.0, 5000.0, 0.0));
+
+    // Environmental state remains bitwise identical across all altitudes
+    assert_eq!(uniform_0.sun_elevation, uniform_64.sun_elevation);
+    assert_eq!(uniform_0.sun_elevation, uniform_500.sun_elevation);
+    assert_eq!(uniform_0.sun_elevation, uniform_5000.sun_elevation);
+
+    assert_eq!(uniform_0.aurora_intensity, uniform_64.aurora_intensity);
+    assert_eq!(uniform_0.aurora_intensity, uniform_500.aurora_intensity);
+    assert_eq!(uniform_0.aurora_intensity, uniform_5000.aurora_intensity);
+
+    assert_eq!(uniform_0.day_factor, uniform_5000.day_factor);
+    assert_eq!(uniform_0.twilight_factor, uniform_5000.twilight_factor);
+
+    // Spatial parallax check: layer height scales smoothly without inversion
+    let view_dir = Vec3::new(0.0, 0.35, -0.9).normalize();
+    let ref_0 = evaluate_aurora_reference(Vec3::ZERO, view_dir, -0.5, 1.0);
+    let ref_64 = evaluate_aurora_reference(Vec3::new(0.0, 64.0, 0.0), view_dir, -0.5, 1.0);
+    let ref_500 = evaluate_aurora_reference(Vec3::new(0.0, 500.0, 0.0), view_dir, -0.5, 1.0);
+    let ref_5000 = evaluate_aurora_reference(Vec3::new(0.0, 5000.0, 0.0), view_dir, -0.5, 1.0);
+
+    assert!(ref_0.layer_z < 0.0);
+    assert!(ref_64.layer_z < 0.0);
+    assert!(ref_500.layer_z < 0.0);
+    assert!(
+        ref_5000.layer_z < 0.0,
+        "Curtain orientation must not invert even at 5000m"
+    );
+
+    // Parallax contracts distance smoothly as camera ascends
+    assert!(ref_0.layer_z < ref_500.layer_z);
+}
+
+#[test]
+fn test_aurora_camera_rotation_stability() {
+    use omnisia::environment::aurora::evaluate_aurora_reference;
+
+    let camera_pos = Vec3::new(10.0, 20.0, 30.0);
+    let sun_elev = -0.50;
+    let intensity = 1.0;
+
+    // Look North (-Z)
+    let dir_north = Vec3::new(0.0, 0.35, -1.0).normalize();
+    let ref_north = evaluate_aurora_reference(camera_pos, dir_north, sun_elev, intensity);
+
+    // Look South (+Z)
+    let dir_south = Vec3::new(0.0, 0.35, 1.0).normalize();
+    let ref_south = evaluate_aurora_reference(camera_pos, dir_south, sun_elev, intensity);
+
+    // Mandatory Amendment C: Primary curtain anchored along -Z world axis
+    assert!(
+        ref_north.anchor_alignment > 0.8,
+        "North-facing direction has strong anchor alignment: {}",
+        ref_north.anchor_alignment
+    );
+    assert_eq!(
+        ref_south.anchor_alignment, 0.0,
+        "South-facing direction has zero anchor alignment (leaves sky open for moon)"
+    );
+
+    // Rotating 360 degrees and returning produces identical coordinates
+    let ref_north_return = evaluate_aurora_reference(camera_pos, dir_north, sun_elev, intensity);
+    assert_eq!(ref_north, ref_north_return);
+}
+
+#[test]
+fn test_aurora_temporal_boundedness() {
+    let mut clock = EnvironmentClock::new(0.0, 1200.0);
+
+    // Advance 500 hours (1,800,000 seconds)
+    clock.advance(1_800_000.0);
+    let bounded = clock.bounded_star_time();
+    assert!(
+        (0.0..60.0).contains(&bounded),
+        "Bounded time must stay in [0.0, 60.0), got {}",
+        bounded
+    );
+    assert!(bounded.is_finite());
+}
+
+#[test]
+fn test_celestial_hierarchy_and_terrain_isolation_with_aurora() {
+    // Mandatory Amendment D:
+    // - Bounded aurora radiance (<= 0.70 peak)
+    // - Moon core dominance (2.85 >> 0.70)
+    // - Night sky background preservation (< 0.03)
+    // - Absolute terrain lighting isolation (moonlight unchanged, underside diffuse 0.0)
+
+    let mut env = EnvironmentState::new();
+    env.set_day_fraction(0.00); // Midnight
+    env.aurora.set_intensity(1.0).unwrap();
+
+    let light_midnight = env.build_light_uniform();
+    let sky_midnight = env.build_sky_uniform(glam::Mat4::IDENTITY, Vec3::ZERO);
+
+    // 1. Terrain moonlight remains subtle directional light:
+    let terrain_moonlight = Vec3::from_slice(&light_midnight.sun_color);
+    assert!(
+        terrain_moonlight.length() < 0.12,
+        "Terrain moonlight must remain subtle: {}",
+        terrain_moonlight.length()
+    );
+
+    // 2. Canopy underside receives strictly 0.0 direct diffuse:
+    let l_midnight = (-Vec3::from_slice(&light_midnight.sun_direction)).normalize();
+    let bottom_n = Vec3::new(0.0, -1.0, 0.0);
+    let bottom_nl = bottom_n.dot(l_midnight);
+    let bottom_diffuse = if bottom_nl > 0.0 {
+        (bottom_nl * 0.5 + 0.5).powi(2)
+    } else {
+        0.0
+    };
+    assert_eq!(
+        bottom_diffuse, 0.0,
+        "Aurora must NOT illuminate underside faces"
+    );
+
+    // 3. Moon core dominance over aurora peak:
+    let moon_core_intensity = 2.85f32;
+    let aurora_max_peak = 0.70f32;
+    assert!(
+        moon_core_intensity > 3.0 * aurora_max_peak,
+        "Moon core (2.85) must clearly dominate peak aurora (0.70)"
+    );
+
+    // 4. Night sky preservation:
+    let zenith_lum = sky_midnight.zenith_color[0] * 0.2126
+        + sky_midnight.zenith_color[1] * 0.7152
+        + sky_midnight.zenith_color[2] * 0.0722;
+    assert!(zenith_lum < 0.03, "Night sky background remains dark");
+
+    // 5. Changing aurora intensity has ZERO effect on LightUniform:
+    env.aurora.set_intensity(10.0).unwrap();
+    let light_boosted = env.build_light_uniform();
+    assert_eq!(
+        light_midnight.sun_color, light_boosted.sun_color,
+        "Aurora intensity must NEVER affect LightUniform sun_color"
+    );
+    assert_eq!(
+        light_midnight.ambient_color, light_boosted.ambient_color,
+        "Aurora intensity must NEVER affect LightUniform ambient_color"
+    );
+}

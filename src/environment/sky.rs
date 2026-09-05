@@ -1,6 +1,7 @@
 use bytemuck::{Pod, Zeroable};
 use glam::{Mat4, Vec3};
 
+use super::aurora::AuroraParameters;
 use super::celestial::CelestialParameters;
 use super::time::EnvironmentClock;
 use crate::renderer::LightUniform;
@@ -42,8 +43,8 @@ pub struct SkyUniform {
     pub day_factor: f32,
     /// Zenith sky color RGB.
     pub zenith_color: [f32; 3],
-    /// Explicit padding to ensure 16-byte uniform alignment.
-    pub _pad0: f32,
+    /// Visual intensity multiplier for the procedural aurora layer in `[0.0, 10.0]`.
+    pub aurora_intensity: f32,
 }
 
 impl Default for SkyUniform {
@@ -64,7 +65,7 @@ impl Default for SkyUniform {
             horizon_color: default_celestial.horizon_color,
             day_factor: default_celestial.day_factor,
             zenith_color: default_celestial.zenith_color,
-            _pad0: 0.0,
+            aurora_intensity: 1.0,
         }
     }
 }
@@ -81,6 +82,8 @@ pub struct EnvironmentState {
     pub clock: EnvironmentClock,
     /// Evaluated celestial positions, elevations, and atmospheric colors.
     pub celestial: CelestialParameters,
+    /// Procedural aurora visual layer parameters (Phase 10.6).
+    pub aurora: AuroraParameters,
 }
 
 impl Default for EnvironmentState {
@@ -94,13 +97,23 @@ impl EnvironmentState {
     pub fn new() -> Self {
         let clock = EnvironmentClock::default();
         let celestial = CelestialParameters::evaluate(clock.day_fraction);
-        Self { clock, celestial }
+        let aurora = AuroraParameters::default();
+        Self {
+            clock,
+            celestial,
+            aurora,
+        }
     }
 
     /// Creates an environment state initialized with a custom initial day fraction and cycle length.
     pub fn with_clock(clock: EnvironmentClock) -> Self {
         let celestial = CelestialParameters::evaluate(clock.day_fraction);
-        Self { clock, celestial }
+        let aurora = AuroraParameters::default();
+        Self {
+            clock,
+            celestial,
+            aurora,
+        }
     }
 
     /// Advances the environment time by `dt_secs` and re-evaluates all celestial parameters.
@@ -156,7 +169,7 @@ impl EnvironmentState {
             horizon_color: self.celestial.horizon_color,
             day_factor: self.celestial.day_factor,
             zenith_color: self.celestial.zenith_color,
-            _pad0: 0.0,
+            aurora_intensity: self.aurora.intensity,
         }
     }
 

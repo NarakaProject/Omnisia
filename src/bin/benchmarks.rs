@@ -895,7 +895,7 @@ fn main() {
             let start = Instant::now();
 
             for _ in 0..iterations {
-                let mut capsule = Capsule::new(Vec3::new(3.7, 0.5, 5.0), 1.8, 0.30);
+                let mut capsule = Capsule::new(Vec3::new(3.7, 0.5, 5.0), 0.30, 1.8);
                 let mut velocity = Vec3::new(5.0, 0.0, 0.0);
                 let delta = velocity * (1.0 / 30.0);
                 let stats = resolve_swept_step_with_stepup(

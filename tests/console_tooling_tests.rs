@@ -444,6 +444,80 @@ fn test_env_commands_and_moon_control() {
 }
 
 #[test]
+fn test_console_env_aurora_commands() {
+    let registry = create_default_registry();
+    let mut cam_ctx = DeveloperCameraContext::new(Vec3::ZERO, Vec3::ZERO);
+    let mut env = EnvironmentState::new();
+
+    let mut ctx = DeveloperExecutionContext {
+        camera: &mut cam_ctx,
+        environment: &mut env,
+        resident_chunks: 100,
+        fps: 60.0,
+        frame_time_ms: 16.6,
+    };
+
+    // 1. env aurora (status)
+    let aurora_status_cmd = parse_command("env aurora").unwrap().unwrap();
+    match registry.dispatch(&aurora_status_cmd, &mut ctx) {
+        CommandResult::Success(msg) => {
+            assert!(msg.contains("Procedural Aurora State (Phase 10.6)"));
+            assert!(msg.contains("Configured Intensity: 1.00"));
+        }
+        _ => panic!("Expected success for env aurora"),
+    }
+
+    // 2. env aurora intensity <value>
+    let intensity_cmd = parse_command("env aurora intensity 2.5").unwrap().unwrap();
+    match registry.dispatch(&intensity_cmd, &mut ctx) {
+        CommandResult::Success(msg) => {
+            assert!(msg.contains("2.50"));
+            assert_eq!(ctx.environment.aurora.intensity, 2.5);
+        }
+        _ => panic!("Expected success for env aurora intensity 2.5"),
+    }
+
+    // 3. env aurora off
+    let off_cmd = parse_command("env aurora off").unwrap().unwrap();
+    match registry.dispatch(&off_cmd, &mut ctx) {
+        CommandResult::Success(msg) => {
+            assert!(msg.contains("disabled"));
+            assert_eq!(ctx.environment.aurora.intensity, 0.0);
+        }
+        _ => panic!("Expected success for env aurora off"),
+    }
+
+    // 4. env aurora on
+    let on_cmd = parse_command("env aurora on").unwrap().unwrap();
+    match registry.dispatch(&on_cmd, &mut ctx) {
+        CommandResult::Success(msg) => {
+            assert!(msg.contains("enabled"));
+            assert_eq!(ctx.environment.aurora.intensity, 1.0);
+        }
+        _ => panic!("Expected success for env aurora on"),
+    }
+
+    // 5. Error handling: invalid intensity
+    let invalid_cmd = parse_command("env aurora intensity 15.0").unwrap().unwrap();
+    assert!(matches!(
+        registry.dispatch(&invalid_cmd, &mut ctx),
+        CommandResult::Error(_)
+    ));
+
+    let negative_cmd = parse_command("env aurora intensity -1.0").unwrap().unwrap();
+    assert!(matches!(
+        registry.dispatch(&negative_cmd, &mut ctx),
+        CommandResult::Error(_)
+    ));
+
+    let nan_cmd = parse_command("env aurora intensity abc").unwrap().unwrap();
+    assert!(matches!(
+        registry.dispatch(&nan_cmd, &mut ctx),
+        CommandResult::Error(_)
+    ));
+}
+
+#[test]
 fn test_clear_command_result_decoupling() {
     // Proves Amendment 10: clear returns CommandResult::Clear without coupling engine to console
     let registry = create_default_registry();

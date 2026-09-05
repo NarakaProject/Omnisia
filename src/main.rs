@@ -332,7 +332,7 @@ impl ApplicationHandler for AppState {
                     let inv_sky_vp = sky_vp.inverse();
                     let sky_uniform = self
                         .environment
-                        .build_sky_uniform(inv_sky_vp, glam::Vec3::ZERO);
+                        .build_sky_uniform(inv_sky_vp, active_camera.position);
                     renderer.update_sky(&sky_uniform);
 
                     let light_uniform = self.environment.build_light_uniform();

@@ -13,7 +13,7 @@ struct SkyUniform {
     horizon_color: vec3<f32>,
     day_factor: f32,
     zenith_color: vec3<f32>,
-    _pad0: f32,
+    aurora_intensity: f32,
 };
 
 @group(0) @binding(0)
@@ -41,8 +41,8 @@ fn vs_sky(@builtin(vertex_index) vertex_index: u32) -> SkyVertexOutput {
     let world_h = sky.inv_view_proj * clip_pos;
     let world_pos = world_h.xyz / world_h.w;
 
-    // Direction vector from camera eye towards far-plane sky
-    out.view_dir = world_pos - sky.camera_pos;
+    // Direction vector from origin towards far-plane celestial sphere
+    out.view_dir = world_pos;
     return out;
 }
 
@@ -51,6 +51,27 @@ fn hash33(p: vec3<f32>) -> vec3<f32> {
     var p3 = fract(p * vec3<f32>(0.1031, 0.1030, 0.0973));
     p3 += dot(p3, p3.yxz + 33.33);
     return fract((p3.xxy + p3.yxx) * p3.zyx);
+}
+
+// Deterministic 2D hash for procedural aurora
+fn hash21(p: vec2<f32>) -> f32 {
+    var p3 = fract(vec3<f32>(p.xyx) * 0.1031);
+    p3 += dot(p3, p3.yzx + 33.33);
+    return fract((p3.x + p3.y) * p3.z);
+}
+
+// Smooth 2D procedural value noise with cubic Hermite interpolation
+fn smooth_noise2d(p: vec2<f32>) -> f32 {
+    let i = floor(p);
+    let f = fract(p);
+    let u = f * f * (3.0 - 2.0 * f);
+
+    let a00 = hash21(i + vec2<f32>(0.0, 0.0));
+    let a10 = hash21(i + vec2<f32>(1.0, 0.0));
+    let a01 = hash21(i + vec2<f32>(0.0, 1.0));
+    let a11 = hash21(i + vec2<f32>(1.0, 1.0));
+
+    return mix(mix(a00, a10, u.x), mix(a01, a11, u.x), u.y);
 }
 
 @fragment
@@ -174,6 +195,82 @@ fn fs_sky(in: SkyVertexOutput) -> @location(0) vec4<f32> {
             let stars = star_tint * star_radiance;
             sky_color += stars;
         }
+    }
+
+    // 5. Procedural Aurora Curtains (Phase 10.6, Amendments A-E)
+    // Mandatory Amendment A: Ascending smoothstep edges (1.0 - smoothstep(-0.18, -0.06, sun_elevation))
+    let aurora_visibility = 1.0 - smoothstep(-0.18, -0.06, sky.sun_elevation);
+    let effective_aurora_strength = sky.aurora_intensity * aurora_visibility;
+
+    if (effective_aurora_strength > 0.001 && dir.y > 0.03) {
+        // Mandatory Amendment B: Distant atmospheric layer intersection model P = C + t * d
+        // Layer altitude at 1500m with bounded camera height scaling (prevents inversion/clipping)
+        let clamped_cam_y = clamp(sky.camera_pos.y, -100.0, 4000.0);
+        let effective_layer_height = max(500.0, 1500.0 - clamped_cam_y * 0.2);
+        let safe_dy = max(dir.y, 0.04);
+        let t = effective_layer_height / safe_dy;
+
+        let layer_pos = vec2<f32>(
+            sky.camera_pos.x + t * dir.x,
+            sky.camera_pos.z + t * dir.z
+        );
+
+        // Mandatory Amendment C: World-space anchor along -Z world axis
+        // Primary curtain arc spans across the -Z hemisphere (perpendicular to XY solar orbital plane)
+        let anchor_alignment = smoothstep(0.25, -0.55, dir.z);
+
+        // Vertical envelope: soft horizon fade (no bright strip) and thinning towards zenith
+        let horizon_fade = smoothstep(0.04, 0.16, dir.y);
+        let zenith_fade = 1.0 - smoothstep(0.55, 0.85, dir.y);
+        let vertical_envelope = horizon_fade * zenith_fade;
+
+        // Bounded periodic animation phase (2*PI / 60.0 approx 0.10472 rad/s for 100% pop-free 60s wrap)
+        let tau = 6.2831853;
+        let drift_phase = sky.bounded_time * (tau / 60.0);
+
+        // Broad atmospheric curtain coordinate
+        let uv = layer_pos * 0.0006;
+
+        // Primary Curtain (lower/middle altitude): organic undulating ribbon
+        let wave1 = sin(uv.x * 1.8 + drift_phase) * 0.6
+            + smooth_noise2d(vec2<f32>(uv.x * 0.8, drift_phase * 0.5)) * 0.7;
+        let d1 = abs(uv.y + 1.2 - wave1);
+        let band1 = smoothstep(0.45, 0.02, d1);
+
+        // Ray striations (vertical folds along geomagnetic field lines)
+        let fold_coord1 = uv.x * 12.0 + wave1 * 3.0 + drift_phase * 2.0;
+        let ray1 = pow(sin(fold_coord1) * 0.5 + 0.5, 3.0);
+        let detail1 = smooth_noise2d(vec2<f32>(uv.x * 5.0, uv.y * 3.0 - drift_phase));
+        let curtain1 = band1 * (0.35 + 0.65 * ray1) * (0.6 + 0.4 * detail1);
+
+        // Secondary Curtain (higher altitude / deeper distance): secondary offset ribbon
+        let wave2 = sin(uv.x * 2.5 - drift_phase * 0.75 + 1.5) * 0.5
+            + smooth_noise2d(vec2<f32>(uv.x * 1.2 + 5.0, drift_phase * 0.4)) * 0.5;
+        let d2 = abs(uv.y + 2.0 - wave2);
+        let band2 = smoothstep(0.50, 0.03, d2);
+        let fold_coord2 = uv.x * 15.0 - drift_phase * 1.5;
+        let ray2 = pow(sin(fold_coord2) * 0.5 + 0.5, 2.5);
+        let curtain2 = band2 * (0.40 + 0.60 * ray2);
+
+        // Subtle color variation: emerald green base, cyan-green middle, soft violet upper fringe
+        let color_blend = clamp((dir.y - 0.12) / 0.40, 0.0, 1.0);
+        let green_base = mix(
+            vec3<f32>(0.12, 0.85, 0.45),
+            vec3<f32>(0.10, 0.70, 0.65),
+            smooth_noise2d(uv * 2.0)
+        );
+        let violet_upper = vec3<f32>(0.45, 0.20, 0.65);
+        let aurora_color = mix(green_base, violet_upper, color_blend * color_blend);
+
+        // Controlled radiance: subordinate to moon core (2.85), adds atmosphere without washing out night sky
+        let total_intensity = (curtain1 * 0.70 + curtain2 * 0.40)
+            * vertical_envelope
+            * anchor_alignment
+            * effective_aurora_strength;
+        let aurora_radiance = aurora_color * min(total_intensity, 0.70);
+
+        // Translucent emissive composition: stars already in sky_color remain visible through curtains
+        sky_color += aurora_radiance;
     }
 
     return vec4<f32>(sky_color, 1.0);
