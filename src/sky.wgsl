@@ -392,17 +392,19 @@ fn fs_sky(in: SkyVertexOutput) -> @location(0) vec4<f32> {
             let fold_t = clamp(local_energy * 0.80, 0.0, 1.0);
             let lower_fringe = (1.0 - smoothstep(0.06, 0.22, dir.y)) * clamp(local_energy * 1.4, 0.0, 1.0);
 
-            // Base transition between primary body (c0) and folds/lower fringe (c1):
-            let base_color = mix(pal.c0, pal.c1, max(fold_t * 0.70, lower_fringe));
+            // 1. Base transition between primary body (c0) and energized folds / lower fringe (c1):
+            let fold_mix = clamp(fold_t * 1.25, 0.0, 1.0);
+            let base_color = mix(pal.c0, pal.c1, max(fold_mix, lower_fringe));
 
-            // Sharp filament / core peak accent (c2):
-            let filament_t = clamp(fine_filaments * 1.6 + (ray_sharp - 0.5) * 0.6, 0.0, 1.0);
-            let with_filaments = mix(base_color, pal.c2, filament_t * 0.65);
+            // 2. Sharp filament / core peak accent (c2):
+            let fil_intensity = clamp(fine_filaments * 2.2 + ray_sharp * cluster_mask * 0.85, 0.0, 1.0);
+            let filament_t = smoothstep(0.15, 0.85, fil_intensity);
+            let with_filaments = mix(base_color, pal.c2, filament_t * 0.85);
 
-            // Restrained high-altitude upper reaches flare (c3):
-            let upper_reaches = smoothstep(0.32, 0.72, dir.y);
-            let upper_energy = clamp((local_energy - 0.35) * 1.6, 0.0, 1.0);
-            let aurora_color = mix(with_filaments, pal.c3, upper_reaches * upper_energy * 0.35);
+            // 3. High-altitude upper reaches flare (c3):
+            let upper_reaches = smoothstep(0.28, 0.68, dir.y);
+            let upper_flare = upper_reaches * clamp(local_energy * 0.90 + 0.15, 0.0, 1.0);
+            let aurora_color = mix(with_filaments, pal.c3, upper_flare * 0.75);
 
             // ================================================================
             // COMPOSITION & RADIANCE HIERARCHY (Section 13)
