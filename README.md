@@ -3,8 +3,8 @@
 [![Rust](https://img.shields.io/badge/Rust-2021_Edition-orange.svg)](https://www.rust-lang.org/)
 [![wgpu](https://img.shields.io/badge/wgpu-v24_(Metal%20%2F%20Vulkan%20%2F%20DX12)-blue.svg)](https://wgpu.rs/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Phase](https://img.shields.io/badge/Phase-11.1_Validated-brightgreen.svg)](#completed-phases)
-[![Tests](https://img.shields.io/badge/Tests-873_Passing-brightgreen.svg)](#test-suite--validation-evidence)
+[![Phase](https://img.shields.io/badge/Phase-11.2_Validated-brightgreen.svg)](#completed-phases)
+[![Tests](https://img.shields.io/badge/Tests-891_Passing-brightgreen.svg)](#test-suite--validation-evidence)
 
 > **Vision**: *"Revive Chimeraland with a voxel soul."*  
 > Omnisia is a high-performance voxel sandbox engine and game built from scratch in pure Rust and `wgpu`. It merges continuous procedural world generation, structural connectivity, and rigid-body physical simulation with a deep creature ecosystem, taming, pet raising, and modular chimera devour/evolution.
@@ -19,9 +19,9 @@ For any developer or AI coding agent entering this repository for the first time
 |:---|:---|
 | **What is Omnisia?** | A voxel sandbox game engine combining a procedural voxel substrate with modular creature and evolution gameplay. |
 | **What is the long-term vision?** | Revive the modular creature capture, chimera evolution, and open living world of *Chimeraland* on an authoritative, physically reactive voxel substrate. |
-| **What is the current gameplay reality?** | **Early physics & locomotion substrate with developer tooling & interaction foundation.** The player can walk, sprint, crouch, jump, auto-step, glide, push dynamic rigid bodies, query targeted voxels via deterministic 3D DDA raycasting, and use the Developer Debug Console (`` ` ``) / Free Camera (`camera free`). There are **no creatures, combat, taming, inventory, crafting, or devour systems yet**. |
-| **What Phase is complete?** | **Phase 11.1 — Interaction Foundation** (Validated with 873 total passing workspace tests across 18 test targets, 8 validation binaries, 54 benchmarks). |
-| **What is the next Phase?** | **Phase 11.2 — Voxel Interaction** (Voxel breaking, placement validation, player capsule collision guard, world mutation). |
+| **What is the current gameplay reality?** | **Early physics & locomotion substrate with developer tooling & interaction mutation.** The player can walk, sprint, crouch, jump, auto-step, glide, push dynamic rigid bodies, query targeted voxels via deterministic 3D DDA raycasting, destroy and place voxels with player capsule overlap protection, and use the Developer Debug Console (`` ` ``) / Free Camera (`camera free`). There are **no creatures, combat, taming, inventory, crafting, or devour systems yet**. |
+| **What Phase is complete?** | **Phase 11.2 — Voxel Interaction** (Validated with 891 total passing workspace tests across 19 test targets, 8 validation binaries, 54 benchmarks). |
+| **What is the next Phase?** | **Phase 11.3 — Resource & Gathering Primitives** (Resource identity, gathering, harvesting yields, collection events). |
 | **What systems are authoritative?** | `ChunkStore` (static terrain), `DynamicBody` (detached voxels), `PhysicsWorld` (rigid bodies), `PlayerController` (kinematic locomotion), `EnvironmentClock` (environment time), Data Registry (modding definitions). |
 | **What systems are derived / cache state?** | `EnvironmentState` (derived visual environment model), `DeveloperCameraContext` (observational free camera mode), `SkyUniform` & `LightUniform` (GPU uniform buffers), `MeshCache` (GPU mesh buffers), spatial broadphase grid, collision contact manifolds, transient structural BFS results. |
 | **What are the top architectural invariants?** | (1) Player is Kinematic, NEVER a `RigidBody`, NEVER in islands. (2) 1 structural aggregate = 1 `RigidBody` owning $M$ colliders (never 1 voxel = 1 body). (3) Zero double-ownership of voxels. (4) Single authority for environment time in `EnvironmentClock`. (5) Developer camera does NOT mutate player position or physics. |
@@ -72,6 +72,8 @@ PHASE 10.6 PROCEDURAL AURORA V1         Multi-band animated procedural aurora bo
 PHASE 10.6.1 PROCEDURAL AURORA V2       Mathematical curtain folds + dual-layer altitude + 18 tests
 PHASE 10.6.1R SKY SHADER OPTIMIZATION   Loop unrolling + transcendental factoring + 2.08x GPU speedup
 PHASE 10.7 STRESS INTEGRATION           Concurrent terrain destruction + real-time sky at 60+ FPS + stress binary
+PHASE 11.1 INTERACTION FOUNDATION       Deterministic 3D DDA voxel raycast + eye origin + 14 tests
+PHASE 11.2 VOXEL INTERACTION            Voxel removal + placement + capsule overlap guard + CSG + 18 tests
 ```
 
 ### Authoritative Player Locomotion Semantics (Phase 8D / 9.10)
@@ -105,7 +107,8 @@ Phase 10 successfully connected the completed physical simulation substrate to d
 
 ### Phase 11 — Player ↔ World Interaction (`IN PROGRESS`)
 - **Phase 11.1 — Interaction Foundation (`VALIDATED`)**: Deterministic 3D DDA voxel raycast query (`raycast_voxels`) against authoritative `ChunkStore`, player eye origin integration (`player.eye_position()`), configurable interaction reach (`PlayerConfig.interaction_reach`, default 5.0m), 6 canonical face normals (+X, -X, +Y, -Y, +Z, -Z), Euclidean negative coordinate support, strict residency awareness (zero silent chunk loading/generation), 14 tests.
-- **Phase 11.2 — Voxel Interaction (`PLANNED / NEXT`)**: Voxel breaking, removal, placement validation, player capsule collision guard, world mutation, neighbor invalidation.
+- **Phase 11.2 — Voxel Interaction (`VALIDATED`)**: Validated voxel removal (`can_remove`), adjacent placement (`can_place`), player capsule overlap guard (`PlayerCapsuleOverlap`), atomic multi-chunk CSG transaction, structural detachment handoff into `DynamicBody` in `PhysicsWorld`, remesh invalidation, rate-limiting debounce cooldown, 18 tests.
+- **Phase 11.3 — Resource & Gathering Primitives (`PLANNED / NEXT`)**: Resource identity, gathering, harvesting yields, collection events.
 
 ---
 

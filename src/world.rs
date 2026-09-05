@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use crate::chunk::Chunk;
 use crate::coord::{world_pos_to_world_voxel, CHUNK_SIZE, CHUNK_WORLD_SIZE};
+use crate::csg::{VoxelEditCommitResult, VoxelEditError, VoxelEditTransaction};
 use crate::material::MaterialRegistry;
 use crate::mesh::types::MeshData;
 use crate::modding::registry::BlockRegistry;
@@ -182,6 +183,32 @@ impl World {
         self.physics.handle_static_terrain_mutation(&self.store);
 
         newly_detached
+    }
+
+    /// Mengeksekusi transaksi mutasi voxel (CSG / Interaksi) secara atomik,
+    /// merekonsiliasi sistem struktural untuk mengekstrak gugusan yang terlepas,
+    /// mendaftarkannya ke runtime fisika (DynamicBody), dan menandai remesh.
+    pub fn commit_voxel_transaction(
+        &mut self,
+        transaction: &VoxelEditTransaction,
+    ) -> Result<(VoxelEditCommitResult, Vec<DetachedAggregate>), VoxelEditError> {
+        let commit_result = transaction.commit(&mut self.store)?;
+
+        let mut newly_detached = Vec::new();
+        for event in &commit_result.structural_events {
+            let detached = self.structure.process_event(event, &mut self.store);
+            newly_detached.extend(detached);
+        }
+
+        for agg in &newly_detached {
+            self.physics.spawn_from_detached_aggregate(agg.clone());
+        }
+
+        if !commit_result.delta.is_empty() {
+            self.physics.handle_static_terrain_mutation(&self.store);
+        }
+
+        Ok((commit_result, newly_detached))
     }
 
     /// Mengambil voxel pada koordinat global dunia

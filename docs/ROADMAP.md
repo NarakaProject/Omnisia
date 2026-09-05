@@ -3,8 +3,8 @@
 > **Vision Statement**: *"Revive Chimeraland with a voxel soul."*  
 > **Core Substrate**: Procedural, structural, and rigid-body voxel world.  
 > **Core Gameplay Identity**: Creature ecosystem, taming, acquisition, pet companions, and modular devour/evolution.  
-> **Current Completed Phase**: **Phase 11.1 — Interaction Foundation**  
-> **Next Active Phase**: **Phase 11.2 — Voxel Interaction** (`PLANNED / NEXT`)
+> **Current Completed Phase**: **Phase 11.2 — Voxel Interaction**  
+> **Next Active Phase**: **Phase 11.3 — Resource & Gathering Primitives** (`PLANNED / NEXT`)
 
 ---
 
@@ -234,9 +234,15 @@ Omnisia is an ambitious, high-performance voxel sandbox game built from scratch 
   - Strict residency awareness: non-resident space returns `NonResident` without triggering world generation or disk I/O.
   - Zero heap allocations during raycast traversal ($O(\text{reach} / \text{voxel\_size})$ on stack).
   - Verified with 14 unit tests (`tests/interaction_tests.rs`).
-- **Phase 11.2 — Voxel Interaction (`PLANNED / NEXT`)**:
-  - Voxel breaking, removal, placement validation, player capsule collision guard, world mutation, neighbor invalidation, remesh integration.
-- **Phase 11.3 — Resource & Gathering Primitives (`PLANNED`)**:
+- **Phase 11.2 — Voxel Interaction (`COMPLETED / VALIDATED`)**:
+  - Validated voxel removal (`can_remove`) against solid resident targets within reach.
+  - Validated adjacent voxel placement (`can_place`) along targeted face normal into resident empty air.
+  - Authoritative Player Capsule Overlap Guard (`PlayerCapsuleOverlap`): candidate AABB tested against `player.current_capsule().intersects_aabb(...)`, preventing suffocating or trapping the player for both standing ($1.8\text{m}$) and crouching ($1.2\text{m}$) profiles.
+  - Atomic multi-chunk transactions reusing `VoxelEditTransaction` with preflight validation (zero partial writes on failure).
+  - Downstream integration: `World::commit_voxel_transaction` reconciles `StructuralSystem` connectivity, physicalizes detached aggregates as `DynamicBody` in `PhysicsWorld`, wakes resting bodies via `handle_static_terrain_mutation`, and marks affected & boundary chunks `MESH_DIRTY` for `ChunkScheduler`.
+  - Interaction debounce cooldown (`InteractionCooldown`, default: 0.20s = 5 actions/sec) preventing multi-block destruction per frame.
+  - Verified with 18 unit tests (`tests/voxel_interaction_tests.rs`).
+- **Phase 11.3 — Resource & Gathering Primitives (`PLANNED / NEXT`)**:
   - Resource identity, gathering, harvesting yields, collection events.
 - **Phase 11.4 — Tools & Tool Actions (`PLANNED`)**:
   - Tool categories, effectiveness multipliers, tool durability mechanics.

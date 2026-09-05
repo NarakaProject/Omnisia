@@ -1,10 +1,18 @@
 use glam::{IVec3, Vec3};
+use std::fmt;
 
+use crate::csg::edit::VoxelEditError;
+use crate::csg::transaction::VoxelEditCommitResult;
 use crate::material::MaterialId;
 use crate::mesh::types::FaceDirection;
+use crate::structure::aggregate::DetachedAggregate;
+use crate::voxel::VoxelBlock;
 
 /// Konfigurasi default jangkauan interaksi pemain dalam meter (5.0m = 10 voxel)
 pub const DEFAULT_INTERACTION_REACH: f32 = 5.0;
+
+/// Konfigurasi default durasi cooldown debounce interaksi pemain dalam detik (0.20s = 5 aksi/detik)
+pub const DEFAULT_INTERACTION_COOLDOWN: f32 = 0.20;
 
 /// Informasi detail benturan raycast terhadap voxel solid (Phase 11.1)
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -120,4 +128,165 @@ impl VoxelRaycastResult {
             Self::Miss => None,
         }
     }
+}
+
+/// Tindakan interaksi yang diajukan oleh pemain terhadap dunia voxel (Phase 11.2)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum InteractionAction {
+    /// Menghancurkan / menghapus voxel solid yang sedang ditarget
+    RemoveVoxel,
+    /// Menempatkan voxel solid baru pada bidang sisi kubus yang sedang ditarget
+    PlaceVoxel { material: MaterialId },
+}
+
+/// Kesalahan yang dapat terjadi selama validasi atau eksekusi mutasi interaksi (Phase 11.2)
+#[derive(Debug, Clone, PartialEq)]
+pub enum InteractionMutationError {
+    /// Raycast tidak mengenai voxel solid mana pun
+    NoTargetHit,
+    /// Chunk target voxel tidak resident di memori
+    TargetNotResident { coord: IVec3 },
+    /// Chunk koordinat penempatan voxel tidak resident di memori
+    DestinationNotResident { coord: IVec3 },
+    /// Jarak target kontak melampaui batas jangkauan (reach) yang diizinkan
+    ExceedsReach { distance: f32, max_reach: f32 },
+    /// Koordinat penempatan yang dituju sudah ditempati oleh voxel solid lain
+    PlacementOccupied { coord: IVec3, current: VoxelBlock },
+    /// Penempatan voxel ditolak karena volume voxel beririsan dengan kapsul tabrakan pemain
+    PlayerCapsuleOverlap { coord: IVec3 },
+    /// Target penghapusan sudah berupa udara (bukan solid)
+    RemovalTargetIsAir { coord: IVec3 },
+    /// Operasi material tidak valid (misal: mencoba menempatkan udara)
+    InvalidMaterial(String),
+    /// Cooldown debounce aksi interaksi pemain masih aktif
+    CooldownActive { remaining: f32 },
+    /// Kesalahan pada lapisan transaksi CSG bawaan
+    TransactionError(VoxelEditError),
+}
+
+impl fmt::Display for InteractionMutationError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NoTargetHit => write!(f, "No solid voxel target hit by interaction ray"),
+            Self::TargetNotResident { coord } => {
+                write!(
+                    f,
+                    "Target chunk for voxel {:?} is not resident in memory",
+                    coord
+                )
+            }
+            Self::DestinationNotResident { coord } => {
+                write!(
+                    f,
+                    "Destination chunk for placement at {:?} is not resident in memory",
+                    coord
+                )
+            }
+            Self::ExceedsReach {
+                distance,
+                max_reach,
+            } => {
+                write!(
+                    f,
+                    "Interaction distance ({:.2}m) exceeds max reach ({:.2}m)",
+                    distance, max_reach
+                )
+            }
+            Self::PlacementOccupied { coord, current } => {
+                write!(
+                    f,
+                    "Placement location {:?} is already occupied (material={:?})",
+                    coord,
+                    current.material()
+                )
+            }
+            Self::PlayerCapsuleOverlap { coord } => {
+                write!(
+                    f,
+                    "Placement at {:?} rejected: overlaps player collision capsule",
+                    coord
+                )
+            }
+            Self::RemovalTargetIsAir { coord } => {
+                write!(f, "Removal target at {:?} is air", coord)
+            }
+            Self::InvalidMaterial(msg) => write!(f, "Invalid material: {}", msg),
+            Self::CooldownActive { remaining } => {
+                write!(
+                    f,
+                    "Interaction cooldown active ({:.3}s remaining)",
+                    remaining
+                )
+            }
+            Self::TransactionError(err) => write!(f, "Transaction error: {}", err),
+        }
+    }
+}
+
+impl std::error::Error for InteractionMutationError {}
+
+impl From<VoxelEditError> for InteractionMutationError {
+    fn from(err: VoxelEditError) -> Self {
+        Self::TransactionError(err)
+    }
+}
+
+/// Mekanisme debounce / cooldown interaksi pemain untuk mencegah mutasi berganda tak terkontrol
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct InteractionCooldown {
+    /// Durasi cooldown dasar dalam detik
+    pub cooldown_seconds: f32,
+    /// Waktu tersisa hingga aksi berikutnya diizinkan
+    pub timer: f32,
+}
+
+impl InteractionCooldown {
+    /// Membuat instance cooldown baru dengan batas durasi tertentu
+    pub fn new(cooldown_seconds: f32) -> Self {
+        Self {
+            cooldown_seconds: cooldown_seconds.max(0.0),
+            timer: 0.0,
+        }
+    }
+
+    /// Memajukan waktu cooldown sebesar `dt` detik
+    #[inline(always)]
+    pub fn tick(&mut self, dt: f32) {
+        if self.timer > 0.0 {
+            self.timer = (self.timer - dt).max(0.0);
+        }
+    }
+
+    /// Apakah pemain saat ini diizinkan untuk melakukan aksi mutasi baru
+    #[inline(always)]
+    pub fn can_act(&self) -> bool {
+        self.timer <= 0.0
+    }
+
+    /// Memicu cooldown interaksi, mengunci aksi hingga durasi cooldown berlalu
+    #[inline(always)]
+    pub fn trigger(&mut self) {
+        self.timer = self.cooldown_seconds;
+    }
+
+    /// Mereset cooldown secara paksa agar pemain dapat langsung beraksi
+    #[inline(always)]
+    pub fn reset(&mut self) {
+        self.timer = 0.0;
+    }
+}
+
+impl Default for InteractionCooldown {
+    fn default() -> Self {
+        Self::new(DEFAULT_INTERACTION_COOLDOWN)
+    }
+}
+
+/// Hasil eksekusi mutasi interaksi voxel yang berhasil dikomit ke dunia (Phase 11.2)
+#[derive(Debug, Clone, PartialEq)]
+pub struct VoxelMutationResult {
+    /// Hasil komit transaksi CSG (deltas, affected_chunks, mesh_invalidation_chunks, pre-states)
+    pub commit_result: VoxelEditCommitResult,
+    /// Daftar gugusan struktural yang terlepas menjadi DynamicBody akibat mutasi ini
+    pub newly_detached_aggregates: Vec<DetachedAggregate>,
 }
