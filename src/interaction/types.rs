@@ -1,10 +1,12 @@
 use glam::{IVec3, Vec3};
+use serde::{Deserialize, Serialize};
 use std::fmt;
 
 use crate::csg::edit::VoxelEditError;
 use crate::csg::transaction::VoxelEditCommitResult;
 use crate::material::MaterialId;
 use crate::mesh::types::FaceDirection;
+use crate::modding::resource_id::ResourceId;
 use crate::structure::aggregate::DetachedAggregate;
 use crate::voxel::VoxelBlock;
 
@@ -289,4 +291,156 @@ pub struct VoxelMutationResult {
     pub commit_result: VoxelEditCommitResult,
     /// Daftar gugusan struktural yang terlepas menjadi DynamicBody akibat mutasi ini
     pub newly_detached_aggregates: Vec<DetachedAggregate>,
+}
+
+/// Definisi semantik resource yang dapat dipanen dari voxel dunia (Phase 11.3)
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResourceDefinition {
+    /// Identitas unik semantik resource (misal `core:iron_ore`, `core:stone`)
+    pub resource_id: ResourceId,
+    /// Kuantitas hasil panen (yield) dasar deterministik per voxel
+    pub base_yield: u32,
+    /// Apakah resource ini dapat dipanen saat ini
+    pub harvestable: bool,
+    /// ResourceId blok sumber jika dipetakan dari BlockDefinition
+    pub source_block: Option<ResourceId>,
+}
+
+impl ResourceDefinition {
+    /// Membuat ResourceDefinition baru secara eksplisit
+    pub fn new(resource_id: ResourceId, base_yield: u32) -> Self {
+        Self {
+            resource_id,
+            base_yield,
+            harvestable: true,
+            source_block: None,
+        }
+    }
+
+    /// Menandai blok sumber asal dari mana resource ini dipetakan
+    pub fn with_source_block(mut self, block_id: ResourceId) -> Self {
+        self.source_block = Some(block_id);
+        self
+    }
+}
+
+/// Hasil semantik dari aksi pengumpulan/pemanenan resource yang berhasil (Phase 11.3)
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CollectionResult {
+    /// Koordinat integer voxel global tempat resource dipanen
+    pub source_coord: IVec3,
+    /// Identitas unik semantik resource yang dikumpulkan
+    pub resource_id: ResourceId,
+    /// Kuantitas yang dipanen (deterministik)
+    pub quantity: u32,
+}
+
+/// Hasil agregat dari aksi pemanenan voxel yang memadukan hasil koleksi dan mutasi dunia (Phase 11.3)
+#[derive(Debug, Clone, PartialEq)]
+pub struct GatheringResult {
+    /// Data semantik resource yang berhasil dikumpulkan
+    pub collection: CollectionResult,
+    /// Hasil mutasi fisik dan struktural di dunia
+    pub mutation: VoxelMutationResult,
+}
+
+/// Kesalahan yang dapat terjadi selama validasi atau eksekusi pemanenan resource (Phase 11.3)
+#[derive(Debug, Clone, PartialEq)]
+pub enum GatheringError {
+    /// Raycast tidak mengenai target solid mana pun
+    NoTargetHit,
+    /// Chunk target voxel tidak resident di memori
+    TargetNotResident { coord: IVec3 },
+    /// Jarak interaksi melampaui batas jangkauan (reach)
+    ExceedsReach { distance: f32, max_reach: f32 },
+    /// Voxel target adalah udara (AIR)
+    TargetIsAir { coord: IVec3 },
+    /// Voxel target solid tetapi bukan resource yang dapat dipanen
+    NotHarvestable {
+        coord: IVec3,
+        material: MaterialId,
+        block_id: Option<ResourceId>,
+    },
+    /// Cooldown debounce interaksi masih aktif
+    CooldownActive { remaining: f32 },
+    /// Kesalahan pada lapisan transaksi CSG bawaan
+    TransactionError(VoxelEditError),
+    /// Kesalahan mutasi interaksi umum
+    MutationError(InteractionMutationError),
+}
+
+impl fmt::Display for GatheringError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NoTargetHit => write!(f, "No solid voxel target hit by gathering ray"),
+            Self::TargetNotResident { coord } => {
+                write!(
+                    f,
+                    "Target chunk for voxel {:?} is not resident in memory",
+                    coord
+                )
+            }
+            Self::ExceedsReach {
+                distance,
+                max_reach,
+            } => {
+                write!(
+                    f,
+                    "Gathering distance ({:.2}m) exceeds max reach ({:.2}m)",
+                    distance, max_reach
+                )
+            }
+            Self::TargetIsAir { coord } => {
+                write!(f, "Gathering target at {:?} is air", coord)
+            }
+            Self::NotHarvestable {
+                coord,
+                material,
+                block_id,
+            } => {
+                write!(
+                    f,
+                    "Voxel at {:?} (material={:?}, block={:?}) is not a harvestable resource",
+                    coord, material, block_id
+                )
+            }
+            Self::CooldownActive { remaining } => {
+                write!(f, "Gathering cooldown active ({:.3}s remaining)", remaining)
+            }
+            Self::TransactionError(err) => write!(f, "Transaction error: {}", err),
+            Self::MutationError(err) => write!(f, "Mutation error: {}", err),
+        }
+    }
+}
+
+impl std::error::Error for GatheringError {}
+
+impl From<VoxelEditError> for GatheringError {
+    fn from(err: VoxelEditError) -> Self {
+        Self::TransactionError(err)
+    }
+}
+
+impl From<InteractionMutationError> for GatheringError {
+    fn from(err: InteractionMutationError) -> Self {
+        match err {
+            InteractionMutationError::NoTargetHit => Self::NoTargetHit,
+            InteractionMutationError::TargetNotResident { coord } => {
+                Self::TargetNotResident { coord }
+            }
+            InteractionMutationError::ExceedsReach {
+                distance,
+                max_reach,
+            } => Self::ExceedsReach {
+                distance,
+                max_reach,
+            },
+            InteractionMutationError::RemovalTargetIsAir { coord } => Self::TargetIsAir { coord },
+            InteractionMutationError::CooldownActive { remaining } => {
+                Self::CooldownActive { remaining }
+            }
+            InteractionMutationError::TransactionError(e) => Self::TransactionError(e),
+            other => Self::MutationError(other),
+        }
+    }
 }

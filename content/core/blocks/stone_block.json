@@ -5,6 +5,11 @@
   "components": {
     "structural_anchor": {
       "is_anchor": true
+    },
+    "harvestable": {
+      "resource": "core:stone",
+      "yield_quantity": 1,
+      "harvestable": true
     }
   },
   "tags": [

@@ -38,6 +38,23 @@ pub struct LiftCapacityComponent {
     pub power_consumption_w: f32,
 }
 
+/// Komponen deklarasi bahwa suatu blok dapat dipanen / dikumpulkan sebagai resource (Phase 11.3)
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HarvestableComponent {
+    /// Identitas unik semantik resource yang dihasilkan (misal `core:iron_ore`, `core:stone`)
+    pub resource: ResourceId,
+    /// Kuantitas hasil panen (yield) dasar deterministik per voxel (default: 1)
+    #[serde(default = "default_yield_quantity")]
+    pub yield_quantity: u32,
+    /// Apakah blok ini dapat dipanen saat ini (default: true)
+    #[serde(default = "default_true")]
+    pub harvestable: bool,
+}
+
+fn default_yield_quantity() -> u32 {
+    1
+}
+
 /// Kumpulan komponen kapabilitas generik yang dapat ditempelkan pada blok
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct BlockComponents {
@@ -45,6 +62,8 @@ pub struct BlockComponents {
     pub structural_anchor: Option<StructuralAnchorComponent>,
     #[serde(default)]
     pub lift_capacity: Option<LiftCapacityComponent>,
+    #[serde(default)]
+    pub harvestable: Option<HarvestableComponent>,
     /// Properti kustom dinamis tambahan untuk ekstensi masa depan
     #[serde(flatten)]
     pub extra: HashMap<String, serde_json::Value>,

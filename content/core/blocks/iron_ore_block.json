@@ -2,7 +2,13 @@
   "id": "core:iron_ore_block",
   "material": "core:iron_ore",
   "hardness": 5.5,
-  "components": {},
+  "components": {
+    "harvestable": {
+      "resource": "core:iron_ore",
+      "yield_quantity": 1,
+      "harvestable": true
+    }
+  },
   "tags": [
     "natural",
     "solid",

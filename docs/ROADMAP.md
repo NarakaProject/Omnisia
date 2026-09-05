@@ -3,8 +3,8 @@
 > **Vision Statement**: *"Revive Chimeraland with a voxel soul."*  
 > **Core Substrate**: Procedural, structural, and rigid-body voxel world.  
 > **Core Gameplay Identity**: Creature ecosystem, taming, acquisition, pet companions, and modular devour/evolution.  
-> **Current Completed Phase**: **Phase 11.2 — Voxel Interaction**  
-> **Next Active Phase**: **Phase 11.3 — Resource & Gathering Primitives** (`PLANNED / NEXT`)
+> **Current Completed Phase**: **Phase 11.3 — Resource Gathering Primitives**  
+> **Next Active Phase**: **Phase 11.4 — Block Placement & Build Rules** (`PLANNED / NEXT`)
 
 ---
 
@@ -241,13 +241,24 @@ Omnisia is an ambitious, high-performance voxel sandbox game built from scratch 
   - Atomic multi-chunk transactions reusing `VoxelEditTransaction` with preflight validation (zero partial writes on failure).
   - Downstream integration: `World::commit_voxel_transaction` reconciles `StructuralSystem` connectivity, physicalizes detached aggregates as `DynamicBody` in `PhysicsWorld`, wakes resting bodies via `handle_static_terrain_mutation`, and marks affected & boundary chunks `MESH_DIRTY` for `ChunkScheduler`.
   - Interaction debounce cooldown (`InteractionCooldown`, default: 0.20s = 5 actions/sec) preventing multi-block destruction per frame.
-  - Verified with 18 unit tests (`tests/voxel_interaction_tests.rs`).
-- **Phase 11.3 — Resource & Gathering Primitives (`PLANNED / NEXT`)**:
-  - Resource identity, gathering, harvesting yields, collection events.
-- **Phase 11.4 — Tools & Tool Actions (`PLANNED`)**:
+- **Phase 11.3 — Resource Gathering Primitives (`COMPLETED / VALIDATED`)**:
+  - Data-driven `HarvestableComponent` integrated into core block schemas (`content/core/blocks/`).
+  - Runtime `ResourceGatheringRegistry` mapping materials and persistent `ResourceId` to `ResourceDefinition`.
+  - Deterministic yield evaluation (`calculate_yield`) with zero random variance.
+  - Authoritative reach validation ($\le 5.0\text{m}$) and chunk residency checks (`TargetNotResident`).
+  - Preflight rejection for air targets (`TargetIsAir`) and unmapped solid blocks (`NotHarvestable`).
+  - Atomic voxel removal via `execute_gather_transaction` producing semantic `CollectionResult` on success.
+  - Event-driven structural integrity integration: gathering structural supports detaches unanchored voxels into `PhysicsRuntime` as `DynamicBody`.
+  - Mesh dirty flag propagation to host and boundary neighbor chunks.
+  - Player debounce cooldown rate-limiting (`InteractionCooldown`).
+  - Strict architectural firewalls: zero inventory mutation, zero tool dependencies, zero dropped physical items, zero GPU/renderer dependencies.
+  - Verified with 27 unit and integration tests (`tests/gathering_tests.rs`).
+- **Phase 11.4 — Block Placement & Build Rules (`PLANNED / NEXT`)**:
+  - Build orientation, support requirements, player clearance rules, ghost previews.
+- **Phase 11.5 — Tools & Tool Actions (`PLANNED`)**:
   - Tool categories, effectiveness multipliers, tool durability mechanics.
-- **Phase 11.5 — Generic Interactable World Objects & Feedback (`PLANNED`)**:
-  - Generic interaction abstraction, placement ghost previews, audio/visual cues.
+- **Phase 11.6 — Generic Interactable World Objects & Feedback (`PLANNED`)**:
+  - Generic interaction abstraction, audio/visual cues.
 
 ### PHASE 12 — ENTITY & CREATURE FOUNDATION (`PLANNED`)
 - Entity identity architecture decoupled from voxel data.

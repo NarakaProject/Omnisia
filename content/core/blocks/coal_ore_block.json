@@ -2,7 +2,13 @@
   "id": "core:coal_ore_block",
   "material": "core:coal_ore",
   "hardness": 4.0,
-  "components": {},
+  "components": {
+    "harvestable": {
+      "resource": "core:coal_ore",
+      "yield_quantity": 1,
+      "harvestable": true
+    }
+  },
   "tags": [
     "natural",
     "solid",
