@@ -515,6 +515,67 @@ fn test_console_env_aurora_commands() {
         registry.dispatch(&nan_cmd, &mut ctx),
         CommandResult::Error(_)
     ));
+
+    // 6. env aurora palette (list)
+    let pal_list_cmd = parse_command("env aurora palette").unwrap().unwrap();
+    match registry.dispatch(&pal_list_cmd, &mut ctx) {
+        CommandResult::Success(msg) => {
+            assert!(msg.contains("Active Aurora Palette: Default (Cyan/Violet) [default]"));
+            assert!(msg.contains("1. storm"));
+            assert!(msg.contains("2. crimson"));
+            assert!(msg.contains("3. violet"));
+            assert!(msg.contains("4. steve"));
+            assert!(msg.contains("5. calm"));
+        }
+        _ => panic!("Expected success for env aurora palette"),
+    }
+
+    // 7. env aurora palette <preset>
+    let pal_set_cmd = parse_command("env aurora palette storm").unwrap().unwrap();
+    match registry.dispatch(&pal_set_cmd, &mut ctx) {
+        CommandResult::Success(msg) => {
+            assert!(msg.contains("Aurora palette set to Classic Geomagnetic Storm [storm]"));
+            assert_eq!(
+                ctx.environment.aurora.palette,
+                omnisia::environment::aurora::AuroraPaletteId::ClassicGeomagneticStorm
+            );
+        }
+        _ => panic!("Expected success for env aurora palette storm"),
+    }
+
+    // Test steve preset
+    let pal_steve_cmd = parse_command("env aurora palette steve").unwrap().unwrap();
+    match registry.dispatch(&pal_steve_cmd, &mut ctx) {
+        CommandResult::Success(msg) => {
+            assert!(msg.contains("Ghostly STEVE"));
+            assert_eq!(
+                ctx.environment.aurora.palette,
+                omnisia::environment::aurora::AuroraPaletteId::GhostlySteve
+            );
+        }
+        _ => panic!("Expected success for env aurora palette steve"),
+    }
+
+    // Test numeric ID
+    let pal_num_cmd = parse_command("env aurora palette 5").unwrap().unwrap();
+    match registry.dispatch(&pal_num_cmd, &mut ctx) {
+        CommandResult::Success(_msg) => {
+            assert_eq!(
+                ctx.environment.aurora.palette,
+                omnisia::environment::aurora::AuroraPaletteId::DeepArcticCalm
+            );
+        }
+        _ => panic!("Expected success for env aurora palette 5"),
+    }
+
+    // Test invalid palette
+    let pal_inv_cmd = parse_command("env aurora palette invalid_preset")
+        .unwrap()
+        .unwrap();
+    assert!(matches!(
+        registry.dispatch(&pal_inv_cmd, &mut ctx),
+        CommandResult::Error(_)
+    ));
 }
 
 #[test]

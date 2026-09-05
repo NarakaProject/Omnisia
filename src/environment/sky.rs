@@ -169,7 +169,7 @@ impl EnvironmentState {
             horizon_color: self.celestial.horizon_color,
             day_factor: self.celestial.day_factor,
             zenith_color: self.celestial.zenith_color,
-            aurora_intensity: self.aurora.intensity,
+            aurora_intensity: self.aurora.encoded_uniform_value(),
         }
     }
 

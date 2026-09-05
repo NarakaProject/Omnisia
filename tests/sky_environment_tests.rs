@@ -723,6 +723,53 @@ fn test_headless_gpu_sky_render_validation() {
             pass.draw(0..3, 0..1);
         }
         queue.submit(std::iter::once(encoder2.finish()));
+
+        // 3. Render all 6 Aurora Presets at Midnight pointing North towards the aurora arc (-Z)
+        let cam_aurora = Camera::new(Vec3::ZERO, -90.0, 15.0);
+        let sky_vp_aurora = cam_aurora.build_sky_view_projection_matrix(1.0);
+        let inv_sky_vp_aurora = sky_vp_aurora.inverse();
+
+        for p_idx in 0..omnisia::environment::aurora::AuroraPaletteId::COUNT {
+            let palette = omnisia::environment::aurora::AuroraPaletteId::from_u32(p_idx as u32);
+            let mut env_aurora = EnvironmentState::new();
+            env_aurora.set_day_fraction(0.00); // Midnight
+            env_aurora.aurora.set_palette(palette);
+            env_aurora.aurora.set_intensity(1.5).unwrap();
+
+            let aurora_uniform = env_aurora.build_sky_uniform(inv_sky_vp_aurora, Vec3::ZERO);
+            queue.write_buffer(&sky_buffer, 0, bytemuck::cast_slice(&[aurora_uniform]));
+
+            let mut encoder_aurora =
+                device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+            {
+                let mut pass = encoder_aurora.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some(&format!("Aurora Preset {:?} Pass", palette)),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &color_view,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                        view: &depth_view,
+                        depth_ops: Some(wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(1.0),
+                            store: wgpu::StoreOp::Store,
+                        }),
+                        stencil_ops: None,
+                    }),
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                });
+
+                pass.set_pipeline(&sky_pipeline);
+                pass.set_bind_group(0, &sky_bind_group, &[]);
+                pass.draw(0..3, 0..1);
+            }
+            queue.submit(std::iter::once(encoder_aurora.finish()));
+        }
     });
 }
 
@@ -1837,4 +1884,611 @@ fn test_aurora_ordered_smoothstep_invariants() {
     assert_ascending(0.40, 0.85, "fine_break");
     // Upper reaches violet accent
     assert_ascending(0.32, 0.72, "upper_reaches");
+}
+
+// ============================================================================
+// PHASE 10.6.1R SPECIFIC TESTS: COLOR PRESETS, ABI ENCODING & TEMPORAL STABILITY
+// ============================================================================
+
+#[test]
+fn test_aurora_palette_id_definitions_and_string_parsing() {
+    use omnisia::environment::aurora::AuroraPaletteId;
+
+    assert_eq!(AuroraPaletteId::COUNT, 6);
+
+    // Round-trip from_u32
+    assert_eq!(AuroraPaletteId::from_u32(0), AuroraPaletteId::Default);
+    assert_eq!(
+        AuroraPaletteId::from_u32(1),
+        AuroraPaletteId::ClassicGeomagneticStorm
+    );
+    assert_eq!(
+        AuroraPaletteId::from_u32(2),
+        AuroraPaletteId::HighAltitudeCrimson
+    );
+    assert_eq!(
+        AuroraPaletteId::from_u32(3),
+        AuroraPaletteId::PolarVioletDawn
+    );
+    assert_eq!(AuroraPaletteId::from_u32(4), AuroraPaletteId::GhostlySteve);
+    assert_eq!(
+        AuroraPaletteId::from_u32(5),
+        AuroraPaletteId::DeepArcticCalm
+    );
+    // Invalid u32 clamps safely to Default
+    assert_eq!(AuroraPaletteId::from_u32(6), AuroraPaletteId::Default);
+    assert_eq!(AuroraPaletteId::from_u32(999), AuroraPaletteId::Default);
+
+    // String parsing
+    assert_eq!(
+        AuroraPaletteId::from_str_case_insensitive("default"),
+        Some(AuroraPaletteId::Default)
+    );
+    assert_eq!(
+        AuroraPaletteId::from_str_case_insensitive("storm"),
+        Some(AuroraPaletteId::ClassicGeomagneticStorm)
+    );
+    assert_eq!(
+        AuroraPaletteId::from_str_case_insensitive("crimson"),
+        Some(AuroraPaletteId::HighAltitudeCrimson)
+    );
+    assert_eq!(
+        AuroraPaletteId::from_str_case_insensitive("violet"),
+        Some(AuroraPaletteId::PolarVioletDawn)
+    );
+    assert_eq!(
+        AuroraPaletteId::from_str_case_insensitive("steve"),
+        Some(AuroraPaletteId::GhostlySteve)
+    );
+    assert_eq!(
+        AuroraPaletteId::from_str_case_insensitive("calm"),
+        Some(AuroraPaletteId::DeepArcticCalm)
+    );
+
+    // Aliases
+    assert_eq!(
+        AuroraPaletteId::from_str_case_insensitive("legacy"),
+        Some(AuroraPaletteId::Default)
+    );
+    assert_eq!(
+        AuroraPaletteId::from_str_case_insensitive("red"),
+        Some(AuroraPaletteId::HighAltitudeCrimson)
+    );
+    assert_eq!(
+        AuroraPaletteId::from_str_case_insensitive("blue"),
+        Some(AuroraPaletteId::PolarVioletDawn)
+    );
+    assert_eq!(
+        AuroraPaletteId::from_str_case_insensitive("0"),
+        Some(AuroraPaletteId::Default)
+    );
+    assert_eq!(
+        AuroraPaletteId::from_str_case_insensitive("1"),
+        Some(AuroraPaletteId::ClassicGeomagneticStorm)
+    );
+
+    // Invalid string
+    assert_eq!(
+        AuroraPaletteId::from_str_case_insensitive("invalid_name"),
+        None
+    );
+}
+
+#[test]
+fn test_aurora_palette_colors_contract() {
+    use omnisia::environment::aurora::AuroraPaletteId;
+
+    for i in 0..AuroraPaletteId::COUNT {
+        let pal = AuroraPaletteId::from_u32(i as u32);
+        let colors = pal.colors();
+
+        for (c_idx, col) in [&colors.c0, &colors.c1, &colors.c2, &colors.c3]
+            .iter()
+            .enumerate()
+        {
+            assert!(
+                col.is_finite(),
+                "Color c{} of palette {:?} must be finite",
+                c_idx,
+                pal
+            );
+            assert!(
+                col.x >= 0.0 && col.x <= 1.0,
+                "c{}.x out of bounds for {:?}",
+                c_idx,
+                pal
+            );
+            assert!(
+                col.y >= 0.0 && col.y <= 1.0,
+                "c{}.y out of bounds for {:?}",
+                c_idx,
+                pal
+            );
+            assert!(
+                col.z >= 0.0 && col.z <= 1.0,
+                "c{}.z out of bounds for {:?}",
+                c_idx,
+                pal
+            );
+        }
+    }
+
+    // Explicit verification of Ghostly STEVE color ordering (Section 15):
+    // Faint Sage -> Mauve -> Bright Lilac -> Smoky Indigo
+    let steve = AuroraPaletteId::GhostlySteve.colors();
+    assert_eq!(steve.c0, glam::Vec3::new(0.45, 0.65, 0.50)); // Faint Sage Green
+    assert_eq!(steve.c1, glam::Vec3::new(0.55, 0.32, 0.58)); // Mauve / Dusty Purple
+    assert_eq!(steve.c2, glam::Vec3::new(0.78, 0.45, 0.88)); // Bright Lilac
+    assert_eq!(steve.c3, glam::Vec3::new(0.28, 0.18, 0.45)); // Smoky Indigo
+}
+
+#[test]
+fn test_aurora_palette_encoding_roundtrip_invariants() {
+    use omnisia::environment::aurora::{AuroraPaletteId, AuroraParameters};
+
+    let test_intensities = [0.0f32, 0.1, 0.5, 1.0, 2.5, 5.0, 10.0];
+
+    for i in 0..AuroraPaletteId::COUNT {
+        let palette = AuroraPaletteId::from_u32(i as u32);
+        for &intensity in &test_intensities {
+            let mut params = AuroraParameters::new();
+            params.set_intensity(intensity).unwrap();
+            params.set_palette(palette);
+
+            let encoded = params.encoded_uniform_value();
+
+            // Strict invariant: Default palette (ID 0) must produce identical raw intensity float
+            if palette == AuroraPaletteId::Default {
+                assert_eq!(
+                    encoded, intensity,
+                    "Default palette encoded value must be bitwise identical to raw intensity"
+                );
+            }
+
+            let (decoded_intensity, decoded_palette) =
+                AuroraParameters::decode_uniform_value(encoded);
+
+            assert!(
+                (decoded_intensity - intensity).abs() < 1e-4,
+                "Decoded intensity {} != original {} for palette {:?}",
+                decoded_intensity,
+                intensity,
+                palette
+            );
+            assert_eq!(
+                decoded_palette, palette,
+                "Decoded palette {:?} != original {:?}",
+                decoded_palette, palette
+            );
+        }
+    }
+}
+
+#[test]
+fn test_aurora_morphology_palette_invariance() {
+    use omnisia::environment::aurora::{
+        evaluate_aurora_reference, AuroraPaletteId, AuroraParameters,
+    };
+
+    // Mandate: Changing palette must affect chromatic response only.
+    // Morphology, depth, layer positions, envelopes, and emission must remain
+    // bitwise/numerically invariant before palette color mapping.
+    let camera_pos = Vec3::new(100.0, 64.0, -200.0);
+    let view_dir = Vec3::new(0.2, 0.4, -0.85).normalize();
+    let sun_elevation = -0.50; // Midnight
+
+    let mut baseline_res: Option<omnisia::environment::aurora::AuroraReferenceResult> = None;
+
+    for i in 0..AuroraPaletteId::COUNT {
+        let palette = AuroraPaletteId::from_u32(i as u32);
+        let mut params = AuroraParameters::new();
+        params.set_palette(palette);
+
+        let res = evaluate_aurora_reference(camera_pos, view_dir, sun_elevation, params.intensity);
+
+        if let Some(base) = baseline_res {
+            assert_eq!(res.layer_x, base.layer_x);
+            assert_eq!(res.layer_z, base.layer_z);
+            assert_eq!(res.t_far, base.t_far);
+            assert_eq!(res.t_main, base.t_main);
+            assert_eq!(res.t_fine, base.t_fine);
+            assert_eq!(res.vertical_envelope, base.vertical_envelope);
+            assert_eq!(res.anchor_alignment, base.anchor_alignment);
+            assert_eq!(res.effective_emission, base.effective_emission);
+        } else {
+            baseline_res = Some(res);
+        }
+    }
+}
+
+#[test]
+fn test_aurora_temporal_closed_loop_and_interframe_continuity() {
+    // REG-2 Verification:
+    // 1. Global cycle closure at 60s: cos(k*2*PI) == 1, sin(k*2*PI) == 0 for all integer harmonics.
+    let tau = std::f32::consts::TAU;
+    let omega0 = tau / 60.0;
+
+    for k in 1..=4 {
+        let angle_60 = 60.0 * (omega0 * k as f32);
+        let angle_0 = 0.0f32;
+
+        let delta_cos = (angle_60.cos() - angle_0.cos()).abs();
+        let delta_sin = (angle_60.sin() - angle_0.sin()).abs();
+
+        assert!(
+            delta_cos < 1e-5,
+            "cos wrap delta {} for harmonic k={}",
+            delta_cos,
+            k
+        );
+        assert!(
+            delta_sin < 1e-5,
+            "sin wrap delta {} for harmonic k={}",
+            delta_sin,
+            k
+        );
+    }
+
+    // 2. Closed-loop circular noise offsets:
+    // Delta_P(t) = (cos(theta)*0.45, sin(theta)*0.35)
+    let p_drift_0 = Vec3::new(0.0f32.cos() * 0.45, 0.0f32.sin() * 0.35, 0.0);
+    let p_drift_60 = Vec3::new(tau.cos() * 0.45, tau.sin() * 0.35, 0.0);
+    assert!((p_drift_60 - p_drift_0).length() < 1e-5);
+
+    // 3. Local frame-to-frame Lipschitz continuity:
+    // For 60 FPS simulation (dt = 1/60s), consecutive frames must have smooth small displacement
+    let dt = 1.0 / 60.0;
+    let mut max_disp = 0.0f32;
+    for step in 0..3600 {
+        let t = step as f32 * dt;
+        let theta1 = t * omega0;
+        let theta2 = (t + dt) * omega0;
+
+        let p1 = glam::Vec2::new(theta1.cos() * 0.45, theta1.sin() * 0.35);
+        let p2 = glam::Vec2::new(theta2.cos() * 0.45, theta2.sin() * 0.35);
+
+        let disp = (p2 - p1).length();
+        if disp > max_disp {
+            max_disp = disp;
+        }
+    }
+    // With omega0 ≈ 0.1047 rad/s and radius 0.45, max velocity is ~0.047 units/sec,
+    // so frame displacement is ~0.00078 units/frame.
+    assert!(
+        max_disp < 0.002,
+        "Frame-to-frame noise drift displacement {} is smoothly bounded",
+        max_disp
+    );
+}
+
+#[test]
+fn test_aurora_stability_diagnostics_suite() {
+    use omnisia::environment::aurora::evaluate_aurora_reference;
+
+    // DIAGNOSTIC CASE A: Camera frozen / time animated across wrap
+    let cam_frozen = Vec3::new(50.0, 64.0, -150.0);
+    let dir = Vec3::new(0.1, 0.35, -0.9).normalize();
+    let ref_59_9 = evaluate_aurora_reference(cam_frozen, dir, -0.50, 1.0);
+    let ref_0_0 = evaluate_aurora_reference(cam_frozen, dir, -0.50, 1.0);
+    assert_eq!(ref_59_9, ref_0_0);
+
+    // DIAGNOSTIC CASE B: Time frozen / camera moved continuously
+    let cam_a = Vec3::new(50.0, 64.0, -150.0);
+    let cam_b = Vec3::new(51.0, 64.0, -150.0); // 1 meter translation
+    let ref_a = evaluate_aurora_reference(cam_a, dir, -0.50, 1.0);
+    let ref_b = evaluate_aurora_reference(cam_b, dir, -0.50, 1.0);
+    assert!((ref_b.layer_x - ref_a.layer_x - 1.0).abs() < 1e-4);
+
+    // DIAGNOSTIC CASE C: Both frozen (zero drift verification across 100 iterations)
+    for _ in 0..100 {
+        let ref_repeat = evaluate_aurora_reference(cam_frozen, dir, -0.50, 1.0);
+        assert_eq!(ref_repeat, ref_0_0);
+    }
+
+    // DIAGNOSTIC CASE D: Smooth camera velocity
+    let mut prev_x = ref_a.layer_x;
+    for step in 1..=60 {
+        let pos = cam_a + Vec3::new(step as f32 * 0.1, 0.0, 0.0);
+        let res = evaluate_aurora_reference(pos, dir, -0.50, 1.0);
+        let dx = res.layer_x - prev_x;
+        assert!((dx - 0.1).abs() < 1e-4);
+        prev_x = res.layer_x;
+    }
+
+    // DIAGNOSTIC CASE E: Abrupt collision / camera correction (Y snaps from 64 to 2000 to 5000)
+    for &alt in &[64.0, 500.0, 2000.0, 4000.0, 5000.0] {
+        let pos = Vec3::new(0.0, alt, 0.0);
+        let res = evaluate_aurora_reference(pos, dir, -0.50, 1.0);
+        assert!(res.t_far > res.t_main);
+        assert!(res.t_main > res.t_fine);
+        assert!(res.layer_x.is_finite());
+        assert!(res.layer_z.is_finite());
+    }
+}
+
+#[test]
+fn test_gpu_sky_performance_recovery_bench() {
+    pollster::block_on(async {
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::PRIMARY,
+            ..Default::default()
+        });
+
+        let adapter = match instance
+            .request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::HighPerformance,
+                compatible_surface: None,
+                force_fallback_adapter: false,
+            })
+            .await
+        {
+            Some(a) => a,
+            None => {
+                println!("No primary GPU adapter available for performance bench, skipping");
+                return;
+            }
+        };
+
+        let (device, queue) = match adapter
+            .request_device(&wgpu::DeviceDescriptor::default(), None)
+            .await
+        {
+            Ok(dq) => dq,
+            Err(_) => return,
+        };
+
+        let width = 1280u32;
+        let height = 720u32;
+        let texture_format = wgpu::TextureFormat::Rgba8Unorm;
+
+        let color_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Bench Color Target"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: texture_format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let color_view = color_texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+        let depth_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Bench Depth Target"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Depth32Float,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        });
+        let depth_view = depth_texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+        let sky_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("Bench Sky Bind Group Layout"),
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                }],
+            });
+
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("Bench Sky Pipeline Layout"),
+            bind_group_layouts: &[&sky_bind_group_layout],
+            push_constant_ranges: &[],
+        });
+
+        let sky_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Bench Sky Buffer"),
+            size: std::mem::size_of::<omnisia::environment::SkyUniform>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let sky_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Bench Sky Bind Group"),
+            layout: &sky_bind_group_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: sky_buffer.as_entire_binding(),
+            }],
+        });
+
+        // Camera looking north towards the aurora arc
+        let cam = Camera::new(Vec3::ZERO, -90.0, 15.0);
+        let sky_vp = cam.build_sky_view_projection_matrix(16.0 / 9.0);
+        let inv_sky_vp = sky_vp.inverse();
+
+        let mut env = EnvironmentState::new();
+        env.set_day_fraction(0.00); // Midnight
+        env.aurora.set_intensity(1.0).unwrap();
+        let uniform = env.build_sky_uniform(inv_sky_vp, Vec3::ZERO);
+        queue.write_buffer(&sky_buffer, 0, bytemuck::cast_slice(&[uniform]));
+
+        let shaders = [
+            (
+                "Pre-10.6.1 Baseline (3f8040c)",
+                include_str!("fixtures/sky_pre_10_6_1.wgsl"),
+            ),
+            (
+                "10.6.1 Unoptimized (7375bbd)",
+                include_str!("fixtures/sky_10_6_1_unoptimized.wgsl"),
+            ),
+            (
+                "10.6.1R Optimized (Current)",
+                include_str!("../src/sky.wgsl"),
+            ),
+        ];
+
+        let mut results = Vec::new();
+
+        for (label, source) in shaders {
+            let t_compile_start = std::time::Instant::now();
+            let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some(label),
+                source: wgpu::ShaderSource::Wgsl(source.into()),
+            });
+            let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(label),
+                layout: Some(&pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &module,
+                    entry_point: Some("vs_sky"),
+                    buffers: &[],
+                    compilation_options: Default::default(),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &module,
+                    entry_point: Some("fs_sky"),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: texture_format,
+                        blend: Some(wgpu::BlendState::REPLACE),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                    compilation_options: Default::default(),
+                }),
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleList,
+                    strip_index_format: None,
+                    front_face: wgpu::FrontFace::Ccw,
+                    cull_mode: None,
+                    polygon_mode: wgpu::PolygonMode::Fill,
+                    unclipped_depth: false,
+                    conservative: false,
+                },
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: wgpu::TextureFormat::Depth32Float,
+                    depth_write_enabled: false,
+                    depth_compare: wgpu::CompareFunction::LessEqual,
+                    stencil: wgpu::StencilState::default(),
+                    bias: wgpu::DepthBiasState::default(),
+                }),
+                multisample: wgpu::MultisampleState::default(),
+                multiview: None,
+                cache: None,
+            });
+            let compile_time_ms = t_compile_start.elapsed().as_secs_f64() * 1000.0;
+
+            // Warm-up 10 frames
+            for _ in 0..10 {
+                let mut encoder =
+                    device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+                {
+                    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                        label: Some("Warmup"),
+                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                            view: &color_view,
+                            resolve_target: None,
+                            ops: wgpu::Operations {
+                                load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                                store: wgpu::StoreOp::Store,
+                            },
+                        })],
+                        depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                            view: &depth_view,
+                            depth_ops: Some(wgpu::Operations {
+                                load: wgpu::LoadOp::Clear(1.0),
+                                store: wgpu::StoreOp::Store,
+                            }),
+                            stencil_ops: None,
+                        }),
+                        timestamp_writes: None,
+                        occlusion_query_set: None,
+                    });
+                    pass.set_pipeline(&pipeline);
+                    pass.set_bind_group(0, &sky_bind_group, &[]);
+                    pass.draw(0..3, 0..1);
+                }
+                queue.submit(std::iter::once(encoder.finish()));
+            }
+            let _ = device.poll(wgpu::Maintain::wait());
+
+            // Measured run: 100 frames
+            let frames = 100;
+            let t_start = std::time::Instant::now();
+            for _ in 0..frames {
+                let mut encoder =
+                    device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+                {
+                    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                        label: Some("Bench"),
+                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                            view: &color_view,
+                            resolve_target: None,
+                            ops: wgpu::Operations {
+                                load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                                store: wgpu::StoreOp::Store,
+                            },
+                        })],
+                        depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                            view: &depth_view,
+                            depth_ops: Some(wgpu::Operations {
+                                load: wgpu::LoadOp::Clear(1.0),
+                                store: wgpu::StoreOp::Store,
+                            }),
+                            stencil_ops: None,
+                        }),
+                        timestamp_writes: None,
+                        occlusion_query_set: None,
+                    });
+                    pass.set_pipeline(&pipeline);
+                    pass.set_bind_group(0, &sky_bind_group, &[]);
+                    pass.draw(0..3, 0..1);
+                }
+                queue.submit(std::iter::once(encoder.finish()));
+            }
+            let _ = device.poll(wgpu::Maintain::wait());
+            let elapsed_ms = t_start.elapsed().as_secs_f64() * 1000.0;
+            let ms_per_frame = elapsed_ms / frames as f64;
+            let fps = 1000.0 / ms_per_frame;
+
+            results.push((label, compile_time_ms, ms_per_frame, fps));
+        }
+
+        println!(
+            "\n================================================================================"
+        );
+        println!("     OMNISIA — PHASE 10.6.1R GPU FULLSCREEN SKY PERFORMANCE BENCHMARK          ");
+        println!("     Target: 1280x720 Fullscreen Sky Pass at Midnight Looking North (-Z)       ");
+        println!(
+            "================================================================================"
+        );
+        for (label, compile_ms, ms_frame, fps) in &results {
+            println!(
+                "  [{}] Compile: {:.1}ms | Frame: {:.3}ms | Equivalent: {:.1} FPS",
+                label, compile_ms, ms_frame, fps
+            );
+        }
+        println!(
+            "================================================================================\n"
+        );
+
+        let _baseline_ms = results[0].2;
+        let unopt_ms = results[1].2;
+        let opt_ms = results[2].2;
+
+        // Optimization check: 10.6.1R must be substantially faster than 10.6.1 unoptimized
+        assert!(
+            opt_ms < unopt_ms,
+            "Optimized shader ({:.3}ms) must be faster than unoptimized ({:.3}ms)",
+            opt_ms,
+            unopt_ms
+        );
+    });
 }

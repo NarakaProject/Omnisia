@@ -1,6 +1,6 @@
 use super::super::command::{CommandResult, ConsoleCommand};
 use super::super::context::DeveloperExecutionContext;
-use crate::environment::AuroraParameters;
+use crate::environment::aurora::{AuroraPaletteId, AuroraParameters};
 
 pub struct EnvCommand;
 
@@ -24,8 +24,9 @@ impl ConsoleCommand for EnvCommand {
             \x20 env moon                       Inspect continuous moon phase and canonical classification\n\
             \x20 env moon set <phase>           Directly set continuous moon phase in [0.0, 1.0)\n\
             \x20 env aurora                     Inspect procedural aurora layer status and night visibility\n\
-            \x20 env aurora status              Display aurora intensity and active visibility\n\
+            \x20 env aurora status              Display aurora intensity, palette, and active visibility\n\
             \x20 env aurora intensity <value>   Set aurora visual intensity multiplier in [0.0, 10.0]\n\
+            \x20 env aurora palette [preset]    Inspect or set procedural aurora color preset (default, storm, crimson, violet, steve, calm)\n\
             \x20 env aurora on                  Enable aurora with default intensity (1.0)\n\
             \x20 env aurora off                 Disable aurora rendering (0.0)\n\n\
             Phase 10.5 & 10.6 Invariants:\n\
@@ -112,6 +113,39 @@ impl ConsoleCommand for EnvCommand {
                             let _ = ctx.environment.aurora.set_intensity(0.0);
                             CommandResult::Success("Aurora disabled (intensity: 0.00)".to_string())
                         }
+                        "palette" => {
+                            if args.len() < 3 {
+                                let active = ctx.environment.aurora.palette;
+                                CommandResult::Success(format!(
+                                    "Active Aurora Palette: {} [{}]\n\
+                                    Available Presets:\n\
+                                    \x20 0. default  - Legacy Cyan / Emerald / Violet\n\
+                                    \x20 1. storm    - Classic Geomagnetic Storm (Hot Pink, Emerald, Mint, Crimson)\n\
+                                    \x20 2. crimson  - High-Altitude Crimson Curtain (Wine, Crimson, Coral, Lavender)\n\
+                                    \x20 3. violet   - Polar Violet Dawn (Electric Blue, Cobalt Violet, Orchid, Rose)\n\
+                                    \x20 4. steve    - Ghostly STEVE / Sub-Auroral Arc (Sage, Mauve, Lilac, Indigo)\n\
+                                    \x20 5. calm     - Deep Arctic Calm (Teal, Apple Green, Seafoam, Amber)",
+                                    active.name(),
+                                    active.short_name()
+                                ))
+                            } else {
+                                let target = &args[2];
+                                match AuroraPaletteId::from_str_case_insensitive(target) {
+                                    Some(pal) => {
+                                        ctx.environment.aurora.set_palette(pal);
+                                        CommandResult::Success(format!(
+                                            "Aurora palette set to {} [{}]",
+                                            pal.name(),
+                                            pal.short_name()
+                                        ))
+                                    }
+                                    None => CommandResult::Error(format!(
+                                        "unknown aurora palette \"{}\". Available options: default, storm, crimson, violet, steve, calm (or 0-5).",
+                                        target
+                                    )),
+                                }
+                            }
+                        }
                         "intensity" => {
                             if args.len() < 3 {
                                 return CommandResult::Error(
@@ -171,10 +205,17 @@ impl EnvCommand {
         CommandResult::Success(format!(
             "Procedural Aurora State (Phase 10.6):\n\
             \x20 Configured Intensity: {:.2} (Range [0.0, 10.0])\n\
+            \x20 Active Color Preset:  {} [{}]\n\
             \x20 Night Visibility:     {:.4} (Sun Elevation: {:.4})\n\
             \x20 Effective Emission:   {:.4}\n\
             \x20 Layer Status:         {}",
-            aurora.intensity, vis, sun_elev, eff, state_desc
+            aurora.intensity,
+            aurora.palette.name(),
+            aurora.palette.short_name(),
+            vis,
+            sun_elev,
+            eff,
+            state_desc
         ))
     }
 
@@ -196,6 +237,7 @@ impl EnvCommand {
             \x20 Daylight Factor:  {:.4}\n\
             \x20 Star Visibility:  {:.4}\n\
             \x20 Aurora Intensity: {:.2}\n\
+            \x20 Aurora Palette:   {} [{}]\n\
             \x20 Aurora Visibility:{:.4}\n\
             \x20 Horizon Color:    RGB({:.2}, {:.2}, {:.2})\n\
             \x20 Zenith Color:     RGB({:.2}, {:.2}, {:.2})\n\
@@ -218,6 +260,8 @@ impl EnvCommand {
             celestial.day_factor,
             celestial.star_visibility,
             aurora.intensity,
+            aurora.palette.name(),
+            aurora.palette.short_name(),
             aurora_vis,
             celestial.horizon_color[0],
             celestial.horizon_color[1],

@@ -74,58 +74,6 @@ fn smooth_noise2d(p: vec2<f32>) -> f32 {
     return mix(mix(a00, a10, u.x), mix(a01, a11, u.x), u.y);
 }
 
-// Procedural aurora palette definition (Phase 10.6.1R)
-struct AuroraPalette {
-    c0: vec3<f32>, // Base curtain body / lower boundary
-    c1: vec3<f32>, // Energized fold / dynamic fringe
-    c2: vec3<f32>, // Sharp filament / core highlight
-    c3: vec3<f32>, // High-altitude upper flare
-};
-
-// Resolves solely the 4 required color constants for the active preset via uniform branch
-fn get_aurora_palette(id: u32) -> AuroraPalette {
-    var p: AuroraPalette;
-    switch (id) {
-        case 1u: { // CLASSIC_GEOMAGNETIC_STORM
-            p.c0 = vec3<f32>(0.08, 0.88, 0.38); // Bright Emerald (primary oxygen emission)
-            p.c1 = vec3<f32>(0.92, 0.15, 0.65); // Magenta / Hot Pink (lower nitrogen fringe)
-            p.c2 = vec3<f32>(0.45, 0.92, 0.70); // Pale Mint Green (filament peaks)
-            p.c3 = vec3<f32>(0.82, 0.08, 0.18); // Deep Crimson (high-altitude oxygen glow)
-        }
-        case 2u: { // HIGH_ALTITUDE_CRIMSON
-            p.c0 = vec3<f32>(0.48, 0.05, 0.15); // Deep Wine / Burgundy
-            p.c1 = vec3<f32>(0.85, 0.12, 0.22); // Rich Crimson
-            p.c2 = vec3<f32>(0.92, 0.40, 0.45); // Coral Pink
-            p.c3 = vec3<f32>(0.65, 0.55, 0.78); // Faint Lavender
-        }
-        case 3u: { // POLAR_VIOLET_DAWN
-            p.c0 = vec3<f32>(0.10, 0.45, 0.95); // Electric Blue
-            p.c1 = vec3<f32>(0.42, 0.18, 0.85); // Cobalt Violet
-            p.c2 = vec3<f32>(0.80, 0.20, 0.75); // Neon Orchid / Magenta
-            p.c3 = vec3<f32>(0.85, 0.50, 0.60); // Soft Rose / Dusty Pink
-        }
-        case 4u: { // GHOSTLY_STEVE (Faint Sage -> Mauve -> Bright Lilac -> Smoky Indigo)
-            p.c0 = vec3<f32>(0.45, 0.65, 0.50); // Faint Sage Green
-            p.c1 = vec3<f32>(0.55, 0.32, 0.58); // Mauve / Dusty Purple
-            p.c2 = vec3<f32>(0.78, 0.45, 0.88); // Bright Lilac
-            p.c3 = vec3<f32>(0.28, 0.18, 0.45); // Smoky Indigo
-        }
-        case 5u: { // DEEP_ARCTIC_CALM
-            p.c0 = vec3<f32>(0.05, 0.55, 0.48); // Forest Teal
-            p.c1 = vec3<f32>(0.22, 0.75, 0.30); // Spring Apple Green
-            p.c2 = vec3<f32>(0.50, 0.85, 0.68); // Pale Seafoam
-            p.c3 = vec3<f32>(0.80, 0.65, 0.35); // Faint Warm Amber
-        }
-        default: { // DEFAULT / LEGACY_CYAN_VIOLET
-            p.c0 = vec3<f32>(0.08, 0.82, 0.42); // Deep Emerald
-            p.c1 = vec3<f32>(0.06, 0.74, 0.62); // Turquoise
-            p.c2 = vec3<f32>(0.08, 0.68, 0.82); // Bright Cyan
-            p.c3 = vec3<f32>(0.38, 0.18, 0.62); // Soft Violet
-        }
-    }
-    return p;
-}
-
 @fragment
 fn fs_sky(in: SkyVertexOutput) -> @location(0) vec4<f32> {
     let dir = normalize(in.view_dir);
@@ -249,15 +197,10 @@ fn fs_sky(in: SkyVertexOutput) -> @location(0) vec4<f32> {
         }
     }
 
-    // 5. Procedural Aurora Curtains (Phase 10.6.1R: Performance Recovery, Stabilization & Color Presets)
+    // 5. Procedural Aurora Curtains (Phase 10.6.1: Atmospheric Curtain Morphology & Depth)
     // Mandatory Amendment A: Ascending smoothstep edges (1.0 - smoothstep(-0.18, -0.06, sun_elevation))
     let aurora_visibility = 1.0 - smoothstep(-0.18, -0.06, sky.sun_elevation);
-
-    // Decode packed palette selector and true intensity from sky.aurora_intensity (176-byte ABI preserved):
-    let raw_palette = floor((sky.aurora_intensity + 0.001) / 16.0);
-    let palette_id = min(u32(raw_palette), 5u);
-    let real_intensity = sky.aurora_intensity - f32(palette_id) * 16.0;
-    let effective_aurora_strength = real_intensity * aurora_visibility;
+    let effective_aurora_strength = sky.aurora_intensity * aurora_visibility;
 
     if (effective_aurora_strength > 0.001 && dir.y > 0.03) {
         // Facing direction anchor along -Z world axis (Amendment C & Section 16).
@@ -284,22 +227,16 @@ fn fs_sky(in: SkyVertexOutput) -> @location(0) vec4<f32> {
             let pos_main = vec2<f32>(sky.camera_pos.x + t_main * dir.x, sky.camera_pos.z + t_main * dir.z);
             let pos_fine = vec2<f32>(sky.camera_pos.x + t_fine * dir.x, sky.camera_pos.z + t_fine * dir.z);
 
-            // Bounded Temporal Frequencies with Strict Closed-Loop Continuity (REG-2 Resolution):
-            // All phase terms use strict integer harmonics (k = 1, 2, 3, 4) of omega0 = 2*PI/60.
-            // Noise coordinate offsets use closed-loop circular phase (cos/sin of theta),
-            // ensuring that at t = 0.0 and t = 60.0 the noise sampling coordinates are identical.
+            // Multi-Rate Bounded Temporal Frequencies (Sections 14 & 15):
+            // All phases derive deterministically from bounded_time (in [0, 60)) with integer harmonics
+            // of 2*PI/60 to guarantee 100% pop-free 60-second wrapping, while operating at different
+            // spatial scales and speeds to avoid synchronized carousel sliding:
             let tau = 6.2831853;
             let omega0 = tau / 60.0;
-            let theta = sky.bounded_time * omega0; // in [0, 2*PI)
-            let cos_t1 = cos(theta);
-            let sin_t1 = sin(theta);
-            let cos_t2 = cos(theta * 2.0);
-            let sin_t2 = sin(theta * 2.0);
-
-            let time_macro     = theta;       // k=1 (60s fundamental: slow curtain drift)
-            let time_curtain   = theta * 2.0; // k=2 (30s: fold undulation)
-            let time_filaments = theta * 3.0; // k=3 (20s: filament brightening/fading)
-            let time_shimmer   = theta * 4.0; // k=4 (15s: fine streamer shimmer)
+            let time_macro     = sky.bounded_time * omega0;         // k=1 (60s fundamental: slow curtain drift)
+            let time_curtain   = sky.bounded_time * (omega0 * 2.0); // k=2 (30s: fold undulation)
+            let time_filaments = sky.bounded_time * (omega0 * 3.0); // k=3 (20s: filament brightening/fading)
+            let time_shimmer   = sky.bounded_time * (omega0 * 4.0); // k=4 (15s: fine streamer shimmer)
 
             // Vertical envelope: soft horizon fade and graceful zenith thinning
             let horizon_fade = smoothstep(0.04, 0.16, dir.y);
@@ -307,14 +244,24 @@ fn fs_sky(in: SkyVertexOutput) -> @location(0) vec4<f32> {
             let vertical_envelope = horizon_fade * zenith_fade;
 
             // ================================================================
-            // LAYER 2: MAIN CURTAIN (Full Morphology Pipeline, 2 Noise Calls)
+            // LAYER 1: FAR CURTAIN (Distant, soft, luminous background sheet)
+            // ================================================================
+            let uv_far = pos_far * 0.00030;
+            let far_noise = smooth_noise2d(uv_far + vec2<f32>(time_macro * 0.35, -time_macro * 0.25));
+            let far_spine = sin(uv_far.x * 1.2 + time_macro) * 0.85 + cos(uv_far.x * 0.55 - time_macro * 0.4) * 0.45;
+            let d_far = abs(uv_far.y + 1.8 - far_spine - far_noise * 0.5);
+            let far_sheet = smoothstep(0.60, 0.05, d_far);
+            let far_curtain = far_sheet * (0.50 + 0.50 * far_noise);
+
+            // ================================================================
+            // LAYER 2: MAIN CURTAIN (Full Morphology Pipeline)
             // ================================================================
             let uv_main = pos_main * 0.00055;
 
             // 1. Spatial Field & 2D Vector Domain Warping:
-            // Closed-loop elliptical orbit for noise seed ensures zero jump across 60s wrap
-            let macro_drift = vec2<f32>(cos_t1 * 0.45, sin_t1 * 0.35);
-            let macro_noise = smooth_noise2d(uv_main + macro_drift); // NOISE CALL 1
+            // Introduces large-scale bends, compression, and expansion in 2D space:
+            let warp_seed = uv_main + vec2<f32>(time_macro * 0.45, time_curtain * 0.25);
+            let macro_noise = smooth_noise2d(warp_seed);
             let warp_vec = vec2<f32>(
                 sin(uv_main.y * 1.8 + time_curtain) * 0.45 + (macro_noise - 0.5) * 0.85,
                 cos(uv_main.x * 1.3 - time_macro) * 0.40 + (macro_noise - 0.5) * 0.65
@@ -323,86 +270,78 @@ fn fs_sky(in: SkyVertexOutput) -> @location(0) vec4<f32> {
 
             // 2. Curtain Sheet Envelope on Warped Manifold:
             let fold_wave = sin(q_main.x * 1.6 + time_curtain) * 0.65
-                + cos(q_main.x * 0.78 - time_macro) * 0.50;
+                + cos(q_main.x * 0.78 - time_macro * 0.6) * 0.50;
             let d_main = abs(q_main.y + 1.3 - fold_wave);
-            let main_sheet = 1.0 - smoothstep(0.03, 0.40, d_main);
+            let main_sheet = smoothstep(0.40, 0.03, d_main);
 
             // 3. Meso-scale Thickness & Organic Gap Modulation:
-            let meso_drift = vec2<f32>(cos_t2 * 0.35, sin_t1 * 0.45);
-            let meso_p = vec2<f32>(q_main.x * 2.1, q_main.y * 1.4) + meso_drift;
-            let meso_noise = smooth_noise2d(meso_p); // NOISE CALL 2
+            let meso_p = vec2<f32>(q_main.x * 2.1 + time_curtain * 0.5, q_main.y * 1.4 - time_macro * 0.8);
+            let meso_noise = smooth_noise2d(meso_p);
             let thickness_mod = 0.55 + 0.45 * meso_noise;
 
-            // 4. Organically Ragged Lower Edge:
+            // 4. Organically Ragged Lower Edge (Section 7):
             let ragged_bottom = 0.07 + 0.05 * sin(q_main.x * 2.2 + time_macro) + 0.04 * meso_noise;
             let ragged_lower_fade = smoothstep(ragged_bottom, ragged_bottom + 0.12, dir.y);
 
             // 5. Clustered & Broken Vertical Filaments:
+            // The carrier uses incommensurate frequencies (phi ~ 1.618, e ~ 2.718, sqrt(2)+e ~ 4.132)
+            // evaluated on the warped manifold Q, filtered through a 2D cluster mask (gaps)
+            // and vertical break noise (streamers/nodes along dir.y):
             let fil_coord = q_main.x * 5.8 + meso_noise * 2.5 + warp_vec.x * 1.6;
             let ray_a = sin(fil_coord * 1.618 + time_filaments);
-            let ray_b = sin(fil_coord * 2.718 - time_curtain + 1.3);
-            let ray_c = cos(fil_coord * 4.132 + time_shimmer);
-            let carrier = max(0.0, (ray_a * 0.45 + ray_b * 0.35 + ray_c * 0.20) * 0.5 + 0.5);
-            let ray_sharp = carrier * carrier * carrier;
+            let ray_b = sin(fil_coord * 2.718 - time_filaments * 0.75 + 1.3);
+            let ray_c = cos(fil_coord * 4.132 + time_shimmer + meso_noise * 1.7);
+            let carrier = ray_a * 0.45 + ray_b * 0.35 + ray_c * 0.20;
+            let ray_sharp = pow(max(0.0, carrier * 0.5 + 0.5), 3.2);
 
-            // 2D Spatial cluster mask:
+            // 2D Spatial cluster mask: creates dense ray clusters and sparse calm regions
             let cluster_mask = smoothstep(0.25, 0.75, meso_noise);
 
-            // Fast analytic vertical streamer break along dir.y (replaces 2D noise with zero hash cost):
-            let streamer_wave = sin(fil_coord * 0.85 + dir.y * 14.0 + time_filaments)
-                * cos(fil_coord * 0.42 - dir.y * 8.0 + time_macro);
-            let break_mask = smoothstep(-0.20, 0.70, streamer_wave * 0.55 + meso_noise * 0.45);
+            // Vertical streamer breaks along dir.y: breaks rays vertically into discrete nodes
+            let break_noise = smooth_noise2d(vec2<f32>(fil_coord * 0.35, dir.y * 5.5 - time_filaments * 0.45));
+            let break_mask = smoothstep(0.20, 0.80, break_noise);
 
             let main_filaments = (0.25 + 0.75 * ray_sharp * cluster_mask) * (0.40 + 0.60 * break_mask);
             let main_curtain = main_sheet * thickness_mod * ragged_lower_fade * main_filaments;
 
             // ================================================================
-            // LAYER 1: FAR CURTAIN (Distant, soft, luminous background sheet)
-            // ================================================================
-            // Derived directly from macro manifold and pos_far with differential parallax,
-            // eliminating dedicated noise evaluation while preserving layered depth:
-            let uv_far = pos_far * 0.00030;
-            let far_spine = sin(uv_far.x * 1.2 + time_macro) * 0.85 + cos(uv_far.x * 0.55 - time_macro) * 0.45;
-            let d_far = abs(uv_far.y + 1.8 - far_spine - (macro_noise - 0.5) * 0.5);
-            let far_sheet = 1.0 - smoothstep(0.05, 0.60, d_far);
-            let far_curtain = far_sheet * (0.50 + 0.50 * macro_noise);
-
-            // ================================================================
             // LAYER 3: FINE FILAMENT LAYER (Sparse, high-energy foreground rays)
             // ================================================================
-            // Derived from pos_fine and shared macro/meso state with fast power approximation:
-            let fine_coord = pos_fine.x * 0.0055 + (macro_noise - 0.5) * 2.8 + time_filaments;
+            let uv_fine = pos_fine * 0.00095;
+            let fine_warp = smooth_noise2d(uv_fine * 1.3 + vec2<f32>(-time_filaments * 0.35, time_shimmer * 0.25));
+            let fine_coord = uv_fine.x * 8.8 + fine_warp * 3.2 + time_filaments;
             let fine_ray1 = sin(fine_coord * 1.732 - time_shimmer);
-            let fine_ray2 = cos(fine_coord * 3.141 + time_filaments);
-            let fine_carrier = max(0.0, fine_ray1 * 0.55 + fine_ray2 * 0.45);
-            let fine_c2 = fine_carrier * fine_carrier;
-            let fine_sharp = fine_c2 * fine_c2; // fast x^4 without pow()
+            let fine_ray2 = cos(fine_coord * 3.141 + time_filaments * 1.1);
+            let fine_sharp = pow(max(0.0, fine_ray1 * 0.55 + fine_ray2 * 0.45), 4.0);
 
-            let fine_break = smoothstep(0.35, 0.80, meso_noise * 0.60 + (streamer_wave * 0.5 + 0.5) * 0.40);
-            let fine_filaments = fine_sharp * fine_break * main_sheet;
+            let fine_break = smooth_noise2d(vec2<f32>(fine_coord * 0.45, dir.y * 6.5 + time_shimmer * 0.5));
+            let fine_filaments = fine_sharp * smoothstep(0.40, 0.85, fine_break) * main_sheet;
 
             // ================================================================
-            // PALETTE RESOLUTION & ENERGY-DRIVEN PROCEDURAL COLOR MODEL
+            // ENERGY-DRIVEN COLOR MODEL (Sections 12 & 26)
             // ================================================================
-            // Resolve 4 palette colors for active preset with uniform branch (zero warp divergence):
-            let pal = get_aurora_palette(palette_id);
-
-            // Local auroral energy derived from physical curtain convergence and filament sharpness:
+            // Local energy derives from physical structure and filament convergence, not Y
             let local_energy = clamp(main_curtain * 0.85 + fine_filaments * 1.10 + far_curtain * 0.25, 0.0, 1.5);
-            let fold_t = clamp(local_energy * 0.80, 0.0, 1.0);
-            let lower_fringe = (1.0 - smoothstep(0.06, 0.22, dir.y)) * clamp(local_energy * 1.4, 0.0, 1.0);
 
-            // Base transition between primary body (c0) and folds/lower fringe (c1):
-            let base_color = mix(pal.c0, pal.c1, max(fold_t * 0.70, lower_fringe));
+            // Palette definitions:
+            let col_deep_emerald = vec3<f32>(0.08, 0.82, 0.42);  // Dominant curtain body
+            let col_turquoise    = vec3<f32>(0.06, 0.74, 0.62);  // Energized folds
+            let col_bright_cyan  = vec3<f32>(0.08, 0.68, 0.82);  // High-energy filament peaks
+            let col_soft_violet  = vec3<f32>(0.38, 0.18, 0.62);  // Restrained upper tip flare
 
-            // Sharp filament / core peak accent (c2):
-            let filament_t = clamp(fine_filaments * 1.6 + (ray_sharp - 0.5) * 0.6, 0.0, 1.0);
-            let with_filaments = mix(base_color, pal.c2, filament_t * 0.65);
+            // Base transition: emerald -> turquoise based on local energy
+            let energy_t = clamp(local_energy * 0.8, 0.0, 1.0);
+            let base_aurora = mix(col_deep_emerald, col_turquoise, energy_t);
 
-            // Restrained high-altitude upper reaches flare (c3):
+            // Bright cyan accents on sharp filament peaks
+            let cyan_t = clamp(fine_filaments * 1.6 + (ray_sharp - 0.5) * 0.6, 0.0, 1.0);
+            let with_cyan = mix(base_aurora, col_bright_cyan, cyan_t * 0.65);
+
+            // Restrained violet accent: strictly confined to high-energy upper filament tips
             let upper_reaches = smoothstep(0.32, 0.72, dir.y);
-            let upper_energy = clamp((local_energy - 0.35) * 1.6, 0.0, 1.0);
-            let aurora_color = mix(with_filaments, pal.c3, upper_reaches * upper_energy * 0.35);
+            let violet_energy = clamp((local_energy - 0.45) * 1.8, 0.0, 1.0);
+            let violet_t = violet_energy * upper_reaches * 0.32; // strictly restrained accent (max 32%)
+            let aurora_color = mix(with_cyan, col_soft_violet, violet_t);
 
             // ================================================================
             // COMPOSITION & RADIANCE HIERARCHY (Section 13)
